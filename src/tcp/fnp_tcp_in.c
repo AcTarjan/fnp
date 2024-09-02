@@ -1,5 +1,6 @@
 #include "fnp_init.h"
-#include "fnp_tcp.h"
+#include "fnp_tcp_comm.h"
+#include "fnp_tcp_sock.h"
 #include "fnp_tcp_ofo.h"
 #include "fnp_tcp_timer.h"
 #include <rte_tcp.h>
@@ -181,7 +182,6 @@ void tcp_handle_data(tcp_sock_t* sk, tcp_seg_t* seg) {
                 while (tcp_ofo_top(sk->ofo_head, &rcv_nxt));
                 fnp_ring_push(sk->rxbuf, NULL, (i32)(rcv_nxt - sk->rcv_nxt));
                 sk->rcv_nxt = rcv_nxt;
-                tcp_send_ack(sk, true);         //是否开启delay
             }
         } else {    // out of order
             i32 offset = (i32)(seg->seq - sk->rcv_nxt);
@@ -191,6 +191,7 @@ void tcp_handle_data(tcp_sock_t* sk, tcp_seg_t* seg) {
             if(len > 0) {
                 fnp_ring_pre_push(sk->rxbuf, (i32)(seq - sk->rcv_nxt), seg->data + (seq - seg->seq), len);
             }
+            tcp_send_ack(sk, false);         //收到乱序的数据，立即回ACK
         }
     }
 }
@@ -257,7 +258,6 @@ void tcp_handle_ack(tcp_sock_t* sk, tcp_seg_t* seg) {
                 //已收到FIN，并且自己也发送了FIN，这个ACK是对自己发送FIN的确认
                 if(sk->snd_una == sk->snd_max) {
                     tcp_set_state(sk, TCP_CLOSED);
-                    tcp_free_sock(sk);
                 }
                 break;
             }
@@ -380,11 +380,18 @@ void tcp_default_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
 
     //check the FIN
     if(seg_set_fin(seg)) {
-        sk->rcv_nxt = seg->seq + 1;
+        printf("recv FIN, seq is %u, len is %u, rcv_nxt is %u\n", seg->seq,seg->data_len, sk->rcv_nxt);
+        printf("len of rxbuf is %d\n", fnp_ring_len(sk->rxbuf));
+        tcp_ofo_print(sk->ofo_head);
+        if (sk->rcv_nxt != (seg->seq + seg->data_len)) {     //不是最后一个字节
+            printf("rcv_nxt(%u) is not equal to seq + data_len(%u)\n", sk->rcv_nxt, seg->seq + seg->data_len);
+            return;
+        }
+        sk->rcv_nxt++;      //FIN占用一个序列号
         tcp_send_ack(sk, false);
         switch (sk->state) {
             case TCP_SYN_RECV:
-            case TCP_ESTABLISHED: {
+            case TCP_ESTABLISHED: {     //
                 tcp_set_state(sk, TCP_CLOSE_WAIT);
                 break;
             }

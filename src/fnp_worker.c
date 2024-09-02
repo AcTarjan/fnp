@@ -1,7 +1,7 @@
 #include "fnp_ring.h"
 #include "fnp_ether.h"
 #include "fnp_init.h"
-#include "fnp_tcp.h"
+#include "tcp/fnp_tcp_sock.h"
 #include "tcp/fnp_tcp_timer.h"
 #include "fnp_arp.h"
 

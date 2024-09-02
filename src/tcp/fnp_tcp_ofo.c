@@ -1,5 +1,5 @@
 #include "fnp_tcp_ofo.h"
-#include "fnp_tcp.h"
+#include "fnp_tcp_comm.h"
 
 typedef struct tcp_ofo_segment {
     struct tcp_ofo_segment* next;
@@ -86,4 +86,16 @@ i32 tcp_ofo_top(struct tcp_ofo_segment* head, u32* rcv_nxt) {
         *rcv_nxt = top->seq + top->len;
     fnp_free(top);
     return 1;
+}
+
+bool tcp_ofo_is_empty(struct tcp_ofo_segment* head) {
+    return head->next == NULL;
+}
+
+void tcp_ofo_print(struct tcp_ofo_segment* head) {
+    tcp_ofo_seg* now = head->next;
+    while (now != NULL) {
+        printf("tcp ofo seg: %u %d\n", now->seq, now->len);
+        now = now->next;
+    }
 }

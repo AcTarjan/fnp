@@ -1,6 +1,8 @@
-#include "fnp_tcp.h"
-#include "fnp_ipv4.h"
+#include "fnp_tcp_sock.h"
+#include "fnp_tcp_comm.h"
 #include "fnp_tcp_timer.h"
+#include "fnp_ipv4.h"
+
 
 #include <netinet/ip.h>
 
@@ -109,8 +111,15 @@ void tcp_send_ack(tcp_sock_t* sk, bool delay)
         tcp_sendto_ip(sk, m, RTE_TCP_ACK_FLAG);
 }
 
+void tcp_send_syn(tcp_sock_t* sk)
+{
+    struct rte_mbuf* m = fnp_alloc_mbuf();
+    m->port = sk->iface->id;
 
-//only be used to send data
+    tcp_sendto_ip(sk, m, RTE_TCP_SYN_FLAG);
+}
+
+//send tcp segment
 void tcp_output(tcp_sock_t* sk) {
     while (1) {
         //当触发重传后，结果收到了ACK，导致snd_una变大, 要保证：snd_nxt >= snd_una

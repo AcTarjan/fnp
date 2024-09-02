@@ -1,6 +1,5 @@
-#include <unistd.h>
 #include "fnp_ipv4.h"
-#include "fnp_tcp.h"
+#include "tcp/fnp_tcp_sock.h"
 #include "fnp_arp.h"
 #include "fnp_ether.h"
 #include "fnp_icmp.h"

@@ -1,12 +1,14 @@
 #include "fnp_tcp_timer.h"
-
+#include "fnp_tcp_sock.h"
 
 
 void retransmission_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
     tcp_sock_t* sk = arg;
     sk->retransmission_num ++;
-    if(sk->retransmission_num > 12) {
+    if(sk->retransmission_num > 6) {
+        printf("retransmission failed!: %d\n", sk->retransmission_num);
+        tcp_set_state(sk, TCP_CLOSED);
         rte_timer_stop(tim);        //停止
     }
     printf("retransmission_callback: %d\n", sk->retransmission_num);
@@ -26,7 +28,6 @@ void timeout_2msl_callback(__attribute__((unused)) struct rte_timer *tim, void *
     tcp_sock_t* sk = arg;
     printf("timeout_2msl_callback");
     tcp_set_state(sk, TCP_CLOSED);
-    tcp_free_sock(sk);
 }
 
 void tcp_timer_start(tcp_sock_t* sk, i32 index) {

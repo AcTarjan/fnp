@@ -146,9 +146,9 @@ void fnp_conf_init(fnp_conf_t* conf)
     conf->dpdk.main_lcore =  2;
     conf->ifaces_num =  1;
     conf->ifaces[0].id =  0;
-    conf->ifaces[0].ip =  fnp_ipv4_ston("192.168.222.66");
+    conf->ifaces[0].ip =  fnp_ipv4_ston("192.168.11.66");
     conf->ifaces[0].mask =  fnp_ipv4_ston("255.255.255.0");
-    conf->ifaces[0].gateway =  fnp_ipv4_ston("192.168.222.254");
+    conf->ifaces[0].gateway =  fnp_ipv4_ston("192.168.11.2");
     conf->worker1 = 3;
     conf->worker2 = 4;
     conf->worker3 = 5;

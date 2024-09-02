@@ -13,4 +13,7 @@ struct tcp_ofo_segment* tcp_malloc_ofo_seg();
 
 void tcp_free_ofo_seg(struct tcp_ofo_segment* seg);
 
+bool tcp_ofo_is_empty(struct tcp_ofo_segment* head);
+
+void tcp_ofo_print(struct tcp_ofo_segment* head);
 #endif //FNP_TCP_OFO_H
