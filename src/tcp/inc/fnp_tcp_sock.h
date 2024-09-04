@@ -10,33 +10,8 @@
 #include "fnp_tcp_ofo.h"
 #include <rte_tcp.h>
 
-typedef struct tcp_option {
-    u8 wnd_scale;
-    u8 permit_sack;
-    u16 mss;
-    struct {
-        u32 ts_val;
-        u32 ts_ecr;
-    } ts;
-} tcp_option_t;
-
-typedef struct tcp_segment
-{
-    u32 lip;
-    u32 rip;
-    u16 lport;
-    u16 rport;
-    u32 seq;
-    u32 ack;
-    u32 rx_win;
-    u16 data_len;
-    u16 iface_id;
-    u8 hdr_len;
-    u8 flags;
-    tcp_option_t opt;
-    u8* data;
-} tcp_seg_t;
-
+#define TCP_USER_CONNECT   0x01
+#define TCP_USER_CLOSE   0x02
 
 typedef struct tcp_sock_key {
     u32 lip;
@@ -58,7 +33,6 @@ typedef struct tcp_sock {
         };
     };
 
-    sem_t   sem;            //used to sync
     i32 state;
 
     u32 iss;                // initial sending sequence number
@@ -83,7 +57,8 @@ typedef struct tcp_sock {
 
     u16 mss;                    //max segment size
 
-    fnp_ring_t* accept;
+    fnp_ring_t* accept;         //tcp listen
+    u32 user_req;               //tcp connect
     fnp_ring_t* txbuf;
     fnp_ring_t* rxbuf;
     struct tcp_ofo_segment* ofo_head;
@@ -114,7 +89,7 @@ static inline bool tcp_can_send(tcp_sock_t *sk) {
            return false;
        return true;
    }
-    return false;
+   return false;
 }
 
 static inline bool tcp_can_recv(tcp_sock_t* sk) {
@@ -137,22 +112,5 @@ static inline bool tcp_can_recv(tcp_sock_t* sk) {
 void* fnp_tcp_sock(u32 lip, u16 lport, u32 rip, u16 rport);
 
 void tcp_free_sock(void* sock);
-
-void tcp_connect(tcp_sock_t* sk);
-
-i32 tcp_send(tcp_sock_t* sk, u8* buf, i32 len);
-
-
-
-/* only be used when socket can't find */
-void tcp_send_rst(tcp_seg_t* cb);
-
-void tcp_output(tcp_sock_t* sk);
-
-
-void tcp_send_ack(tcp_sock_t* sk, bool delay);
-
-void tcp_recv_mbuf(rte_mbuf* m);
-
 
 #endif //FNP_FNP_TCP_SOCK_H

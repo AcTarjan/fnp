@@ -158,8 +158,6 @@ i32 fnp_process_worker();
 
 i32 fnp_rx_tx_worker();
 
-i32 fnp_timer_worker();
-
 i32 fnp_init(char* path)
 {
     fnp_conf_init(&conf);
@@ -192,12 +190,6 @@ i32 fnp_init(char* path)
     if(unlikely(rte_eal_remote_launch(fnp_process_worker, NULL, conf.worker2) != 0))
     {
         printf( "launch %d error!\n", conf.worker2);
-        return -1;
-    }
-
-    if(unlikely(rte_eal_remote_launch(fnp_timer_worker, NULL, conf.worker3) != 0))
-    {
-        printf( "launch %d error!\n", conf.worker3);
         return -1;
     }
 

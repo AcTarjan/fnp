@@ -21,6 +21,7 @@ void* fnp_tcp_sock(u32 lip, u16 lport, u32 rip, u16 rport)
     sk->rip = rip;
     sk->rport = rport;
     sk->iface = &conf.ifaces[0];
+    sk->user_req = 0;
     if(unlikely(fnp_lookup_hash(conf.tcpSockTbl, &sk->key, NULL)))
     {
         printf("socket exits\n");
@@ -43,7 +44,7 @@ void* fnp_tcp_sock(u32 lip, u16 lport, u32 rip, u16 rport)
         return NULL;
     }
 
-    sem_init(&sk->sem, 1, 0);
+//    sem_init(&sk->sem, 1, 0);
     sk->ofo_head = tcp_malloc_ofo_seg();
     if(sk->ofo_head == NULL) {
         fnp_free_ring(sk->txbuf);
@@ -119,8 +120,6 @@ i32 fnp_tcp_connect(void* sock)
     if(state != TCP_CLOSED)
         return 1;
 
-    tcp_set_state(sk, TCP_SYN_SENT);
-
     /* wait to establish completely */
     while (1) {
         state = tcp_state(sk);
@@ -165,11 +164,8 @@ void fnp_tcp_close(void* sock)
         return;
     }
 
-    while (fnp_ring_len(sk->txbuf) != 0) ;      //wait for sending all data
-    if(state == TCP_CLOSE_WAIT)
-        tcp_set_state(sk, TCP_LAST_ACK);
-    else
-        tcp_set_state(sk, TCP_FIN_WAIT_1);
+    sk->user_req |= TCP_USER_CLOSE;
+
 
     while (tcp_state(sk) != TCP_CLOSED) ;   //wait for closing completely
     tcp_free_sock(sk);

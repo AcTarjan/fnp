@@ -7,7 +7,7 @@ void* process(void* conn) {
     pthread_t pid = pthread_self();
     // 打开文件（如果不存在则创建）
     char filename[100];
-    sprintf(filename, "%lu.dat", pid);
+    sprintf(filename, "dpdk-%lu.dat", pid);
     if ((file = fopen(filename, "wb")) == NULL) {
         printf("%lu fail to open file.\n", pid);
         return NULL;

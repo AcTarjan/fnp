@@ -1,5 +1,5 @@
-#include "fnp_tcp_ofo.h"
-#include "fnp_tcp_comm.h"
+#include "inc/fnp_tcp_ofo.h"
+#include "inc/fnp_tcp_comm.h"
 
 typedef struct tcp_ofo_segment {
     struct tcp_ofo_segment* next;

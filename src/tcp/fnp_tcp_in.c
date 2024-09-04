@@ -1,9 +1,10 @@
 #include "fnp_init.h"
-#include "fnp_tcp_comm.h"
-#include "fnp_tcp_sock.h"
-#include "fnp_tcp_ofo.h"
-#include "fnp_tcp_timer.h"
-#include <rte_tcp.h>
+#include "inc/fnp_tcp_comm.h"
+#include "inc/fnp_tcp_sock.h"
+#include "inc/fnp_tcp_ofo.h"
+#include "inc/fnp_tcp_in.h"
+#include "inc/fnp_tcp_out.h"
+#include "inc/fnp_tcp_timer.h"
 #include <rte_ip.h>
 #include <unistd.h>
 
@@ -135,7 +136,6 @@ void tcp_syn_sent_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
         if(seg_set_ack(seg)) {  // ack is acceptable here
             //TODO: signal to the user "error:connection reset"
             tcp_set_state(sk, TCP_CLOSED);
-            tcp_free_sock(sk);
         }
         return;
     }
@@ -285,7 +285,6 @@ void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
     if (seg_set_rst(seg)) {                  //check RST
         if (sk->rcv_nxt == seg->seq) {
             tcp_set_state(sk, TCP_CLOSED);
-            tcp_free_sock(sk);
         } else {    //rcv_nxt <  seq <= rcv_nxt + rcv_wnd
             tcp_send_ack(sk, false);
         }
@@ -314,7 +313,6 @@ void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
             }
         } else {    //recv a new syn again
             tcp_set_state(sk, TCP_CLOSED);
-            tcp_free_sock(sk);
         }
         return;
     }
@@ -349,7 +347,6 @@ void tcp_default_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
     if(seg_set_rst(seg)) {                  //check RST
         if(sk->rcv_nxt == seg->seq) {
             tcp_set_state(sk, TCP_CLOSED);
-            tcp_free_sock(sk);
         } else {    //rcv_nxt <  seq <= rcv_nxt + rcv_wnd
             tcp_send_ack(sk, false);
         }
@@ -408,6 +405,7 @@ void tcp_default_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
     }
 }
 
+// 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
 void tcp_recv_mbuf(rte_mbuf* m)
 {
     tcp_sock_t* sk = NULL;

@@ -67,7 +67,7 @@ int main() {
     }
 
     // 打开文件
-    FILE *file = fopen("client-input.dat", "rb");
+    FILE *file = fopen("input.dat", "rb");
     if (file == NULL) {
         printf("Error opening file.\n");
         return -1;
@@ -91,7 +91,7 @@ int main() {
             return -1;
         }
         total_sent_bytes += sent_bytes;
-//        printf("total send bytes: %ld %ld %d %d\n", totalReadBytes, total_sent_bytes, readBytes, sent_bytes);
+        printf("total send bytes: %ld %ld %d %d\n", totalReadBytes, total_sent_bytes, readBytes, sent_bytes);
     }
     // 关闭文件
     printf("read %ld bytes\n", totalReadBytes);

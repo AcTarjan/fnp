@@ -6,9 +6,10 @@ set(CMAKE_C_STANDARD 11)
 # import dpdk
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mssse3")
 include_directories(/opt/dpdk/include)
-link_directories(/opt/dpdk/lib/x86_64-linux-gnu)
+link_directories(/opt/dpdk/lib64)
 
 include_directories(src/inc)
+include_directories(src/tcp/inc)
 include_directories(src/common)
 
 add_library(fnp SHARED

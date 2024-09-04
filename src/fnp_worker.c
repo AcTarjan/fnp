@@ -1,24 +1,19 @@
 #include "fnp_ring.h"
 #include "fnp_ether.h"
 #include "fnp_init.h"
-#include "tcp/fnp_tcp_sock.h"
-#include "tcp/fnp_tcp_timer.h"
 #include "fnp_arp.h"
+#include "fnp_tcp_sock.h"
+#include "fnp_tcp_out.h"
 
 #include <rte_ethdev.h>
 #include <unistd.h>
 
 #define MBUF_BURST_SIZE     64
-#define PORT_ID         0
+#define PORT_ID             0
 #define RX_QUEUE_ID         0
 #define TX_QUEUE_ID         0
 
 #define PREFETCH_OFFSET 3
-
-
-void tim_callback(__attribute__((unused)) struct rte_timer *tim, void *arg) {
-    printf("tim_callback\n");
-}
 
 i32 fnp_process_worker()
 {
@@ -28,7 +23,6 @@ i32 fnp_process_worker()
     struct rte_mbuf* mbufs[MBUF_BURST_SIZE];
     u64 arp_prev_tsc = 0, prev_tsc = 0, cur_tsc;
     u64 hz = rte_get_timer_hz();  //10ms
-    i32 nb;
     fnp_iface_t* iface = fnp_get_iface(0);
 
     u64 count = 0;
@@ -38,19 +32,20 @@ i32 fnp_process_worker()
         cur_tsc = rte_rdtsc();
 
         /**** recv from recv_ring ****/
-        nb = fnp_ring_dequeue_bulk(iface->rx_queue, mbufs, MBUF_BURST_SIZE);
+        i32 nb = fnp_ring_dequeue_bulk(iface->rx_queue, mbufs, MBUF_BURST_SIZE);
         for (i32 i = 0; i < nb; ++i) {
             count++;
-            if(count % 10 == 7) {       //手动设置丢包
+            if(count % 10 > 6 ) {       //手动设置丢包
                 fnp_free_mbuf(mbufs[i]);
                 continue;
             }
             ether_recv_mbuf(mbufs[i], cur_tsc);
         }
 
+        /**** tcp send data ****/
         u8* key;  tcp_sock_t* sk; i32 next = 0;
         while (fnp_hash_iterate(conf.tcpSockTbl, &key, &sk, &next)) {
-            if(sk->state > TCP_LISTEN)
+            if(tcp_state(sk) > TCP_LISTEN)
                 tcp_output(sk);
         }
 
@@ -75,7 +70,7 @@ i32 fnp_rx_tx_worker()
 
     while (1)
     {
-        //poll recv mbuf from nic, non-block
+        /*** recv from nic ***/
         i32 nb = rte_eth_rx_burst(PORT_ID, RX_QUEUE_ID, mbufs, MBUF_BURST_SIZE);
         if (nb > 0) {
 //            printf("rx from nic: %d\n", nb);
@@ -88,6 +83,7 @@ i32 fnp_rx_tx_worker()
         }
 
 
+        /*** send to nic ***/
         nb = fnp_ring_dequeue_bulk(iface->tx_queue, &mbufs, MBUF_BURST_SIZE);
         if(nb > 0)
         {
@@ -101,7 +97,4 @@ i32 fnp_rx_tx_worker()
 
         }
     }
-}
-
-i32 fnp_timer_worker() {
 }
