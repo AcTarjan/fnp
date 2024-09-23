@@ -4,6 +4,9 @@ set -e
 cd /opt/dpdk/bin/
 modprobe uio_pci_generic
 
+ethtool -K ens160 gso off
+ethtool -K ens160 lro off
+
 ip link set ens224 down
 ./dpdk-devbind.py -b=uio_pci_generic ens224
 

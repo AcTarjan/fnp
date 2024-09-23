@@ -2,7 +2,8 @@
 #include "fnp_tcp_sock.h"
 #include "fnp_tcp_out.h"
 
-
+//当发送数据时，如果重传定时器没有启动，则启动重传定时器
+//当接收到ack时, 停止重传定时器。如果还有未确认的数据，则重启重传定时器
 void retransmission_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
     tcp_sock_t* sk = arg;
@@ -17,11 +18,11 @@ void retransmission_callback(__attribute__((unused)) struct rte_timer *tim, void
     sk->cwnd = 1;           //减小发送窗口
 }
 
+
 void delay_ack_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
     tcp_sock_t* sk = arg;
-    printf("delay_ack_callback: %d\n", sk->state);
-    tcp_send_ack(sk, RTE_TCP_ACK_FLAG);
+    tcp_send_ack(sk, false);
 }
 
 void timeout_2msl_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
@@ -44,7 +45,7 @@ void tcp_timer_start(tcp_sock_t* sk, i32 index) {
             break;
         }
         case TCPT_DELAY_ACK: {
-            if(unlikely(rte_timer_reset(&sk->timers[TCPT_DELAY_ACK], hz / 2, SINGLE, lcore_id,
+            if(unlikely(rte_timer_reset(&sk->timers[TCPT_DELAY_ACK], hz / 200, SINGLE, lcore_id,
                                         delay_ack_callback, sk) != 0)) {
                 printf("fail to reset timer of delay ack\n");
             }

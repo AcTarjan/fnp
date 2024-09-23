@@ -1,18 +1,22 @@
 #include "fnp_init.h"
-#include "inc/fnp_tcp_comm.h"
-#include "inc/fnp_tcp_sock.h"
-#include "inc/fnp_tcp_ofo.h"
-#include "inc/fnp_tcp_in.h"
-#include "inc/fnp_tcp_out.h"
-#include "inc/fnp_tcp_timer.h"
+#include "fnp_tcp_comm.h"
+#include "fnp_tcp_sock.h"
+#include "fnp_tcp_ofo.h"
+#include "fnp_tcp_in.h"
+#include "fnp_tcp_out.h"
+#include "fnp_tcp_timer.h"
 #include <rte_ip.h>
 #include <unistd.h>
 
 
-void tcp_parse_options(tcp_option_t* opt, u8* bytes, u8 len) {
+void tcp_decode_option(tcp_option_t* opt, u8* bytes, u8 len) {
+    opt->mss = 0;
+    opt->wnd_scale = 255;   //  不能为0, 用来区分没有窗口扩展和窗口扩展为0
+    opt->permit_sack = 0;
+    opt->ts.ts_val = 0;
+    opt->ts.ts_ecr = 0;
+
     u8 index = 0;
-    opt->mss = TCP_MAX_SEG_SIZE;
-    opt->wnd_scale = 0;
     while (index < len) {
         switch (bytes[index]) {
             case 0:         // EOL
@@ -25,6 +29,11 @@ void tcp_parse_options(tcp_option_t* opt, u8* bytes, u8 len) {
                 u16* mss = bytes + index + 2;
                 opt->mss = fnp_swap_16(*mss);
                 index += 4;
+                break;
+            }
+            case 3: {  // Window Scale
+                opt->wnd_scale = bytes[index + 2];
+                index += 3;
                 break;
             }
             case 4: {
@@ -64,20 +73,39 @@ void tcp_seg_init(rte_mbuf* m, tcp_seg_t* seg)
     seg->rx_win = fnp_swap_16(tcpHdr->rx_win);
     seg->data_len = fnp_swap_16(ipv4Hdr->total_length) - ipv4_hdr_len - seg->hdr_len;
 
-//    u8* opt_bytes = rte_pktmbuf_mtod_offset(m, u8*, TCP_HDR_MIN_LEN);
-//    tcp_parse_options(&seg->opt, opt_bytes, seg->hdr_len - TCP_HDR_MIN_LEN);
+    if (seg_has_opt(seg)) {
+        u8 *opt_bytes = rte_pktmbuf_mtod_offset(m, u8*, TCP_HDR_MIN_LEN);
+        tcp_decode_option(&seg->opt, opt_bytes, seg->hdr_len - TCP_HDR_MIN_LEN);
+    }
 
     seg->data = rte_pktmbuf_adj(m, seg->hdr_len);
 }
 
+void tcp_handle_option(tcp_sock_t* sk, tcp_seg_t* seg) {
+    if (seg_has_opt(seg)) {
+        if (unlikely(seg_set_syn(seg))) {
+            if (seg->opt.mss != 0) {    //支持MSS选项
+                sk->mss = FNP_MIN(sk->mss, seg->opt.mss);
+            }
+
+            if (seg->opt.wnd_scale != 255) {    //支持窗口扩展
+                sk->snd_wnd_scale = seg->opt.wnd_scale;
+            } else {
+                sk->snd_wnd_scale = 0;
+                sk->rcv_wnd_scale = 0;
+            }
+        }
+    }
+}
+
 static i32 tcp_lookup_sock(tcp_seg_t* cb, tcp_sock_t** sk)
 {
-    tcp_sock_key_t key = {cb->lip, cb->rip, cb->lport, cb->rport};
-    if(unlikely(fnp_lookup_hash(conf.tcpSockTbl, &key, sk) == 0))
+    tcp_sock_key_t key = {cb->iface_id,  cb->rip, cb->lport,cb->rport};
+    if(unlikely(fnp_lookup_sock(&key, sk) == 0))
     {
         key.rip = 0;
         key.rport = 0;
-        return fnp_lookup_hash(conf.tcpSockTbl, &key, sk);
+        return fnp_lookup_sock(&key, sk);
     }
 
     return 1;
@@ -94,7 +122,7 @@ u8 acceptable_seq(tcp_sock_t* sk, tcp_seg_t* cb)
            (SEQ_LE(sk->rcv_nxt, end_seq) && SEQ_LT(end_seq, sk->rcv_nxt + sk->rcv_wnd));
 }
 
-void tcp_listen_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
+void tcp_listen_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
     //check for an RST
     if(seg_set_rst(seg)) {
         return;
@@ -108,19 +136,26 @@ void tcp_listen_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
 
     //check for a SYN
     if(seg_set_syn(seg)) {
-        tcp_sock_t *newsk = fnp_tcp_sock(seg->lip, seg->lport, seg->rip, seg->rport);
+        tcp_sock_t *newsk = fnp_tcp_sock(seg->iface_id, seg->lport, seg->rip, seg->rport);
+        if (newsk == NULL) {
+            tcp_send_rst(seg);
+            printf("fail to new a tcp_sock\n");
+            return;
+        }
         newsk->parent = sk;
 
         newsk->irs = seg->seq;
         newsk->adv_wnd = seg->rx_win;
         newsk->rcv_nxt = seg->seq + 1;
 
+        tcp_handle_option(sk, seg);
+
         tcp_set_state(newsk, TCP_SYN_RECV);
     }
 
 }
 
-void tcp_syn_sent_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
+void tcp_syn_sent_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
     if(seg_set_ack(seg)) {
         // ack is bad: ack =< iss or ack > snd.max
         if(SEQ_LE(seg->ack, sk->iss) || SEQ_GT(seg->ack, sk->snd_max)) {
@@ -145,34 +180,35 @@ void tcp_syn_sent_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
     //reach here only if the ACK is ok, or there is no ACK, and the segment did not contain an RST.
     if(seg_set_syn(seg)) {
         sk->irs = seg->seq;
-
         sk->rcv_nxt = seg->seq + 1;
-        if(seg_set_ack(seg)) {  //recv SYN|ACK
+
+        if(seg_set_ack(seg)) {  //recv SYN|ACK, 正常流程
             sk->snd_una = seg->ack;
-            if(tcp_timer_is_running(sk, TCPT_REXMT)) {
-                tcp_timer_stop(sk, TCPT_REXMT);
-            }
-            sk->snd_wnd = seg->rx_win;  //更新发送窗口
+            sk->adv_wnd = seg->rx_win;  //更新发送窗口
             sk->snd_wl1 = seg->seq;
             sk->snd_wl2 = seg->ack;
+            tcp_handle_option(sk,seg);
+            tcp_timer_stop(sk, TCPT_REXMT);     //收到了对自己SYN的ack，停止重传计时器
             tcp_set_state(sk, TCP_ESTABLISHED);
+            tcp_send_ack(sk, false);            //立即发送对对方SYN的ack
             if(sk->parent != NULL)
-                fnp_ring_enqueue(sk->parent->accept, sk);
-            tcp_send_ack(sk, false);
+                fnp_pring_enqueue(sk->parent->accept, sk);
             return;
         }
+
+        // 只收到SYN, 适合同时发送SYN的情况
+        tcp_handle_option(sk,seg);
         tcp_set_state(sk, TCP_SYN_RECV);
-        if(tcp_timer_is_running(sk, TCPT_REXMT)) {
-            tcp_timer_stop(sk, TCPT_REXMT);
-            sk->snd_nxt = sk->snd_una;      //已经发送过SYN了，后面需要发送SYN|ACK
-        }
+        tcp_timer_stop(sk, TCPT_REXMT);
+        sk->snd_nxt = sk->snd_una;      //已经发送过SYN了，后面需要发送SYN|ACK
     }
 }
+
 
 void tcp_handle_data(tcp_sock_t* sk, tcp_seg_t* seg) {
     i32 state = tcp_state(sk);
     if(likely(seg->data_len > 0 && (state == TCP_ESTABLISHED ||
-        state == TCP_FIN_WAIT_1 || state == TCP_FIN_WAIT_2))) {
+        state == TCP_FIN_WAIT_1))) {
         if(seg->seq == sk->rcv_nxt) {
             i32 rx_len = fnp_ring_push(sk->rxbuf, seg->data, seg->data_len);
             sk->rcv_nxt += rx_len;
@@ -182,14 +218,16 @@ void tcp_handle_data(tcp_sock_t* sk, tcp_seg_t* seg) {
                 while (tcp_ofo_top(sk->ofo_head, &rcv_nxt));
                 fnp_ring_push(sk->rxbuf, NULL, (i32)(rcv_nxt - sk->rcv_nxt));
                 sk->rcv_nxt = rcv_nxt;
+
             }
+            tcp_send_ack(sk, true);
         } else {    // out of order
             i32 offset = (i32)(seg->seq - sk->rcv_nxt);
             i32 len = FNP_MIN(fnp_ring_avail(sk->rxbuf) - offset, seg->data_len);
             u32 seq = seg->seq;
             tcp_ofo_insert(sk->ofo_head, &seq, &len);
             if(len > 0) {
-                fnp_ring_pre_push(sk->rxbuf, (i32)(seq - sk->rcv_nxt), seg->data + (seq - seg->seq), len);
+                fnp_ring_prepush(sk->rxbuf, offset, seg->data + (seq - seg->seq), len);
             }
             tcp_send_ack(sk, false);         //收到乱序的数据，立即回ACK
         }
@@ -275,7 +313,7 @@ void tcp_handle_ack(tcp_sock_t* sk, tcp_seg_t* seg) {
     }
 }
 
-void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
+void tcp_syn_recv_recv(tcp_sock_t* sk, tcp_seg_t* seg) {
     if ((!acceptable_seq(sk, seg)) && seg->seq != sk->irs) {   //check whether seq is valid
         if (!seg_set_rst(seg))
             tcp_send_ack(sk, false);
@@ -300,14 +338,16 @@ void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
                     sk->adv_wnd = seg->rx_win;
                     sk->snd_wl1 = seg->seq;
                     sk->snd_wl2 = seg->ack;
+                    tcp_handle_option(sk,seg);
                     tcp_set_state(sk, TCP_ESTABLISHED);
                     if (sk->parent != NULL)
-                        fnp_ring_enqueue(sk->parent->accept, sk);
+                        fnp_pring_enqueue(sk->parent->accept, sk);
                 } else {
                     tcp_send_rst(seg);
                     return;  //不确定是否drop
                 }
             } else {    //recv retransmission syn
+                tcp_handle_option(sk,seg);
                 tcp_timer_stop(sk, TCPT_REXMT);
                 sk->snd_nxt = sk->snd_una;      //立即重传
             }
@@ -320,15 +360,13 @@ void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
     if (seg_set_ack(seg)) {      //check ACK
         if (sk->snd_nxt == seg->ack) {      //reach here only set ACK
             sk->snd_una = seg->ack;
-            if(sk->snd_una == sk->snd_max) {
-                tcp_timer_stop(sk, TCPT_REXMT);
-            }
             sk->adv_wnd = seg->rx_win;
             sk->snd_wl1 = seg->seq;
             sk->snd_wl2 = seg->ack;
+            tcp_timer_stop(sk, TCPT_REXMT);
             tcp_set_state(sk, TCP_ESTABLISHED);
             if (sk->parent != NULL)
-                fnp_ring_enqueue(sk->parent->accept, sk);
+                fnp_pring_enqueue(sk->parent->accept, sk);
             tcp_handle_data(sk, seg);
         } else {
             tcp_send_rst(seg);
@@ -336,7 +374,7 @@ void tcp_syn_recv_handle(tcp_sock_t* sk, tcp_seg_t* seg) {
     }
 }
 
-void tcp_default_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
+void tcp_data_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
     if(!acceptable_seq(sk, seg)) {   //check whether seq is valid
         if(!seg_set_rst(seg))
             tcp_send_ack(sk, false);
@@ -377,9 +415,7 @@ void tcp_default_handle(tcp_sock_t* sk, tcp_seg_t* seg)  {
 
     //check the FIN
     if(seg_set_fin(seg)) {
-        printf("recv FIN, seq is %u, len is %u, rcv_nxt is %u\n", seg->seq,seg->data_len, sk->rcv_nxt);
-        printf("len of rxbuf is %d\n", fnp_ring_len(sk->rxbuf));
-        tcp_ofo_print(sk->ofo_head);
+        //可能出现收到了FIN，但是前面有数据没有接收到（乱序接收到FIN）
         if (sk->rcv_nxt != (seg->seq + seg->data_len)) {     //不是最后一个字节
             printf("rcv_nxt(%u) is not equal to seq + data_len(%u)\n", sk->rcv_nxt, seg->seq + seg->data_len);
             return;
@@ -420,24 +456,7 @@ void tcp_recv_mbuf(rte_mbuf* m)
         return ;
     }
 
-    i32 state = tcp_state(sk);
-    switch (state) {
-        case TCP_LISTEN: {
-            tcp_listen_handle(sk, &seg);
-            break;
-        }
-        case TCP_SYN_SENT: {
-            tcp_syn_sent_handle(sk, &seg);
-            break;
-        }
-        case TCP_SYN_RECV: {
-            tcp_syn_recv_handle(sk, &seg);
-            break;
-        }
-        default: {
-            tcp_default_handle(sk, &seg);
-        }
-    }
-
+    //不同的状态具有不同的处理函数, 避免使用switch-case
+    sk->tcp_recv(sk, &seg);
     fnp_free_mbuf(m);
 }

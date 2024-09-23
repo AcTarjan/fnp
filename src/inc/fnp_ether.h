@@ -1,6 +1,6 @@
 #ifndef FNP_ETHER_H
 #define FNP_ETHER_H
-
+#include "fnp_common.h"
 #include <rte_ether.h>
 
 void ether_recv_mbuf(struct rte_mbuf *m, u64 tsc);

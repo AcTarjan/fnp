@@ -8,6 +8,7 @@
 #include "fnp_common.h"
 #include "fnp_ring.h"
 #include "fnp_hash.h"
+#include "fnp_pring.h"
 
 #define MAX_IFACES      8
 
@@ -19,8 +20,8 @@ typedef struct fnp_iface {
     u32 ip;
     u32 mask;
     u32 gateway;
-    fnp_ring_t* tx_queue;
-    fnp_ring_t* rx_queue;
+    fnp_pring* tx_queue;
+    fnp_pring* rx_queue;
 } fnp_iface_t;
 
 typedef struct dpdk_conf {
@@ -40,7 +41,6 @@ typedef struct fnp_conf {
     u16 worker2;
     u16 worker3;
     struct rte_mempool* directPool;
-    fnp_hash_t* tcpSockTbl;
     fnp_hash_t* arpTbl;
 } fnp_conf_t ;
 
@@ -54,7 +54,7 @@ static inline rte_mbuf *fnp_alloc_mbuf()
     rte_mbuf* m = rte_pktmbuf_alloc(conf.directPool);
 
     if(m == NULL) {
-        printf("count: %u\n",count);
+        printf("avail count: %u\n",count);
         printf("error: rte_pktmbuf_alloc failed\n");
     }
 

@@ -26,11 +26,12 @@ add_library(fnp SHARED
         src/fnp_arp.c
         src/fnp_ether.c
         src/fnp_worker.c
+        src/common/fnp_pring.c
 )
 
 target_compile_definitions(fnp PRIVATE USE_DPDK)
 
-add_executable(tcp_server examples/tcp_server.c)
+add_executable(tcp_server examples/fnp_tcp_server.c)
 add_executable(send_tcp examples/send_tcp.c)
 
 add_executable(test_hash examples/test_hash.c src/common/fnp_hash.c)
@@ -44,3 +45,4 @@ target_link_libraries(tcp_server fnp
         rte_kvargs rte_telemetry rte_net rte_meter
         pthread
 )
+add_executable(linux_tcp_server examples/linux_tcp_server.c)

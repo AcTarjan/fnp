@@ -8,6 +8,8 @@ void tcp_send_ack(tcp_sock_t* sk, bool delay);
 
 void tcp_send_rst(tcp_seg_t* seg);
 
-void tcp_output(tcp_sock_t* sk);
+void tcp_data_send(tcp_sock_t* sk);
+
+void tcp_syn_send(tcp_sock_t* sk);
 
 #endif //FNP_FNP_TCP_OUT_H

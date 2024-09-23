@@ -2,20 +2,19 @@
 #define FNP_FNP_TCP_COMM_H
 
 #define TCP_HDR_MIN_LEN             20
-#define TCP_MAX_SEG_SIZE             1460
-
+#define TCP_MAX_SEG_SIZE            1460
+#define TCP_MAX_SEND_BURST          128
 
 #define	TCPT_NTIMERS	5
-#define	TCPT_REXMT	0		    /* retransmit */
+#define	TCPT_REXMT	    0		    /* retransmit */
 #define	TCPT_PERSIST	1		/* retransmit persistance */
 #define	TCPT_DELAY_ACK	2		/* delay ack */
-#define	TCPT_KEEP	3	        /* keep alive */
-#define	TCPT_2MSL	4		    /* 2*msl quiet time timer */
+#define	TCPT_KEEP	    3	        /* keep alive */
+#define	TCPT_2MSL	    4		    /* 2*msl quiet time timer */
 
 #define TCP_MIN_CWND            2
 #define TCP_MAX_CWND            1024
 #define TCP_THRESHOLD           32
-
 
 #define seg_set_rst(seg)   ((seg)->flags & RTE_TCP_RST_FLAG)
 #define seg_set_ack(seg)   ((seg)->flags & RTE_TCP_ACK_FLAG)
@@ -25,6 +24,8 @@
 #define seg_set_psh(seg)   ((seg)->flags & RTE_TCP_PSH_FLAG)
 #define seg_set_ece(seg)   ((seg)->flags & RTE_TCP_ECE_FLAG)
 #define seg_set_cwr(seg)   ((seg)->flags & RTE_TCP_CWR_FLAG)
+#define seg_has_opt(seg)  ((seg)->hdr_len > TCP_HDR_MIN_LEN)
+
 
 #define SEQ_LT(seq0, seq1)    ((int)((seq0) - (seq1)) < 0)
 #define SEQ_LE(seq0, seq1)    ((int)((seq0) - (seq1)) <= 0)
@@ -40,5 +41,9 @@ enum tcp_state {
 };
 extern char* tcp_state_str[11];
 
+#define TCP_RXBUF_SIZE  1024*1024-1
+#define TCP_TXBUF_SIZE  1024*1024-1
+#define TCP_MSS         1460
+#define TCP_WS_SHIFT    7
 
 #endif //FNP_FNP_TCP_COMM_H

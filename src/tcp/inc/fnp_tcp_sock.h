@@ -8,27 +8,60 @@
 #include "fnp_init.h"
 #include "fnp_tcp_comm.h"
 #include "fnp_tcp_ofo.h"
+
 #include <rte_tcp.h>
 
 #define TCP_USER_CONNECT   0x01
 #define TCP_USER_CLOSE   0x02
 
-typedef struct tcp_sock_key {
+#define TCP_LISTEN_BACKLOG 128
+
+
+
+typedef struct tcp_option {
+    u8 wnd_scale;
+    u8 permit_sack;
+    u16 mss;
+    struct {
+        u32 ts_val;
+        u32 ts_ecr;
+    } ts;
+} tcp_option_t;
+
+
+typedef struct tcp_segment
+{
     u32 lip;
     u32 rip;
     u16 lport;
+    u16 rport;
+    u32 seq;
+    u32 ack;
+    u32 rx_win;
+    u16 data_len;
+    u16 iface_id;
+    u8 hdr_len;
+    u8 flags;
+    tcp_option_t opt;
+    u8* data;
+} tcp_seg_t;
+
+
+typedef struct tcp_sock_key {
+    u32 id;
+    u32 rip;
+    u16 port;
     u16 rport;
 } tcp_sock_key_t;
 
 typedef struct tcp_sock {
     struct tcp_sock* parent;
-    fnp_iface_t* iface;
     union {
         tcp_sock_key_t key;
         struct {
-            u32 lip;
+            u32 id;
             u32 rip;
-            u16 lport;
+            u16 port;
             u16 rport;
         };
     };
@@ -46,6 +79,9 @@ typedef struct tcp_sock {
     u32 snd_wl1;                // SND.WL1 records the sequence number of the last segment used to update SND.WND
     u32 snd_wl2;                // SND.WL2 records the acknowledgment number of the last segment used to update SND.WND
     u16 snd_up;                 // urgent pointer
+    u8 snd_wnd_scale;           // 发送窗口的缩放因子, 即对方的接收窗口的缩放因子
+    u8  rcv_wnd_scale;          // 接收窗口的缩放因子, 即自己的接收窗口的缩放因子
+
 
     u32 irs;                    // initial recving sequence number
     u32 rcv_nxt;                // receive next
@@ -55,16 +91,26 @@ typedef struct tcp_sock {
     i16 dup_ack;                //收到重复的ack数目
     i16 retransmission_num;     //重传次数
 
-    u16 mss;                    //max segment size
+    u16 mss;                        //maximum segment size, 对方的mss和自己的mss取最小值
 
-    fnp_ring_t* accept;         //tcp listen
     u32 user_req;               //tcp connect
-    fnp_ring_t* txbuf;
-    fnp_ring_t* rxbuf;
+    union {
+        fnp_pring* accept;
+        struct {
+            fnp_ring* txbuf;
+            fnp_ring* rxbuf;
+        };
+    };
+
+    void (*tcp_send)(struct tcp_sock* sk);
+    void (*tcp_recv)(struct tcp_sock* sk, tcp_seg_t* seg);
+
+
     struct tcp_ofo_segment* ofo_head;
 
     struct rte_timer timers[TCPT_NTIMERS];
 } tcp_sock_t;
+
 
 inline static i32 tcp_state(tcp_sock_t* sk)
 {
@@ -72,14 +118,7 @@ inline static i32 tcp_state(tcp_sock_t* sk)
 }
 
 
-inline static void tcp_set_state(tcp_sock_t* sk, i32 state)
-{
-    i32 old_state = tcp_state(sk);
-    sk->state = state;
-//    rte_atomic32_set(&sk->state, state);
-    printf("state from %s to %s\n",
-           tcp_state_str[old_state], tcp_state_str[state]);
-}
+void tcp_set_state(tcp_sock_t* sk, i32 state);
 
 
 static inline bool tcp_can_send(tcp_sock_t *sk) {
@@ -109,8 +148,8 @@ static inline bool tcp_can_recv(tcp_sock_t* sk) {
     return false;
 }
 
-void* fnp_tcp_sock(u32 lip, u16 lport, u32 rip, u16 rport);
+void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport);
 
-void tcp_free_sock(void* sock);
+i32 fnp_lookup_sock(tcp_sock_key_t* key, tcp_sock_t** sk);
 
 #endif //FNP_FNP_TCP_SOCK_H

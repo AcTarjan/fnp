@@ -12,7 +12,7 @@ struct rte_ether_addr broadcast = {0xFF,0xFF,0xFF,
 
 typedef struct arp_entry_t
 {
-    fnp_ring_t* pending;
+    fnp_pring* pending;
     u64 tsc;
     u32 ip;            //网络序，大端
     struct rte_ether_addr mac;
@@ -35,7 +35,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
             return NULL;
         }
 
-        e->pending = fnp_alloc_ring(8 * 128);
+        e->pending = fnp_alloc_pring(8 * 128);
         if (unlikely(e == NULL))
         {
             printf("malloc arp pending failed!\n");
@@ -55,7 +55,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
     if (likely(fnp_add_hash(conf.arpTbl, &ip, e) != 0))
     {
         printf("fail to add %u in gArpTable\n", ip);
-        fnp_free_ring(e->pending);
+        fnp_free_pring(e->pending);
         fnp_free(e);
         return NULL;
     }
@@ -65,7 +65,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
 
 static void arp_del_entry(arp_entry_t* e) {
     fnp_del_hash(conf.arpTbl, &e->ip);
-    fnp_free_ring(e->pending);
+    fnp_free_pring(e->pending);
     fnp_free(e);
 }
 
@@ -176,7 +176,7 @@ void arp_send_mbuf(rte_mbuf *m, u32 next_ip)
         ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
     } else {
         e = arp_insert_entry(next_ip, NULL);     //此时是无效的
-        fnp_ring_enqueue(e->pending, m);
+        fnp_pring_enqueue(e->pending, m);
         arp_send_request(m->port, next_ip);
     }
 
@@ -193,8 +193,8 @@ void arp_update_entry()
     rte_mbuf* m = NULL;
     while (fnp_hash_iterate(conf.arpTbl, &key, &e, &next)) {
         if(e->valid) {
-            while (fnp_ring_len(e->pending) != 0) {
-                fnp_ring_dequeue(e->pending, &m);
+            while (!fnp_pring_is_empty(e->pending)) {
+                fnp_pring_dequeue(e->pending, &m);
                 ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
             }
 

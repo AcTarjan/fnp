@@ -1,23 +1,15 @@
 #include "fnp_ring.h"
 #include <rte_atomic.h>
 
-typedef struct fnp_ring
-{
-    i32 size;           /* size of buf */
-    volatile i32 head;
-    volatile i32 tail;
-    rte_atomic32_t len;
-    u8* buf;
-} fnp_ring_t;
 
-fnp_ring_t* fnp_alloc_ring(i32 size)
+
+fnp_ring* fnp_alloc_ring(i32 size)
 {
-    fnp_ring_t* fr = fnp_malloc(sizeof(fnp_ring_t));
+    fnp_ring* fr = fnp_malloc(sizeof(fnp_ring));
     if(fr == NULL)
         return NULL;
 
-    rte_atomic32_init(&fr->len);
-    fr->size = (size + 7) / 8 * 8;
+    fr->size = size + 1;        //有一个空位不使用，用于判断队列是否满
     fr->head = fr->tail = 0;
     fr->buf = fnp_malloc(fr->size);
     if(fr->buf == NULL)
@@ -29,28 +21,30 @@ fnp_ring_t* fnp_alloc_ring(i32 size)
     return fr;
 }
 
-void fnp_free_ring(fnp_ring_t* fr)
+void fnp_free_ring(fnp_ring* fr)
 {
     fnp_free(fr->buf);
     fnp_free(fr);
 }
 
-i32 fnp_ring_avail(fnp_ring_t* fr)
+i32 fnp_ring_avail(fnp_ring* fr)
 {
-    i32 len = rte_atomic32_read(&fr->len);
-    return fr->size - len;
+    return fr->size - 1 - fnp_ring_len(fr);
 }
 
-i32 fnp_ring_len(fnp_ring_t* fr)
+i32 fnp_ring_len(fnp_ring* fr)
 {
-    i32 len = rte_atomic32_read(&fr->len);
-    return len;
+    if (fr->tail >= fr->head)
+        return fr->tail - fr->head;
+    return fr->size + fr->tail - fr->head;
 }
 
 //only write data, don't amend fr->tail
-i32 fnp_ring_pre_push(fnp_ring_t* fr, i32 offset, u8* buf, i32 len)
+i32 fnp_ring_prepush(fnp_ring* fr, i32 offset, u8* buf, i32 len)
 {
     i32 copy = FNP_MIN(len, fnp_ring_avail(fr) - offset);
+    if(copy <= 0)
+        return 0;
 
     //real tail after offset
     i32 tail = (fr->tail + offset) % fr->size;
@@ -66,7 +60,7 @@ i32 fnp_ring_pre_push(fnp_ring_t* fr, i32 offset, u8* buf, i32 len)
     return copy;
 }
 
-i32 fnp_ring_push(fnp_ring_t* fr, u8* buf, i32 len)
+i32 fnp_ring_push(fnp_ring* fr, u8* buf, i32 len)
 {
     i32 copy = FNP_MIN(len, fnp_ring_avail(fr));
 
@@ -81,15 +75,12 @@ i32 fnp_ring_push(fnp_ring_t* fr, u8* buf, i32 len)
     }
 
     fr->tail = (fr->tail + copy) % fr->size;
-    rte_atomic32_add(&fr->len, copy);
-
     return copy;
 }
 
-i32 fnp_ring_pop(fnp_ring_t* fr, u8* buf, u32 len)
+i32 fnp_ring_pop(fnp_ring* fr, u8* buf, u32 len)
 {
-    i32 fr_len = rte_atomic32_read(&fr->len);
-    i32 copy = FNP_MIN(len, fr_len);
+    i32 copy = FNP_MIN(len, fnp_ring_len(fr));
 
     if(buf != NULL) {
         if (likely(fr->head + copy <= fr->size))
@@ -102,15 +93,13 @@ i32 fnp_ring_pop(fnp_ring_t* fr, u8* buf, u32 len)
     }
 
     fr->head = (fr->head + copy) % fr->size;
-    rte_atomic32_sub(&fr->len, copy);
 
     return copy;
 }
 
-i32 fnp_ring_top(fnp_ring_t* fr, u8* buf, i32 offset, i32 len)
+i32 fnp_ring_top(fnp_ring* fr, u8* buf, i32 offset, i32 len)
 {
-    i32 fr_len = rte_atomic32_read(&fr->len);
-    i32 copy = FNP_MIN(len, fr_len - offset);
+    i32 copy = FNP_MIN(len, fnp_ring_len(fr) - offset);
     if(copy <= 0)
         return 0;
 
@@ -125,19 +114,4 @@ i32 fnp_ring_top(fnp_ring_t* fr, u8* buf, i32 offset, i32 len)
     }
 
     return copy;
-}
-
-i32 fnp_ring_enqueue_bulk(fnp_ring_t* fr, void* obj, i32 len)
-{
-    return fnp_ring_push(fr, obj, sizeof(obj) * len) / sizeof(obj);
-}
-
-i32 fnp_ring_dequeue_bulk(fnp_ring_t* ur, void** obj, i32 len)
-{
-    return fnp_ring_pop(ur, obj, sizeof(obj) * len) / sizeof(obj);
-}
-
-i32 fnp_ring_top_queue(fnp_ring_t* fr, void** obj)
-{
-    return fnp_ring_top(fr, obj, 0, sizeof(obj)) / sizeof(obj);
 }

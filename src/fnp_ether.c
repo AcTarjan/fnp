@@ -23,7 +23,7 @@ void ether_recv_mbuf(struct rte_mbuf *m, u64 tsc)
     }
 }
 
-u64 count = 0;
+u64 txCount = 0;
 
 void ether_send_mbuf(struct rte_mbuf *m, struct rte_ether_addr *dmac, u16 type)
 {
@@ -35,12 +35,13 @@ void ether_send_mbuf(struct rte_mbuf *m, struct rte_ether_addr *dmac, u16 type)
     hdr->ether_type = fnp_swap_16(type);
     m->l2_len = RTE_ETHER_HDR_LEN;
 
-    count++;
-    if(count % 20 == 7) {
-        fnp_free_mbuf(m);
-        return;
-    }
-    if(fnp_ring_enqueue(iface->tx_queue, m) == 0)
+//    txCount++;
+//    if (txCount % 10 > 7) {
+//        rte_pktmbuf_free(m);
+//        return;
+//    }
+
+    if(!fnp_pring_enqueue(iface->tx_queue, m))
     {
         rte_pktmbuf_free(m);
     }

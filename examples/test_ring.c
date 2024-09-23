@@ -2,7 +2,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
-fnp_ring_t* r;
+fnp_ring* r;
 
 void* enqueue() {
     int size = 100;
