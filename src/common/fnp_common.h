@@ -2,9 +2,9 @@
 #define FNP_COMMON_H
 
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
-#include <rte_malloc.h>
-#include <rte_memcpy.h>
 #include <arpa/inet.h>
 
 typedef unsigned char u8;
@@ -17,6 +17,8 @@ typedef int i32;
 typedef long long int i64;
 
 #ifdef USE_DPDK
+#include <rte_malloc.h>
+#include <rte_memcpy.h>
     #define fnp_malloc(size)                rte_malloc("", (size), 0)
     #define fnp_zmalloc(size)               rte_zmalloc("", (size), 0)
     #define fnp_memcpy(dst, src, len)       rte_memcpy((dst), (src), (len))

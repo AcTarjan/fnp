@@ -1,5 +1,5 @@
-#ifndef FNP_FNP_TCP_COMM_H
-#define FNP_FNP_TCP_COMM_H
+#ifndef FNP_TCP_COMM_H
+#define FNP_TCP_COMM_H
 
 #define TCP_HDR_MIN_LEN             20
 #define TCP_MAX_SEG_SIZE            1460
@@ -46,4 +46,4 @@ extern char* tcp_state_str[11];
 #define TCP_MSS         1460
 #define TCP_WS_SHIFT    7
 
-#endif //FNP_FNP_TCP_COMM_H
+#endif //FNP_TCP_COMM_H

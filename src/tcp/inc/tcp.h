@@ -1,5 +1,5 @@
-#ifndef FNP_FNP_TCP_H
-#define FNP_FNP_TCP_H
+#ifndef FNP_TCP_H
+#define FNP_TCP_H
 
 #include <fnp_common.h>
 
@@ -13,4 +13,4 @@ i32 fnp_tcp_init();
 */
 void tcp_socket_output();
 
-#endif //FNP_FNP_TCP_H
+#endif //FNP_TCP_H

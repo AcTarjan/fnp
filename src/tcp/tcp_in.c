@@ -1,10 +1,10 @@
 #include "fnp_init.h"
-#include "fnp_tcp_comm.h"
-#include "fnp_tcp_sock.h"
-#include "fnp_tcp_ofo.h"
-#include "fnp_tcp_in.h"
-#include "fnp_tcp_out.h"
-#include "fnp_tcp_timer.h"
+#include "tcp_comm.h"
+#include "tcp_sock.h"
+#include "tcp_ofo.h"
+#include "tcp_in.h"
+#include "tcp_out.h"
+#include "tcp_timer.h"
 #include <rte_ip.h>
 #include <unistd.h>
 
@@ -148,7 +148,7 @@ void tcp_listen_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
         newsk->adv_wnd = seg->rx_win;
         newsk->rcv_nxt = seg->seq + 1;
 
-        tcp_handle_option(sk, seg);
+        tcp_handle_option(newsk, seg);
 
         tcp_set_state(newsk, TCP_SYN_RECV);
     }
@@ -204,33 +204,19 @@ void tcp_syn_sent_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
     }
 }
 
-
-void tcp_handle_data(tcp_sock_t* sk, tcp_seg_t* seg) {
+void tcp_handle_in_order_data(tcp_sock_t* sk, tcp_seg_t* seg) {
     i32 state = tcp_state(sk);
     if(likely(seg->data_len > 0 && (state == TCP_ESTABLISHED ||
         state == TCP_FIN_WAIT_1))) {
-        if(seg->seq == sk->rcv_nxt) {
-            i32 rx_len = fnp_ring_push(sk->rxbuf, seg->data, seg->data_len);
-            sk->rcv_nxt += rx_len;
-            if (rx_len > 0) {
-                //check out of order
-                u32 rcv_nxt = sk->rcv_nxt;
-                while (tcp_ofo_top(sk->ofo_head, &rcv_nxt));
-                fnp_ring_push(sk->rxbuf, NULL, (i32)(rcv_nxt - sk->rcv_nxt));
-                sk->rcv_nxt = rcv_nxt;
-
-            }
-            tcp_send_ack(sk, true);
-        } else {    // out of order
-            i32 offset = (i32)(seg->seq - sk->rcv_nxt);
-            i32 len = FNP_MIN(fnp_ring_avail(sk->rxbuf) - offset, seg->data_len);
-            u32 seq = seg->seq;
-            tcp_ofo_insert(sk->ofo_head, &seq, &len);
-            if(len > 0) {
-                fnp_ring_prepush(sk->rxbuf, offset, seg->data + (seq - seg->seq), len);
-            }
-            tcp_send_ack(sk, false);         //收到乱序的数据，立即回ACK
+        i32 rx_len = fnp_ring_push(sk->rxbuf, seg->data, seg->data_len);
+        sk->rcv_nxt += rx_len;
+        if (rx_len > 0) {
+            //check out of order
+            u32 rcv_nxt = sk->rcv_nxt;
+            seg->flags |= tcp_ofo_dequeue(&sk->ofo_root, &sk->rcv_nxt);
+            fnp_ring_push(sk->rxbuf, NULL, (i32)(sk->rcv_nxt - rcv_nxt));
         }
+        tcp_send_ack(sk, true);
     }
 }
 
@@ -314,7 +300,8 @@ void tcp_handle_ack(tcp_sock_t* sk, tcp_seg_t* seg) {
 }
 
 void tcp_syn_recv_recv(tcp_sock_t* sk, tcp_seg_t* seg) {
-    if ((!acceptable_seq(sk, seg)) && seg->seq != sk->irs) {   //check whether seq is valid
+    //check whether seq is valid
+    if ((!acceptable_seq(sk, seg)) && seg->seq != sk->irs) {
         if (!seg_set_rst(seg))
             tcp_send_ack(sk, false);
         return ;
@@ -367,7 +354,7 @@ void tcp_syn_recv_recv(tcp_sock_t* sk, tcp_seg_t* seg) {
             tcp_set_state(sk, TCP_ESTABLISHED);
             if (sk->parent != NULL)
                 fnp_pring_enqueue(sk->parent->accept, sk);
-            tcp_handle_data(sk, seg);
+            tcp_handle_in_order_data(sk, seg);
         } else {
             tcp_send_rst(seg);
         }
@@ -375,7 +362,8 @@ void tcp_syn_recv_recv(tcp_sock_t* sk, tcp_seg_t* seg) {
 }
 
 void tcp_data_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
-    if(!acceptable_seq(sk, seg)) {   //check whether seq is valid
+    //check whether seq is valid
+    if(!acceptable_seq(sk, seg)) {
         if(!seg_set_rst(seg))
             tcp_send_ack(sk, false);
         return;
@@ -391,35 +379,36 @@ void tcp_data_recv(tcp_sock_t* sk, tcp_seg_t* seg)  {
         return;
     }
 
-    if(seg_set_syn(seg)) {                      //check SYN
+    //check SYN
+    if(seg_set_syn(seg)) {
         tcp_send_ack(sk, false);
         return;
     }
 
-    if(seg_set_ack(seg)) {      //check ACK
+    //check ACK
+    if(seg_set_ack(seg)) {
         tcp_handle_ack(sk, seg);
     } else {    //没有ACK就直接丢弃
         return ;
     }
 
-    //check the URG
-//    if(seg_set_urg(seg)) {
-//        if(sk->state == TCP_ESTABLISHED ||
-//           sk->state == TCP_FIN_WAIT_1 || sk->state == TCP_FIN_WAIT_2) {
-//                    sk->snd_up = seg;
-//        }
-//    }
-
     //recv data
-    tcp_handle_data(sk, seg);
+    if (sk->rcv_nxt == seg->seq) {
+        tcp_handle_in_order_data(sk, seg);
+    } else {
+        // out of order
+        tcp_ofo_seg* ofo_seg = tcp_ofo_malloc(seg->seq, seg->data_len, seg->flags);
+        u32 seq = tcp_ofo_enqueue(&sk->ofo_root, ofo_seg);
+        u32 rx_offset = seq - sk->rcv_nxt;
+        u32 data_offset = seq - seg->seq;
+        if (data_offset < seg->data_len)
+            fnp_ring_prepush(sk->rxbuf, (i32)rx_offset, seg->data + data_offset, seg->data_len - (i32)data_offset);
+        tcp_send_ack(sk, false);         //收到乱序的数据，立即回ACK
+        return;
+    }
 
     //check the FIN
     if(seg_set_fin(seg)) {
-        //可能出现收到了FIN，但是前面有数据没有接收到（乱序接收到FIN）
-        if (sk->rcv_nxt != (seg->seq + seg->data_len)) {     //不是最后一个字节
-            printf("rcv_nxt(%u) is not equal to seq + data_len(%u)\n", sk->rcv_nxt, seg->seq + seg->data_len);
-            return;
-        }
         sk->rcv_nxt++;      //FIN占用一个序列号
         tcp_send_ack(sk, false);
         switch (sk->state) {

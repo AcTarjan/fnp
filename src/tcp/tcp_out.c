@@ -1,7 +1,7 @@
-#include "inc/fnp_tcp_sock.h"
-#include "inc/fnp_tcp_in.h"
-#include "inc/fnp_tcp_comm.h"
-#include "inc/fnp_tcp_timer.h"
+#include "inc/tcp_sock.h"
+#include "inc/tcp_in.h"
+#include "inc/tcp_comm.h"
+#include "inc/tcp_timer.h"
 #include "fnp_ipv4.h"
 
 

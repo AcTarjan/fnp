@@ -41,7 +41,8 @@ void* process(void* conn) {
     }
 
     uint8_t buf[2000];
-    int64_t count = 0;
+    u64 last = 0;
+    u64 count = 0;
     printf("%lu start to recv data...\n", pid);
     while (1) {
         int32_t ret = fnp_tcp_recv(conn, buf, 2000);
@@ -50,9 +51,9 @@ void* process(void* conn) {
             printf("%lu finish to recv: %llu\n",pid, count);
             break;
         }
-        if (count > 1000000) {
-            showBw(count);
-            count = 0;
+        if (count - last > 1000000) {
+            showBw(count - last);
+            last = count;
         }
 
         i32 w = fwrite(buf, 1, ret, file);
@@ -61,11 +62,11 @@ void* process(void* conn) {
             break;
         }
 
-//        i32 send_ret = fnp_tcp_send(conn, buf, ret);
-//        if(ret != w || ret != send_ret) {
-//            printf("%lu send error! %d:%d\n", pid,ret, send_ret);
-//            break;
-//        }
+        i32 send_ret = fnp_tcp_send(conn, buf, ret);
+        if(ret != w || ret != send_ret) {
+            printf("%lu send error! %d:%d\n", pid,ret, send_ret);
+            break;
+        }
     }
     printf("%lu start to close file\n", pid);
     fclose(file);

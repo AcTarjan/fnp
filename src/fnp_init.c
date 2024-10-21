@@ -1,5 +1,5 @@
 #include "fnp_init.h"
-#include "fnp_tcp.h"
+#include "tcp.h"
 
 #include <rte_ethdev.h>
 #include "fnp_pring.h"
@@ -21,15 +21,15 @@ i32 iface_init(fnp_conf_t* conf)
     for (u16 iface_id = 0; iface_id < conf->ifaces_num; iface_id++)
     {
         fnp_iface_t *iface = fnp_get_iface(0);
-        iface->rx_queue = fnp_alloc_pring(1024 * 20);
+        iface->rx_queue = fnp_pring_alloc(1024 * 20);
         if (iface->rx_queue == NULL) {
             printf("create rx_queue error!\n");
             return -1;
         }
 
-        iface->tx_queue = fnp_alloc_pring(1024 * 20);
+        iface->tx_queue = fnp_pring_alloc(1024 * 20);
         if (iface->tx_queue == NULL) {
-            fnp_free_pring(iface->rx_queue);
+            fnp_pring_free(iface->rx_queue);
             printf("create tx_queue error!\n");
             return -1;
         }
@@ -148,7 +148,7 @@ void fnp_conf_init(fnp_conf_t* conf)
     conf->dpdk.main_lcore =  2;
     conf->ifaces_num =  1;
     conf->ifaces[0].id =  0;
-    conf->ifaces[0].ip =  fnp_ipv4_ston("192.168.11.66");
+    conf->ifaces[0].ip =  fnp_ipv4_ston("192.168.11.222");
     conf->ifaces[0].mask =  fnp_ipv4_ston("255.255.255.0");
     conf->ifaces[0].gateway =  fnp_ipv4_ston("192.168.11.2");
     conf->worker1 = 3;

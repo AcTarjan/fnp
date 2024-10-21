@@ -1,13 +1,13 @@
-#ifndef FNP_FNP_TCP_SOCK_H
-#define FNP_FNP_TCP_SOCK_H
+#ifndef FNP_TCP_SOCK_H
+#define FNP_TCP_SOCK_H
 
 #include <semaphore.h>
 #include "fnp_init.h"
 
 #include "fnp_ring.h"
 #include "fnp_init.h"
-#include "fnp_tcp_comm.h"
-#include "fnp_tcp_ofo.h"
+#include "tcp_comm.h"
+#include "rbtree.h"
 
 #include <rte_tcp.h>
 
@@ -106,7 +106,7 @@ typedef struct tcp_sock {
     void (*tcp_recv)(struct tcp_sock* sk, tcp_seg_t* seg);
 
 
-    struct tcp_ofo_segment* ofo_head;
+    rb_tree ofo_root;
 
     struct rte_timer timers[TCPT_NTIMERS];
 } tcp_sock_t;
@@ -131,20 +131,18 @@ static inline bool tcp_can_send(tcp_sock_t *sk) {
    return false;
 }
 
-static inline bool tcp_can_recv(tcp_sock_t* sk) {
+static inline bool tcp_still_recv(tcp_sock_t* sk) {
     i32 state = tcp_state(sk);
     if(state == TCP_ESTABLISHED ||
        state == TCP_FIN_WAIT_1 ||
        state == TCP_FIN_WAIT_2 ) {  //可以接收数据
         return true;
     }
-    if (state == TCP_CLOSE_WAIT ||
-    state == TCP_CLOSING ||
-    state == TCP_LAST_ACK ||
-    state == TCP_TIME_WAIT) { //收到了对方发送了FIN, 把缓冲区的数据收完
-        if (fnp_ring_len(sk->rxbuf) != 0 || !tcp_ofo_is_empty(sk->ofo_head))
-            return true;
+
+    if(fnp_ring_len(sk->rxbuf) > 0) {
+        return true;
     }
+
     return false;
 }
 
@@ -152,4 +150,4 @@ void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport);
 
 i32 fnp_lookup_sock(tcp_sock_key_t* key, tcp_sock_t** sk);
 
-#endif //FNP_FNP_TCP_SOCK_H
+#endif //FNP_TCP_SOCK_H

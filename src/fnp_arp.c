@@ -35,7 +35,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
             return NULL;
         }
 
-        e->pending = fnp_alloc_pring(8 * 128);
+        e->pending = fnp_pring_alloc(8 * 128);
         if (unlikely(e == NULL))
         {
             printf("malloc arp pending failed!\n");
@@ -55,7 +55,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
     if (likely(fnp_add_hash(conf.arpTbl, &ip, e) != 0))
     {
         printf("fail to add %u in gArpTable\n", ip);
-        fnp_free_pring(e->pending);
+        fnp_pring_free(e->pending);
         fnp_free(e);
         return NULL;
     }
@@ -65,7 +65,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
 
 static void arp_del_entry(arp_entry_t* e) {
     fnp_del_hash(conf.arpTbl, &e->ip);
-    fnp_free_pring(e->pending);
+    fnp_pring_free(e->pending);
     fnp_free(e);
 }
 
@@ -193,8 +193,7 @@ void arp_update_entry()
     rte_mbuf* m = NULL;
     while (fnp_hash_iterate(conf.arpTbl, &key, &e, &next)) {
         if(e->valid) {
-            while (!fnp_pring_is_empty(e->pending)) {
-                fnp_pring_dequeue(e->pending, &m);
+            while (fnp_pring_dequeue(e->pending, &m)) {
                 ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
             }
 

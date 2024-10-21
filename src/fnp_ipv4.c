@@ -1,5 +1,5 @@
 #include "fnp_ipv4.h"
-#include "fnp_tcp_in.h"
+#include "tcp_in.h"
 #include "fnp_arp.h"
 #include "fnp_ether.h"
 #include "fnp_icmp.h"

@@ -1,9 +1,9 @@
 #include <unistd.h>
-#include "fnp_tcp_sock.h"
+#include "tcp_sock.h"
 #include "fnp_init.h"
-#include "fnp_tcp_in.h"
-#include "fnp_tcp_out.h"
-#include "fnp_tcp_ofo.h"
+#include "tcp_in.h"
+#include "tcp_out.h"
+#include "tcp_ofo.h"
 
 fnp_hash_t* tcpSockTbl;
 
@@ -44,25 +44,17 @@ void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport)
         return NULL;
     }
 
-    sk->txbuf = fnp_alloc_ring(TCP_TXBUF_SIZE);
+    sk->txbuf = fnp_ring_alloc(TCP_TXBUF_SIZE);
     if(unlikely(sk->txbuf == NULL))
     {
         fnp_free(sk);
         return NULL;
     }
 
-    sk->rxbuf = fnp_alloc_ring(TCP_RXBUF_SIZE );
+    sk->rxbuf = fnp_ring_alloc(TCP_RXBUF_SIZE);
     if(unlikely(sk->rxbuf == NULL))
     {
-        fnp_free_ring(sk->txbuf);
-        fnp_free(sk);
-        return NULL;
-    }
-
-    sk->ofo_head = tcp_malloc_ofo_seg();
-    if(sk->ofo_head == NULL) {
-        fnp_free_ring(sk->txbuf);
-        fnp_free_ring(sk->rxbuf);
+        fnp_ring_free(sk->txbuf);
         fnp_free(sk);
         return NULL;
     }
@@ -77,15 +69,15 @@ void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport)
     sk->rcv_wnd_scale = TCP_WS_SHIFT;
     sk->cwnd = 2;           //2个mss
     sk->dup_ack = 0;
+    sk->ofo_root.root = sk->ofo_root.max = NULL;
     sk->max_snd_wnd = 0;
     for(int i = 0; i < TCPT_NTIMERS; i++)
         rte_timer_init(&sk->timers[i]);
 
     if(unlikely(fnp_add_hash(tcpSockTbl, &sk->key, sk)))
     {
-        fnp_free(sk->ofo_head);
-        fnp_free_ring(sk->txbuf);
-        fnp_free_ring(sk->rxbuf);
+        fnp_ring_free(sk->txbuf);
+        fnp_ring_free(sk->rxbuf);
         fnp_free(sk);
     }
 
@@ -101,21 +93,20 @@ void tcp_free_sock(void* sock) {
     fnp_del_hash(tcpSockTbl, &sk->key);
 
     if(tcp_state(sk) == TCP_LISTEN) {
-        fnp_free_pring(sk->accept);
+        fnp_pring_free(sk->accept);
         fnp_free(sk);
         return;
     }
 
-    tcp_free_ofo_seg(sk->ofo_head);
-    fnp_free_ring(sk->txbuf);
-    fnp_free_ring(sk->rxbuf);
+    fnp_ring_free(sk->txbuf);
+    fnp_ring_free(sk->rxbuf);
     fnp_free(sk);
 }
 
 void* fnp_tcp_listen(u16 id, u16 port) {
     tcp_sock_t* sock = fnp_malloc(sizeof(tcp_sock_t));
     tcp_set_state(sock, TCP_LISTEN);
-    sock->accept = fnp_alloc_pring(TCP_LISTEN_BACKLOG);
+    sock->accept = fnp_pring_alloc(TCP_LISTEN_BACKLOG);
     if(sock->accept == NULL) {
         fnp_free(sock);
         return NULL;
@@ -127,7 +118,7 @@ void* fnp_tcp_listen(u16 id, u16 port) {
 
     if(fnp_add_hash(tcpSockTbl, &sock->key, sock))
     {
-        fnp_free_pring(sock->accept);
+        fnp_pring_free(sock->accept);
 
         fnp_free(sock);
         return NULL;
@@ -158,8 +149,10 @@ void* fnp_tcp_connect(u16 id, u16 port, u32 rip, u16 rport)
 i32 fnp_tcp_send(void* sock, u8* buf, i32 len)
 {
     tcp_sock_t* sk = (tcp_sock_t*) sock;
-    if(tcp_can_send(sk))
+    if(tcp_can_send(sk)) {
+        while (fnp_ring_avail(sk->txbuf) < len);
         return fnp_ring_push(sk->txbuf, buf, len);
+    }
     else
         return 0;
 }
@@ -168,10 +161,11 @@ i32 fnp_tcp_recv(void* sock, u8* buf, i32 len)
 {
     tcp_sock_t* sk = (tcp_sock_t*) sock;
 
-    while (tcp_can_recv(sk)) {
+    while (tcp_still_recv(sk)) {
         i32 ret = fnp_ring_pop(sk->rxbuf, buf, len);
-        if(ret != 0)
+        if(ret != 0) {
             return ret;
+        }
     }
 
     return 0;
@@ -188,6 +182,9 @@ void fnp_tcp_close(void* sock)
         tcp_free_sock(sk);
         return;
     }
+
+    //wait for sending all data
+    while (fnp_ring_len(sk->txbuf) > 0);
 
     sk->user_req |= TCP_USER_CLOSE;
 

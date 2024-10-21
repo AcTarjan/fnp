@@ -3,7 +3,7 @@
 
 #include "fnp_common.h"
 #include <rte_timer.h>
-#include "fnp_tcp_sock.h"
+#include "tcp_sock.h"
 
 static inline bool tcp_timer_is_running(tcp_sock_t* sk, i32 index) {
     return rte_timer_pending(&sk->timers[index]);

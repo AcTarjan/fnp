@@ -1,6 +1,6 @@
-#include "fnp_tcp_timer.h"
-#include "fnp_tcp_sock.h"
-#include "fnp_tcp_out.h"
+#include "tcp_timer.h"
+#include "tcp_sock.h"
+#include "tcp_out.h"
 
 //当发送数据时，如果重传定时器没有启动，则启动重传定时器
 //当接收到ack时, 停止重传定时器。如果还有未确认的数据，则重启重传定时器

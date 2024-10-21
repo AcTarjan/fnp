@@ -8,28 +8,31 @@ typedef struct fnp_pring
     i32 size;           /* size of buf */
     i32 head;
     i32 tail;
-    void** data;
+    /* 注意这里有4字节的padding, sizeof(fnp_pring) = 16 */
+    void* buf[0];       // buf 8字节对齐
 } fnp_pring;
 
 
-fnp_pring* fnp_alloc_pring(i32 size);
+fnp_pring* fnp_pring_alloc(i32 size);
 
-bool fnp_pring_is_full(fnp_pring* ring);
+static inline void fnp_pring_free(fnp_pring* r) {
+    fnp_free(r);
+}
 
-bool fnp_pring_is_empty(fnp_pring* ring);
+static inline i32 fnp_pring_len(fnp_pring* r) {
+    return (r->tail - r->head + r->size) % r->size;
+}
 
-i32 fnp_pring_data_len(fnp_pring* fr);
+static inline i32 fnp_pring_avail(fnp_pring* r) {
+    return r->size - 1 - fnp_pring_len(r);
+}
 
-i32 fnp_pring_free_len(fnp_pring* fr);
+bool fnp_pring_enqueue(fnp_pring* r, void* data);
 
-void fnp_free_pring(fnp_pring* ring);
+bool fnp_pring_dequeue(fnp_pring* r, void** data);
 
-bool fnp_pring_enqueue(fnp_pring* ring, void* data);
+i32 fnp_pring_enqueue_bulk(fnp_pring* r, void* data[], i32 len);
 
-bool fnp_pring_dequeue(fnp_pring* ring, void** data);
-
-i32 fnp_pring_enqueue_bulk(fnp_pring* ring, void** data, i32 len);
-
-i32 fnp_pring_dequeue_bulk(fnp_pring* ring, void** data, i32 len);
+i32 fnp_pring_dequeue_bulk(fnp_pring* r, void* data[], i32 len);
 
 #endif //FNP_FNP_PRING_H

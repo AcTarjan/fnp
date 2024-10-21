@@ -1,78 +1,61 @@
 #include "fnp_pring.h"
 
-fnp_pring* fnp_alloc_pring(i32 size) {
-    fnp_pring* ring = fnp_malloc(sizeof(fnp_pring));
-    ring->size = size;
-    ring->head = ring->tail = 0;
-    ring->data = fnp_malloc(sizeof(void*) * (size+1));
-    return ring;
+fnp_pring* fnp_pring_alloc(i32 size) {
+    fnp_pring* r = fnp_malloc(sizeof(fnp_pring) + size * sizeof(void*));
+    if (r == NULL)
+        return NULL;
+    r->size = size;
+    r->head = r->tail = 0;
+    return r;
 }
 
-
-void fnp_free_pring(fnp_pring* ring) {
-    fnp_free(ring->data);
-    fnp_free(ring);
-}
-
-i32 fnp_pring_data_len(fnp_pring* fr) {
-    if (fr->tail > fr->head) {
-        return fr->tail - fr->head;
-    } else {
-        return fr->tail + fr->size + 1 - fr->head;
-    }
-}
-
-i32 fnp_pring_free_len(fnp_pring* fr) {
-    return fr->size - fnp_pring_data_len(fr);
-}
-
-bool fnp_pring_is_full(fnp_pring* ring) {
-    return (ring->tail+1) % (ring->size+1) == ring->head;
-}
-
-bool fnp_pring_is_empty(fnp_pring* ring) {
-    return ring->head == ring->tail;
-}
-
-
-bool fnp_pring_enqueue(fnp_pring* ring, void* data) {
-    if (fnp_pring_is_full(ring))
+bool fnp_pring_enqueue(fnp_pring* r, void* data) {
+    if (fnp_pring_avail(r) == 0)
         return false;
 
-    ring->data[ring->tail] = data;
-    ring->tail++;
+    r->buf[r->tail] = data;
 
     // 插入数据会导致tail下标越界，越界处理：越界了就回到开始位置
-    ring->tail %= ring->size+1;
+    r->tail = (r->tail + 1) % r->size;
     return true;
 }
 
-bool fnp_pring_dequeue(fnp_pring* ring, void** data) {
-    if (fnp_pring_is_empty(ring))
+bool fnp_pring_dequeue(fnp_pring* r, void** data) {
+    if (fnp_pring_len(r) == 0)
         return false;
 
-    *data = ring->data[ring->head];
-    ring->head++;
+    *data = r->buf[r->head];
 
     // 删除数据会导致head下标越界，越界处理：越界了就回到开始位置
-    ring->head %= ring->size+1;
+    r->head = (r->head + 1) % r->size;
     return true;
 }
 
-i32 fnp_pring_enqueue_bulk(fnp_pring* ring, void** data, i32 len) {
-    i32 i = 0;
-    for (i = 0; i < len; i++) {
-        if (!fnp_pring_enqueue(ring, data[i]))
-            break;
+i32 fnp_pring_enqueue_bulk(fnp_pring* r, void* data[], i32 len) {
+    i32 copy = FNP_MIN(len, fnp_pring_avail(r));
+
+    if(r->tail + copy <= r->size) {
+        fnp_memcpy(r->buf + r->tail, data, copy * sizeof(void*));
+    } else {
+        i32 first = r->size - r->tail;
+        fnp_memcpy(r->buf + r->tail, data, first * sizeof(void*));
+        fnp_memcpy(r->buf, data + first, (copy - first) * sizeof(void*));
     }
-    return i;
+
+    r->tail = (r->tail + copy) % r->size;
+    return copy;
 }
 
-i32 fnp_pring_dequeue_bulk(fnp_pring* ring, void** data, i32 len) {
-    i32 i = 0;
-    for (i = 0; i < len; i++) {
-        if (!fnp_pring_dequeue(ring, &data[i]))
-            break;
+i32 fnp_pring_dequeue_bulk(fnp_pring* r, void* data[], i32 len) {
+    i32 copy = FNP_MIN(len, fnp_pring_len(r));
+
+    if(r->head + copy <= r->size) {
+        fnp_memcpy(data, r->buf + r->head, copy * sizeof(void*));
+    } else {
+        i32 first = r->size - r->head;
+        fnp_memcpy(data, r->buf + r->head, first * sizeof(void*));
+        fnp_memcpy(data + first, r->buf, (copy - first) * sizeof(void*));
     }
-    return i;
+    r->head = (r->head + copy) % r->size;
+    return copy;
 }

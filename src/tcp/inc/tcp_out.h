@@ -1,8 +1,8 @@
-#ifndef FNP_FNP_TCP_OUT_H
-#define FNP_FNP_TCP_OUT_H
+#ifndef FNP_TCP_OUT_H
+#define FNP_TCP_OUT_H
 
-#include "fnp_tcp_sock.h"
-#include "fnp_tcp_in.h"
+#include "tcp_sock.h"
+#include "tcp_in.h"
 
 void tcp_send_ack(tcp_sock_t* sk, bool delay);
 
@@ -12,4 +12,4 @@ void tcp_data_send(tcp_sock_t* sk);
 
 void tcp_syn_send(tcp_sock_t* sk);
 
-#endif //FNP_FNP_TCP_OUT_H
+#endif //FNP_TCP_OUT_H

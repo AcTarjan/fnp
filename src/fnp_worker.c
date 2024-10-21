@@ -1,7 +1,7 @@
 #include "fnp_ether.h"
 #include "fnp_init.h"
 #include "fnp_arp.h"
-#include "fnp_tcp.h"
+#include "tcp.h"
 
 #include <rte_ethdev.h>
 #include <unistd.h>
@@ -35,11 +35,11 @@ i32 fnp_process_worker()
         /**** recv from recv_ring ****/
         i32 nb = fnp_pring_dequeue_bulk(iface->rx_queue, mbufs, MBUF_BURST_SIZE);
         for (i32 i = 0; i < nb; ++i) {
-//            count += mbufs[i]->pkt_len;
-//            if (count > 1000 * 1000) {
-//                showBw(count);
-//                count = 0;
-//            }
+            count ++;
+            if (count % 50 > 45) {
+                rte_pktmbuf_free(mbufs[i]);
+                continue;
+            }
             ether_recv_mbuf(mbufs[i], cur_tsc);
         }
 
