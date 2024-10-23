@@ -1,23 +1,30 @@
 #ifndef FNP_H
 #define FNP_H
 #include <stdint.h>
-#include "fnp_common.h"
 /*
  * fnp_init
  * 初始化fnp, 必须在使用fnp之前调用
 */
 int32_t fnp_init(uint8_t * path);
 
-void* fnp_tcp_sock(uint32_t id, uint16_t port, uint32_t rip, uint16_t rport);
+uint32_t fnp_ipv4_ston(const char* ip);
+
+void fnp_ipv4_ntos(uint32_t ip);
+
+void* fnp_sock_param(uint32_t lip, uint16_t lport, uint32_t rip, uint16_t rport);
+
+void* fnp_sock_param2(char* lip, uint16_t lport, char* rip, uint16_t rport);
+
+void* fnp_tcp_bind(void* param);
 
 /*
  * fnp_tcp_listen
  * 监听网卡的TCP端口
- * id: 网卡id
+ * ip: 网卡ip
  * port: 本地端口号, 主机序
  * 返回值: a listen socket
  */
-void* fnp_tcp_listen(uint32_t id, uint16_t port);
+void* fnp_tcp_listen(void* param);
 
 /*
  * fnp_tcp_accept
@@ -30,13 +37,13 @@ void* fnp_tcp_accept(void* sock);
 /*
  * fnp_tcp_connect
  * 连接到TCP Server
- * id: 网卡id
+ * ip: 网卡id
  * port: 本地端口号, 主机序, 0表示随机端口
  * rip: 目标ip地址, 网络序
  * rport: 目标端口号, 网络序
  * 返回值:  a connection socket
  */
-void* fnp_tcp_connect(uint16_t id, uint16_t port, uint32_t rip, uint16_t rport);
+void* fnp_tcp_connect(void* param);
 
 /*
  * fnp_tcp_send

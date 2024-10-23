@@ -34,20 +34,28 @@ i32 fnp_ring_prepush(fnp_ring* r, i32 offset, u8* buf, i32 len)
     return copy;
 }
 
+i32 fnp_ring_push_empty(fnp_ring* r, i32 len)
+{
+    i32 copy = FNP_MIN(len, fnp_ring_avail(r));
+    if(copy <= 0)
+        return 0;
+
+    r->tail = (r->tail + copy) % r->size;
+    return copy;
+}
+
 i32 fnp_ring_push(fnp_ring* r, u8* buf, i32 len)
 {
     i32 copy = FNP_MIN(len, fnp_ring_avail(r));
     if(copy <= 0)
         return 0;
 
-    if(buf != NULL) {
-        if (r->tail + copy <= r->size)
-            fnp_memcpy(r->buf + r->tail, buf, copy);
-        else {
-            u32 first_copy = r->size - r->tail;
-            fnp_memcpy(r->buf + r->tail, buf, first_copy);
-            fnp_memcpy(r->buf, buf + first_copy, copy - first_copy);
-        }
+    if (r->tail + copy <= r->size)
+        fnp_memcpy(r->buf + r->tail, buf, copy);
+    else {
+        u32 first_copy = r->size - r->tail;
+        fnp_memcpy(r->buf + r->tail, buf, first_copy);
+        fnp_memcpy(r->buf, buf + first_copy, copy - first_copy);
     }
 
     r->tail = (r->tail + copy) % r->size;

@@ -34,15 +34,15 @@ void* process(void* conn) {
     pthread_t pid = pthread_self();
     // 打开文件（如果不存在则创建）
     char filename[100];
-    sprintf(filename, "dpdk-%lu.dat", pid);
+    sprintf(filename, "./output/dpdk-%lu.dat", pid);
     if ((file = fopen(filename, "wb")) == NULL) {
         printf("%lu fail to open file.\n", pid);
         return NULL;
     }
 
     uint8_t buf[2000];
-    u64 last = 0;
-    u64 count = 0;
+    uint64_t last = 0;
+    uint64_t count = 0;
     printf("%lu start to recv data...\n", pid);
     while (1) {
         int32_t ret = fnp_tcp_recv(conn, buf, 2000);
@@ -56,13 +56,13 @@ void* process(void* conn) {
             last = count;
         }
 
-        i32 w = fwrite(buf, 1, ret, file);
+        int32_t w = fwrite(buf, 1, ret, file);
         if(w != ret) {
             printf("%lu write error\n", pid);
             break;
         }
 
-        i32 send_ret = fnp_tcp_send(conn, buf, ret);
+        int32_t send_ret = fnp_tcp_send(conn, buf, ret);
         if(ret != w || ret != send_ret) {
             printf("%lu send error! %d:%d\n", pid,ret, send_ret);
             break;
@@ -77,11 +77,11 @@ void* process(void* conn) {
 
 int main(void)
 {
-    fnp_init(NULL);
+    fnp_init("fnp.yaml");
 
-//    u32 lip = fnp_ipv4_ston("192.168.11.66");
-//    u32 lport = fnp_swap_16(18888);
-    void* sock = fnp_tcp_listen(0, 18888);
+    void* param = fnp_sock_param2("192.168.11.222", 18888, NULL, 0);
+
+    void* sock = fnp_tcp_listen(param);
 
     while (1) {
         void *conn = fnp_tcp_accept(sock);

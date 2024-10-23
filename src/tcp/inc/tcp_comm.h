@@ -41,9 +41,12 @@ enum tcp_state {
 };
 extern char* tcp_state_str[11];
 
-#define TCP_RXBUF_SIZE  1024*1024-1
-#define TCP_TXBUF_SIZE  1024*1024-1
+#define TCP_RXBUF_SIZE  10240
+#define TCP_TXBUF_SIZE  10240
 #define TCP_MSS         1460
 #define TCP_WS_SHIFT    7
+
+
+
 
 #endif //FNP_TCP_COMM_H

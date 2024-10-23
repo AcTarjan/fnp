@@ -5,7 +5,6 @@
 #include "tcp_out.h"
 #include "tcp_ofo.h"
 
-fnp_hash_t* tcpSockTbl;
 
 char* tcp_state_str[11] = {
     "TCP_CLOSED", "TCP_LISTEN", "TCP_SYN_SENT", "TCP_SYN_RECV",
@@ -14,35 +13,64 @@ char* tcp_state_str[11] = {
 };
 
 
-i32 fnp_tcp_init() {
-    tcpSockTbl = fnp_alloc_hash(1024, sizeof(tcp_sock_key_t));
-    if(tcpSockTbl == NULL){
+void tcp_closed_recv(tcp_sock* sk, tcp_segment* seg) {}
+void tcp_closed_send(tcp_sock* sk) {
+    if(sk->can_free)
+        tcp_free_sock(sk);
+}
+void tcp_listen_send(tcp_sock* sk) {}
+
+tcp_recv_func tcp_recv[TCP_STATE_END];
+tcp_send_func tcp_send[TCP_STATE_END];
+
+void tcp_register() {
+    tcp_recv[TCP_CLOSED] = tcp_closed_recv;
+    tcp_recv[TCP_LISTEN] = tcp_LISTEN_recv;
+    tcp_recv[TCP_SYN_SENT] = tcp_SYN_SENT_recv;
+    tcp_recv[TCP_SYN_RECV] = tcp_SYN_RECV_recv;
+    tcp_recv[TCP_ESTABLISHED] = tcp_ESTAB_data;
+    tcp_recv[TCP_CLOSE_WAIT] = tcp_ESTAB_data;
+    tcp_recv[TCP_LAST_ACK] = tcp_ESTAB_data;
+    tcp_recv[TCP_FIN_WAIT_1] = tcp_ESTAB_data;
+    tcp_recv[TCP_FIN_WAIT_2] = tcp_ESTAB_data;
+    tcp_recv[TCP_CLOSING] = tcp_ESTAB_data;
+    tcp_recv[TCP_TIME_WAIT] = tcp_ESTAB_data;
+
+    tcp_send[TCP_CLOSED] = tcp_closed_send;
+    tcp_send[TCP_LISTEN] = tcp_listen_send;
+    tcp_send[TCP_SYN_SENT] = tcp_syn_send;
+    tcp_send[TCP_SYN_RECV] = tcp_syn_send;
+    tcp_send[TCP_ESTABLISHED] = tcp_data_send;
+    tcp_send[TCP_CLOSE_WAIT] = tcp_data_send;
+    tcp_send[TCP_LAST_ACK] = tcp_data_send;
+    tcp_send[TCP_FIN_WAIT_1] = tcp_data_send;
+    tcp_send[TCP_FIN_WAIT_2] = tcp_data_send;
+    tcp_send[TCP_CLOSING] = tcp_data_send;
+    tcp_send[TCP_TIME_WAIT] = tcp_data_send;
+}
+
+i32 tcp_init() {
+    fnp.tcpTbl = hash_create("TcpSocketTable",1024, sizeof(sock_param));
+    if(fnp.tcpTbl == NULL) {
         printf( "alloc tcp sock table error!\n");
         return -1;
     }
 
+    tcp_register();
+
     return 0;
 }
 
-
-
-void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport)
+void* tcp_bind(sock_param* param)
 {
-    tcp_sock_t* sk = fnp_malloc(sizeof(tcp_sock_t));
+    tcp_sock* sk = fnp_malloc(sizeof(tcp_sock));
     if(unlikely(sk == NULL))
         return NULL;
 
-    sk->id = id;
-    sk->port = port;
-    sk->rip = rip;
-    sk->rport = rport;
+    sk->param = param;
     sk->user_req = 0;
-    if(unlikely(fnp_lookup_hash(tcpSockTbl, &sk->key, NULL)))
-    {
-        printf("socket exits\n");
-        fnp_free(sk);
-        return NULL;
-    }
+    sk->iface = fnp_iface_get(0);
+    sk->can_free = true;
 
     sk->txbuf = fnp_ring_alloc(TCP_TXBUF_SIZE);
     if(unlikely(sk->txbuf == NULL))
@@ -74,23 +102,24 @@ void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport)
     for(int i = 0; i < TCPT_NTIMERS; i++)
         rte_timer_init(&sk->timers[i]);
 
-    if(unlikely(fnp_add_hash(tcpSockTbl, &sk->key, sk)))
+    if(unlikely(!hash_add(fnp.tcpTbl, param, sk)))
     {
         fnp_ring_free(sk->txbuf);
         fnp_ring_free(sk->rxbuf);
         fnp_free(sk);
+        return NULL;
     }
 
     return sk;
 }
 
-i32 fnp_lookup_sock(tcp_sock_key_t* key, tcp_sock_t** sk) {
-    return fnp_lookup_hash(tcpSockTbl, key, (void**)sk);
-}
-
+// socket释放的时机：
+// 被用户使用的socket，需要由用户主动释放，但最终还是在协议栈中释放
+// 没有被用户使用的socket，由协议栈自动释放
 void tcp_free_sock(void* sock) {
-    tcp_sock_t* sk = (tcp_sock_t*) sock;
-    fnp_del_hash(tcpSockTbl, &sk->key);
+    tcp_sock* sk = (tcp_sock*) sock;
+    hash_del(fnp.tcpTbl, sk->param);
+    fnp_free(sk->param);
 
     if(tcp_state(sk) == TCP_LISTEN) {
         fnp_pring_free(sk->accept);
@@ -103,23 +132,20 @@ void tcp_free_sock(void* sock) {
     fnp_free(sk);
 }
 
-void* fnp_tcp_listen(u16 id, u16 port) {
-    tcp_sock_t* sock = fnp_malloc(sizeof(tcp_sock_t));
+void* tcp_listen(sock_param* param) {
+    tcp_sock* sock = fnp_malloc(sizeof(tcp_sock));
     tcp_set_state(sock, TCP_LISTEN);
     sock->accept = fnp_pring_alloc(TCP_LISTEN_BACKLOG);
     if(sock->accept == NULL) {
         fnp_free(sock);
         return NULL;
     }
-    sock->id = id;
-    sock->port = fnp_swap_16(port);
-    sock->rip = 0;
-    sock->rport = 0;
 
-    if(fnp_add_hash(tcpSockTbl, &sock->key, sock))
+    sock->param = param;
+
+    if(!hash_add(fnp.tcpTbl, param, sock))
     {
         fnp_pring_free(sock->accept);
-
         fnp_free(sock);
         return NULL;
     }
@@ -128,9 +154,9 @@ void* fnp_tcp_listen(u16 id, u16 port) {
 }
 
 
-void* fnp_tcp_connect(u16 id, u16 port, u32 rip, u16 rport)
+void* tcp_connect(sock_param* param)
 {
-    tcp_sock_t* sk = fnp_tcp_sock(id, port, rip, rport);
+    tcp_sock* sk = tcp_bind(param);
     if (sk == NULL)
         return NULL;
 
@@ -146,10 +172,19 @@ void* fnp_tcp_connect(u16 id, u16 port, u32 rip, u16 rport)
     }
 }
 
+static inline bool tcp_still_send(tcp_sock *sk) {
+    u32 state = tcp_state(sk);
+    if (state == TCP_ESTABLISHED || state == TCP_CLOSE_WAIT) {
+        return true;
+    }
+    return false;
+}
+
+
 i32 fnp_tcp_send(void* sock, u8* buf, i32 len)
 {
-    tcp_sock_t* sk = (tcp_sock_t*) sock;
-    if(tcp_can_send(sk)) {
+    tcp_sock* sk = (tcp_sock*) sock;
+    if(tcp_still_send(sk)) {
         while (fnp_ring_avail(sk->txbuf) < len);
         return fnp_ring_push(sk->txbuf, buf, len);
     }
@@ -157,9 +192,25 @@ i32 fnp_tcp_send(void* sock, u8* buf, i32 len)
         return 0;
 }
 
+static inline bool tcp_still_recv(tcp_sock* sk) {
+    i32 state = tcp_state(sk);
+    if(state == TCP_ESTABLISHED ||
+       state == TCP_FIN_WAIT_1 ||
+       state == TCP_FIN_WAIT_2 ) {  //可以接收数据
+        return true;
+    }
+
+    if(fnp_ring_len(sk->rxbuf) > 0) {
+        return true;
+    }
+
+    return false;
+}
+
+
 i32 fnp_tcp_recv(void* sock, u8* buf, i32 len)
 {
-    tcp_sock_t* sk = (tcp_sock_t*) sock;
+    tcp_sock* sk = (tcp_sock*) sock;
 
     while (tcp_still_recv(sk)) {
         i32 ret = fnp_ring_pop(sk->rxbuf, buf, len);
@@ -173,7 +224,7 @@ i32 fnp_tcp_recv(void* sock, u8* buf, i32 len)
 
 void fnp_tcp_close(void* sock)
 {
-    tcp_sock_t* sk = sock;
+    tcp_sock* sk = sock;
     i32 state = tcp_state(sk);
 
     if(state == TCP_CLOSED || state ==  TCP_SYN_SENT
@@ -187,40 +238,11 @@ void fnp_tcp_close(void* sock)
     while (fnp_ring_len(sk->txbuf) > 0);
 
     sk->user_req |= TCP_USER_CLOSE;
-
-    while (tcp_state(sk) != TCP_CLOSED) ;   //wait for closing completely
-    tcp_free_sock(sk);
 }
 
-void* fnp_tcp_accept(void* sock) {
-    tcp_sock_t * sk = (tcp_sock_t *) sock;
-
-    tcp_sock_t* conn = NULL;
-    while (fnp_pring_dequeue(sk->accept, (void**)&conn) == 0);
-
-    return conn;
-}
-
-void tcp_set_state(tcp_sock_t* sk, i32 state)
+void tcp_set_state(tcp_sock* sk, i32 state)
 {
     i32 old_state = tcp_state(sk);
     sk->state = state;
     printf("state from %s to %s\n", tcp_state_str[old_state], tcp_state_str[state]);
-    switch (state) {
-        case TCP_LISTEN:
-            sk->tcp_recv = tcp_listen_recv;
-            break;
-        case TCP_SYN_SENT:
-            sk->tcp_recv = tcp_syn_sent_recv;
-            sk->tcp_send = tcp_syn_send;
-            break;
-        case TCP_SYN_RECV:
-            sk->tcp_recv = tcp_syn_recv_recv;
-            sk->tcp_send = tcp_syn_send;
-            break;
-        default:
-            sk->tcp_recv = tcp_data_recv;
-            sk->tcp_send = tcp_data_send;
-            break;
-    }
 }

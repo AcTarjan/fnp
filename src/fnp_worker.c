@@ -1,7 +1,6 @@
 #include "fnp_ether.h"
 #include "fnp_init.h"
 #include "fnp_arp.h"
-#include "tcp.h"
 
 #include <rte_ethdev.h>
 #include <unistd.h>
@@ -15,7 +14,9 @@
 #include "../examples/exp_common.h"
 #include "fnp_pring.h"
 
-i32 fnp_process_worker()
+extern void tcp_socket_output();
+
+int fnp_process_worker()
 {
     u32 lcore_id = rte_lcore_id();
     printf("fnp_process_worker lcore: %u\n", lcore_id);
@@ -23,7 +24,7 @@ i32 fnp_process_worker()
     struct rte_mbuf* mbufs[MBUF_BURST_SIZE];
     u64 arp_prev_tsc = 0, prev_tsc = 0, cur_tsc;
     u64 hz = rte_get_timer_hz();  //10ms
-    fnp_iface_t* iface = fnp_get_iface(0);
+    fnp_iface* iface = fnp_iface_get(0);
 
     i64 count = 0;
 
@@ -36,7 +37,7 @@ i32 fnp_process_worker()
         i32 nb = fnp_pring_dequeue_bulk(iface->rx_queue, mbufs, MBUF_BURST_SIZE);
         for (i32 i = 0; i < nb; ++i) {
             count ++;
-            if (count % 50 > 45) {
+            if (count % 50 > 30) {
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }
@@ -58,12 +59,12 @@ i32 fnp_process_worker()
     }
 }
 
-i32 fnp_rx_tx_worker()
+int fnp_rx_tx_worker()
 {
     struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {NULL};
     u32 lcore_id = rte_lcore_id();
     printf("fnp_rx_tx_worker lcore: %u\n", lcore_id);
-    fnp_iface_t* iface = fnp_get_iface(0);
+    fnp_iface* iface = fnp_iface_get(0);
     i64 count = 0;
 
     while (1)

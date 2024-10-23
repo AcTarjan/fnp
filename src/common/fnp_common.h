@@ -50,21 +50,13 @@ _a > _b ? _a : _b; \
 
 //#define likely(a) __glibc_likely((a))
 
-static inline void fnp_print_ipv4(u32 ip)
-{
-    u8 seg1 = ip & 0xff;
-    u8 seg2 = (ip >> 8) & 0xff;
-    u8 seg3 = (ip >> 16) & 0xff;
-    u8 seg4 = (ip >> 24) & 0xff;
-    printf("%u.%u.%u.%u\n",seg1,seg2,seg3,seg4);
-}
+typedef struct sock_param {
+    u32 lip;
+    u32 rip;
+    u16 lport;
+    u16 rport;
+} sock_param;
 
-static inline u32 fnp_ipv4_ston(char* ip_str)
-{
-    struct in_addr addr;
-    inet_aton(ip_str, &addr);
-
-    return addr.s_addr;
-}
+void* fnp_sock_param(uint32_t lip, uint16_t lport, uint32_t rip, uint16_t rport);
 
 #endif //FNP_COMMON_H

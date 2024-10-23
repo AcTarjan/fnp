@@ -4,7 +4,7 @@ void test_pring() {
     fnp_pring* r = fnp_pring_alloc(1000);
     int test = 88;
 
-    printf("test addr: %p\n", &test);
+    printf("tcp_register addr: %p\n", &test);
     int* p[20] = {};
     for(int i = 0; i < 20; i++)
         p[i] = &test;

@@ -1,7 +1,8 @@
 #include <stdio.h>
-#include "libconf.h"
+#include "libfnp-conf.h"
 
 int main() {
-    int x = add(10, 20);
+    fnp_config conf;
+    int x = parse_fnp_config("/root/fnp/libs/fnp/fnp.yaml", &conf);
     printf("x = %d\n", x);
 }

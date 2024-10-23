@@ -16,7 +16,6 @@ link_directories(libs)
 
 
 add_library(fnp SHARED
-        src/common/fnp_hash.c
         src/common/rbtree.c
         src/common/fnp_ring.c
         src/common/fnp_pring.c
@@ -31,6 +30,10 @@ add_library(fnp SHARED
         src/fnp_arp.c
         src/fnp_ether.c
         src/fnp_worker.c
+        src/common/hash.c
+        src/common/hash.h
+        src/inc/worker.h
+        src/fnp.c
 )
 
 target_compile_definitions(fnp PRIVATE USE_DPDK)
@@ -40,10 +43,10 @@ add_executable(send_tcp examples/send_tcp.c)
 
 
 add_executable(test_conf examples/test_conf.c)
-target_link_libraries(test_conf libconf.so)
+target_link_libraries(test_conf libfnp-conf.so)
 
 
-add_executable(test_hash examples/test_hash.c src/common/fnp_hash.c)
+add_executable(test_hash examples/test_hash.c)
 
 
 add_executable(test_ring examples/test_ring.c src/common/fnp_pring.c)
@@ -55,7 +58,7 @@ target_link_libraries(tcp_server fnp
         rte_hash rte_ip_frag rte_timer
         rte_mempool rte_mbuf rte_ring rte_ethdev rte_eal
         rte_kvargs rte_telemetry rte_net rte_meter
-        pthread
+        pthread libfnp-conf.so
 )
 
 

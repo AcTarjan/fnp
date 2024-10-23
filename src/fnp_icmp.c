@@ -1,5 +1,3 @@
-
-#include "fnp_icmp.h"
 #include "fnp_ipv4.h"
 
 #include <rte_icmp.h>
@@ -28,7 +26,7 @@ static u16 icmp_cksum(struct rte_icmp_hdr* hdr)
 
 void icmp_echo_reply(u16 iface_id, u32 dip, struct rte_icmp_hdr* req)
 {
-    struct rte_mbuf* m = fnp_alloc_mbuf();
+    struct rte_mbuf* m = fnp_mbuf_alloc();
     if(m == NULL)
     {
         printf("alloc icmp reply failed\n");
@@ -49,7 +47,7 @@ void icmp_echo_reply(u16 iface_id, u32 dip, struct rte_icmp_hdr* req)
     ipv4_send_mbuf(m, dip, IPPROTO_ICMP);
 }
 
-void icmp_recv_mbuf(struct rte_mbuf *m)
+void icmp_recv_mbuf(rte_mbuf *m)
 {
     struct rte_ipv4_hdr *ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
     struct rte_icmp_hdr* icmpHdr = rte_pktmbuf_mtod_offset(m, struct rte_icmp_hdr*, IPV4_HDR_LEN);
@@ -63,7 +61,7 @@ void icmp_recv_mbuf(struct rte_mbuf *m)
         }
     }
 
-    fnp_free_mbuf(m);
+    fnp_mbuf_free(m);
 }
 
 

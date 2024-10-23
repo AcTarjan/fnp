@@ -31,6 +31,8 @@ static inline i32 fnp_ring_avail(fnp_ring* r)
 //only write data, don't amend r->tail
 i32 fnp_ring_prepush(fnp_ring* r, i32 offset, u8* buf, i32 len);
 
+i32 fnp_ring_push_empty(fnp_ring* r, i32 len);
+
 i32 fnp_ring_push(fnp_ring* r, u8* buf, i32 len);
 
 //only read data, don't amend r->head

@@ -27,7 +27,7 @@ u64 txCount = 0;
 
 void ether_send_mbuf(struct rte_mbuf *m, struct rte_ether_addr *dmac, u16 type)
 {
-    fnp_iface_t* iface = fnp_get_iface(m->port);
+    fnp_iface* iface = fnp_iface_get(m->port);
     struct rte_ether_hdr* hdr = (struct rte_ether_hdr*)rte_pktmbuf_prepend(m, RTE_ETHER_HDR_LEN);
 
     rte_ether_addr_copy(&iface->mac, &hdr->src_addr);

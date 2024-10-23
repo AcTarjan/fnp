@@ -1,13 +1,34 @@
 #include "fnp_ipv4.h"
-#include "tcp_in.h"
 #include "fnp_arp.h"
 #include "fnp_ether.h"
-#include "fnp_icmp.h"
+#include "rte_tcp.h"
 
+
+extern void tcp_recv_mbuf(rte_mbuf* m);
+extern void icmp_recv_mbuf(rte_mbuf *m);
+
+typedef void (*ipv4_recv_handler)(rte_mbuf*);
+ipv4_recv_handler handlers[IPPROTO_MAX];
+
+static inline void ipv4_register(int proto, ipv4_recv_handler h) {
+    handlers[proto] = h;
+}
+
+void ipv4_recv_default(rte_mbuf* m) {
+    rte_pktmbuf_free(m);
+}
+
+void ipv4_init() {
+    for(int i = 0; i < IPPROTO_MAX; i++) {
+        handlers[i] = ipv4_recv_default;
+    }
+    ipv4_register(IPPROTO_ICMP, icmp_recv_mbuf);
+    ipv4_register(IPPROTO_TCP, tcp_recv_mbuf);
+}
 
 void ipv4_recv_mbuf(rte_mbuf *m, u64 tsc)
 {
-    fnp_iface_t* iface = fnp_get_iface(m->port);
+    fnp_iface* iface = fnp_iface_get(m->port);
     struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
 
     if(hdr->dst_addr != iface->ip)
@@ -16,34 +37,12 @@ void ipv4_recv_mbuf(rte_mbuf *m, u64 tsc)
         return ;
     }
 
-    switch (hdr->next_proto_id)
-    {
-//        case IPPROTO_UDP:
-//        {
-//            udp_recv_mbuf(m);
-//            break ;
-//        }
-        case IPPROTO_TCP:
-        {
-            tcp_recv_mbuf(m);
-            break ;
-        }
-        case IPPROTO_ICMP:
-        {
-            icmp_recv_mbuf(m);
-            break;
-        }
-        default:
-        {
-            rte_pktmbuf_free(m);
-        }
-    }
-
+    handlers[hdr->next_proto_id](m);
 }
 
 void ipv4_send_mbuf(rte_mbuf *m, u32 rip, u8 proto)
 {
-    fnp_iface_t* iface = fnp_get_iface(m->port);
+    fnp_iface* iface = fnp_iface_get(m->port);
     struct rte_ipv4_hdr* hdr = (struct rte_ipv4_hdr*) rte_pktmbuf_prepend(m, IPV4_HDR_LEN);
     struct rte_tcp_hdr* tcphdr = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr* ,IPV4_HDR_LEN);
     hdr->version_ihl = 0x45;

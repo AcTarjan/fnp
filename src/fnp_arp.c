@@ -20,13 +20,23 @@ typedef struct arp_entry_t
 } arp_entry_t;
 
 
+int arp_init()
+{
+    fnp.arpTbl = hash_create("ArpSocketTable", 256, 4);
+    if(unlikely(fnp.arpTbl == NULL)){
+        printf( "alloc arp table error!\n");
+        return -1;
+    }
+
+    return 0;
+}
 
 static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
 {
     arp_entry_t* e = NULL;
 
     //can't find
-    if(unlikely(fnp_lookup_hash(conf.arpTbl, &ip, &e) == 0))
+    if(unlikely(!hash_lookup(fnp.arpTbl, &ip, &e)))
     {
         e = fnp_malloc(sizeof(arp_entry_t));
         if (unlikely(e == NULL))
@@ -52,7 +62,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
         e->valid = 1;
     }
 
-    if (likely(fnp_add_hash(conf.arpTbl, &ip, e) != 0))
+    if (likely(!hash_add(fnp.arpTbl, &ip, e)))
     {
         printf("fail to add %u in gArpTable\n", ip);
         fnp_pring_free(e->pending);
@@ -64,7 +74,7 @@ static arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr *mac)
 }
 
 static void arp_del_entry(arp_entry_t* e) {
-    fnp_del_hash(conf.arpTbl, &e->ip);
+    hash_del(fnp.arpTbl, &e->ip);
     fnp_pring_free(e->pending);
     fnp_free(e);
 }
@@ -73,14 +83,14 @@ arp_entry_t* arp_lookup(u32 ip)
 {
     arp_entry_t* e = NULL;
 
-    fnp_lookup_hash(conf.arpTbl, &ip, &e);
+    hash_lookup(fnp.arpTbl, &ip, &e);
 
     return e;
 }
 
 struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
 {
-    struct rte_mbuf* mbuf = fnp_alloc_mbuf();
+    struct rte_mbuf* mbuf = fnp_mbuf_alloc();
     if(unlikely(mbuf == NULL))
     {
         printf("arp_mbuf_alloc alloc mbuf failed!\n");
@@ -103,7 +113,7 @@ struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
 
 static void arp_send_request(u16 iface_id, u32 tip)
 {
-    fnp_iface_t* iface = fnp_get_iface(iface_id);
+    fnp_iface* iface = fnp_iface_get(iface_id);
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REQUEST);
     mbuf->port = iface_id;
 
@@ -121,7 +131,7 @@ static void arp_send_request(u16 iface_id, u32 tip)
     ether_send_mbuf(mbuf, &broadcast, RTE_ETHER_TYPE_ARP);
 }
 
-static void arp_send_reply(fnp_iface_t* iface, struct rte_arp_hdr* req)
+static void arp_send_reply(fnp_iface* iface, struct rte_arp_hdr* req)
 {
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REPLY);
     mbuf->port = iface->id;
@@ -143,15 +153,13 @@ static void arp_send_reply(fnp_iface_t* iface, struct rte_arp_hdr* req)
 
 void arp_recv_mbuf(struct rte_mbuf* m)
 {
-    fnp_iface_t* iface = fnp_get_iface(m->port);
+    fnp_iface* iface = fnp_iface_get(m->port);
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(m, struct rte_arp_hdr*);
 
     u32 src_ip = arpHdr->arp_data.arp_sip;
-//    fnp_print_ipv4(src_ip);
     if(iface->ip == arpHdr->arp_data.arp_tip)
     {
         arp_insert_entry(src_ip, &arpHdr->arp_data.arp_sha);
-//        printf("insert ");
         switch(fnp_swap_16(arpHdr->arp_opcode))
         {
             case RTE_ARP_OP_REQUEST:
@@ -191,7 +199,7 @@ void arp_update_entry()
     u32* key = NULL;
     arp_entry_t* e = NULL;
     rte_mbuf* m = NULL;
-    while (fnp_hash_iterate(conf.arpTbl, &key, &e, &next)) {
+    while (hash_iterate(fnp.arpTbl, &key, &e, &next)) {
         if(e->valid) {
             while (fnp_pring_dequeue(e->pending, &m)) {
                 ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);

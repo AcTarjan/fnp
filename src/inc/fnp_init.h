@@ -7,14 +7,15 @@
 #include <rte_timer.h>
 #include "fnp_common.h"
 #include "fnp_ring.h"
-#include "fnp_hash.h"
 #include "fnp_pring.h"
+#include "hash.h"
+#include "libfnp-conf.h"
 
 #define MAX_IFACES      8
 
 typedef struct rte_mbuf rte_mbuf;
 
-typedef struct fnp_iface {
+typedef struct {
     struct rte_ether_addr mac;
     u16 id;
     u32 ip;
@@ -22,54 +23,42 @@ typedef struct fnp_iface {
     u32 gateway;
     fnp_pring* tx_queue;
     fnp_pring* rx_queue;
-} fnp_iface_t;
-
-typedef struct dpdk_conf {
-    char* lcore_list;
-    char* whitelist;
-    u16 main_lcore;
-    u16 promiscuous;
-} dpdk_conf_t;
+} fnp_iface;
 
 
-
-typedef struct fnp_conf {
-    dpdk_conf_t dpdk;
-    fnp_iface_t ifaces[MAX_IFACES];
-    u16 ifaces_num;
-    u16 worker1;
-    u16 worker2;
-    u16 worker3;
-    struct rte_mempool* directPool;
-    fnp_hash_t* arpTbl;
-} fnp_conf_t ;
+typedef struct {
+    fnp_config conf;
+    fnp_iface ifaces[MAX_IFACES];
+    struct rte_mempool* pool;
+    rte_hash* arpTbl;
+    rte_hash* tcpTbl;
+    rte_hash* udpTbl;
+} fnp_context;
 
 
-extern fnp_conf_t conf;
+extern fnp_context fnp;
 
 
-static inline rte_mbuf *fnp_alloc_mbuf()
+static inline rte_mbuf *fnp_mbuf_alloc()
 {
-    u32 count = rte_mempool_avail_count(conf.directPool);
-    rte_mbuf* m = rte_pktmbuf_alloc(conf.directPool);
-
+    rte_mbuf* m = rte_pktmbuf_alloc(fnp.pool);
     if(m == NULL) {
+        u32 count = rte_mempool_avail_count(fnp.pool);
         printf("avail count: %u\n",count);
         printf("error: rte_pktmbuf_alloc failed\n");
     }
 
     return m;
-
 }
 
-static inline void fnp_free_mbuf(rte_mbuf* m)
+static inline void fnp_mbuf_free(rte_mbuf* m)
 {
     rte_pktmbuf_free(m);
 }
 
-static inline fnp_iface_t *fnp_get_iface(u16 id)
+static inline fnp_iface *fnp_iface_get(u16 id)
 {
-    return &conf.ifaces[id];
+    return &fnp.ifaces[id];
 }
 
 #endif //FNP_INIT_H

@@ -13,6 +13,7 @@
 
 #define TCP_USER_CONNECT   0x01
 #define TCP_USER_CLOSE   0x02
+#define TCP_USER_FREE   0x04
 
 #define TCP_LISTEN_BACKLOG 128
 
@@ -26,7 +27,7 @@ typedef struct tcp_option {
         u32 ts_val;
         u32 ts_ecr;
     } ts;
-} tcp_option_t;
+} tcp_option;
 
 
 typedef struct tcp_segment
@@ -42,31 +43,18 @@ typedef struct tcp_segment
     u16 iface_id;
     u8 hdr_len;
     u8 flags;
-    tcp_option_t opt;
+    tcp_option opt;
     u8* data;
-} tcp_seg_t;
-
-
-typedef struct tcp_sock_key {
-    u32 id;
-    u32 rip;
-    u16 port;
-    u16 rport;
-} tcp_sock_key_t;
+} tcp_segment;
 
 typedef struct tcp_sock {
     struct tcp_sock* parent;
-    union {
-        tcp_sock_key_t key;
-        struct {
-            u32 id;
-            u32 rip;
-            u16 port;
-            u16 rport;
-        };
-    };
-
+    sock_param* param;
+    fnp_iface* iface;
     i32 state;
+    u32 user_req;               //tcp connect
+
+    bool can_free;           //进入accept队列后，和被用户使用后，不能释放
 
     u32 iss;                // initial sending sequence number
     u32 snd_una;            // send unacknowledged
@@ -93,7 +81,6 @@ typedef struct tcp_sock {
 
     u16 mss;                        //maximum segment size, 对方的mss和自己的mss取最小值
 
-    u32 user_req;               //tcp connect
     union {
         fnp_pring* accept;
         struct {
@@ -102,52 +89,28 @@ typedef struct tcp_sock {
         };
     };
 
-    void (*tcp_send)(struct tcp_sock* sk);
-    void (*tcp_recv)(struct tcp_sock* sk, tcp_seg_t* seg);
-
-
     rb_tree ofo_root;
 
     struct rte_timer timers[TCPT_NTIMERS];
-} tcp_sock_t;
+} tcp_sock;
 
+typedef void (*tcp_recv_func)(tcp_sock* sk, tcp_segment* seg);
+typedef void (*tcp_send_func)(tcp_sock* sk);
 
-inline static i32 tcp_state(tcp_sock_t* sk)
+extern tcp_recv_func tcp_recv[TCP_STATE_END];
+extern tcp_send_func tcp_send[TCP_STATE_END];
+
+inline static i32 tcp_state(tcp_sock* sk)
 {
     return sk->state;
 }
 
 
-void tcp_set_state(tcp_sock_t* sk, i32 state);
+void tcp_set_state(tcp_sock* sk, i32 state);
 
-
-static inline bool tcp_can_send(tcp_sock_t *sk) {
-   u32 state = tcp_state(sk);
-   if (state == TCP_ESTABLISHED || state == TCP_CLOSE_WAIT) {
-       if (fnp_ring_avail(sk->txbuf) == 0) //发送缓冲区满
-           return false;
-       return true;
-   }
-   return false;
-}
-
-static inline bool tcp_still_recv(tcp_sock_t* sk) {
-    i32 state = tcp_state(sk);
-    if(state == TCP_ESTABLISHED ||
-       state == TCP_FIN_WAIT_1 ||
-       state == TCP_FIN_WAIT_2 ) {  //可以接收数据
-        return true;
-    }
-
-    if(fnp_ring_len(sk->rxbuf) > 0) {
-        return true;
-    }
-
-    return false;
-}
-
-void* fnp_tcp_sock(u32 id, u16 port, u32 rip, u16 rport);
-
-i32 fnp_lookup_sock(tcp_sock_key_t* key, tcp_sock_t** sk);
+void* tcp_bind(sock_param* param);
+void* tcp_listen(sock_param* param);
+void* tcp_connect(sock_param* param);
+void tcp_free_sock(void* sock);
 
 #endif //FNP_TCP_SOCK_H

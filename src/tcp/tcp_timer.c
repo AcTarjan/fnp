@@ -6,12 +6,13 @@
 //当接收到ack时, 停止重传定时器。如果还有未确认的数据，则重启重传定时器
 void retransmission_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
-    tcp_sock_t* sk = arg;
+    tcp_sock* sk = arg;
     sk->retransmission_num ++;
     if(sk->retransmission_num > 6) {
         printf("retransmission failed!: %d\n", sk->retransmission_num);
         tcp_set_state(sk, TCP_CLOSED);
         rte_timer_stop(tim);        //停止
+        return;
     }
     printf("retransmission_callback: %d\n", sk->retransmission_num);
     sk->snd_nxt = sk->snd_una;
@@ -21,18 +22,18 @@ void retransmission_callback(__attribute__((unused)) struct rte_timer *tim, void
 
 void delay_ack_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
-    tcp_sock_t* sk = arg;
+    tcp_sock* sk = arg;
     tcp_send_ack(sk, false);
 }
 
 void timeout_2msl_callback(__attribute__((unused)) struct rte_timer *tim, void *arg)
 {
-    tcp_sock_t* sk = arg;
+    tcp_sock* sk = arg;
     printf("timeout_2msl_callback");
     tcp_set_state(sk, TCP_CLOSED);
 }
 
-void tcp_timer_start(tcp_sock_t* sk, i32 index) {
+void tcp_timer_start(tcp_sock* sk, i32 index) {
     u64 hz = rte_get_timer_hz();    //定时器的频率
     u32 lcore_id = rte_lcore_id();
 

@@ -1,7 +1,7 @@
-#include "inc/tcp_sock.h"
-#include "inc/tcp_in.h"
-#include "inc/tcp_comm.h"
-#include "inc/tcp_timer.h"
+#include "fnp_init.h"
+#include "tcp_sock.h"
+#include "tcp_comm.h"
+#include "tcp_timer.h"
 #include "fnp_ipv4.h"
 
 
@@ -14,7 +14,7 @@ static u8 tcp_outflags[TCP_STATE_END] = {
         RTE_TCP_ACK_FLAG, RTE_TCP_ACK_FLAG,
 };
 
-void tcp_write_options(tcp_sock_t* sk, struct rte_tcp_hdr* hdr, bool syn)
+void tcp_write_options(tcp_sock* sk, struct rte_tcp_hdr* hdr, bool syn)
 {
     u8* optStart = (u8*)(hdr + 1);
     u8 i = 0;
@@ -48,15 +48,15 @@ void tcp_write_options(tcp_sock_t* sk, struct rte_tcp_hdr* hdr, bool syn)
 
 }
 
-void tcp_send_syn(tcp_sock_t* sk, rte_mbuf* m, u8 flags) {
+void tcp_send_syn(tcp_sock* sk, rte_mbuf* m, u8 flags) {
     sk->rcv_wnd = fnp_ring_avail(sk->rxbuf);
     sk->snd_nxt = sk->iss;
 
     u8 hdr_len = TCP_HDR_MIN_LEN + 8;
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, hdr_len);
-    hdr->src_port = sk->port;
-    hdr->dst_port = sk->rport;
+    hdr->src_port = sk->param->lport;
+    hdr->dst_port = sk->param->rport;
     hdr->sent_seq = fnp_swap_32(sk->snd_nxt);
     hdr->recv_ack = fnp_swap_32(sk->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -69,18 +69,18 @@ void tcp_send_syn(tcp_sock_t* sk, rte_mbuf* m, u8 flags) {
 
 //    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 
-    ipv4_send_mbuf(m, sk->rip, IPPROTO_TCP);
+    ipv4_send_mbuf(m, sk->param->rip, IPPROTO_TCP);
 }
 
-void tcp_send_data(tcp_sock_t* sk, rte_mbuf* m, u8 flags)
+void tcp_send_data(tcp_sock* sk, rte_mbuf* m, u8 flags)
 {
     sk->rcv_wnd = fnp_ring_avail(sk->rxbuf);
     u8 hdr_len = TCP_HDR_MIN_LEN;
 
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, hdr_len);
-    hdr->src_port = sk->port;
-    hdr->dst_port = sk->rport;
+    hdr->src_port = sk->param->lport;
+    hdr->dst_port = sk->param->rport;
     hdr->sent_seq = fnp_swap_32(sk->snd_nxt);
     hdr->recv_ack = fnp_swap_32(sk->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -92,11 +92,11 @@ void tcp_send_data(tcp_sock_t* sk, rte_mbuf* m, u8 flags)
     tcp_write_options(sk, hdr, false);
 //    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 
-    ipv4_send_mbuf(m, sk->rip, IPPROTO_TCP);
+    ipv4_send_mbuf(m, sk->param->rip, IPPROTO_TCP);
 }
 
-void tcp_send_rst(tcp_seg_t* seg) {
-    rte_mbuf* m = fnp_alloc_mbuf();
+void tcp_send_rst(tcp_segment* seg) {
+    rte_mbuf* m = fnp_mbuf_alloc();
     m->port = seg->iface_id;
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, TCP_HDR_MIN_LEN);
@@ -123,30 +123,32 @@ void tcp_send_rst(tcp_seg_t* seg) {
     ipv4_send_mbuf(m, seg->rip, IPPROTO_TCP);
 }
 
-void tcp_send_ack(tcp_sock_t* sk, bool delay)
+void tcp_send_ack(tcp_sock* sk, bool delay)
 {
     if(likely(delay)) {
         if (tcp_timer_is_running(sk, TCPT_DELAY_ACK))
             return;
         tcp_timer_start(sk, TCPT_DELAY_ACK);
     } else {
-        struct rte_mbuf* m = fnp_alloc_mbuf();
-        m->port = sk->id;
+        struct rte_mbuf* m = fnp_mbuf_alloc();
+        m->port = sk->iface->id;
         tcp_send_data(sk, m, RTE_TCP_ACK_FLAG);
     }
 }
 
 //send SYN or SYN|ACK
-void tcp_syn_send(tcp_sock_t* sk) {
+void tcp_syn_send(tcp_sock* sk) {
     if (sk->snd_nxt == sk->snd_una) {  //还未发送过SYN
-        struct rte_mbuf *m = fnp_alloc_mbuf();
+        struct rte_mbuf *m = fnp_mbuf_alloc();
         if (m == NULL) {
-            printf("fnp_alloc_mbuf failed\n");
+            printf("fnp_mbuf_alloc failed\n");
             return;
         }
-        m->port = sk->id;
+        m->port = sk->iface->id;
         tcp_send_syn(sk, m, tcp_outflags[tcp_state(sk)]);
         sk->snd_nxt += 1;
+        if (SEQ_LT(sk->snd_max, sk->snd_nxt))
+            sk->snd_max = sk->snd_nxt;
 
         //启动重传定时器
         tcp_timer_start(sk, TCPT_REXMT);
@@ -154,7 +156,7 @@ void tcp_syn_send(tcp_sock_t* sk) {
 }
 
 //send tcp segment
-void tcp_data_send(tcp_sock_t* sk) {
+void tcp_data_send(tcp_sock* sk) {
     for(i32 i = 0; i < TCP_MAX_SEND_BURST; i++) {
         //当触发重传后，结果收到了ACK，导致snd_una变大, 要保证：snd_nxt >= snd_una
         sk->snd_nxt = FNP_MAX(sk->snd_una, sk->snd_nxt);
@@ -172,12 +174,12 @@ void tcp_data_send(tcp_sock_t* sk) {
                 break;
             }
 
-            struct rte_mbuf *m = fnp_alloc_mbuf();
+            struct rte_mbuf *m = fnp_mbuf_alloc();
             if(m == NULL) {
-                printf("fnp_alloc_mbuf failed\n");
+                printf("fnp_mbuf_alloc failed\n");
                 return ;
             }
-            m->port = sk->id;
+            m->port = sk->iface->id;
             u8 *buf = rte_pktmbuf_mtod(m, u8*);
 
             i32 len = fnp_ring_top(sk->txbuf, buf, data_offset, win);
@@ -213,10 +215,7 @@ void tcp_data_send(tcp_sock_t* sk) {
     }
 }
 
-
-extern fnp_hash_t* tcpSockTbl;
-
-void tcp_handle_user_req(tcp_sock_t* sk) {
+void tcp_handle_user_req(tcp_sock* sk) {
     // 处理用户调用
     if (sk->user_req & TCP_USER_CLOSE) {
         sk->user_req &= ~TCP_USER_CLOSE;
@@ -224,20 +223,21 @@ void tcp_handle_user_req(tcp_sock_t* sk) {
             tcp_set_state(sk, TCP_LAST_ACK);
         else
             tcp_set_state(sk, TCP_FIN_WAIT_1);
+        sk->can_free = true;
     }
 
     if (sk->user_req & TCP_USER_CONNECT) {
         sk->user_req &= ~TCP_USER_CONNECT;
         tcp_set_state(sk, TCP_SYN_SENT);
     }
+
 }
 
 void tcp_socket_output() {
-    u8* key;  tcp_sock_t* sk; i32 next = 0;
-    while (fnp_hash_iterate(tcpSockTbl, &key, &sk, &next)) {
-        if(tcp_state(sk) > TCP_LISTEN) {
-            tcp_handle_user_req(sk);
-            sk->tcp_send(sk);
-        }
+    u8* key;  tcp_sock* sk; u32 next = 0; i32 state;
+    while (hash_iterate(fnp.tcpTbl, &key, (void**)&sk, &next)) {
+        state = tcp_state(sk);
+        tcp_handle_user_req(sk);
+        tcp_send[state](sk);
     }
 }
