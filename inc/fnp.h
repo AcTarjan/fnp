@@ -1,6 +1,8 @@
 #ifndef FNP_H
 #define FNP_H
 #include <stdint.h>
+#include "fnp_common.h"
+
 /*
  * fnp_init
  * 初始化fnp, 必须在使用fnp之前调用
@@ -46,14 +48,14 @@ void* fnp_tcp_accept(void* sock);
 void* fnp_tcp_connect(void* param);
 
 /*
- * fnp_tcp_send
+ * tcp_send
  * 发送数据
  * sock: an connection socket
  * buf: 数据缓冲区
  * len: 数据长度
  * 返回值: 成功发送的数据长度
  */
-int32_t fnp_tcp_send(void* sock, uint8_t* buf, int32_t len);
+int32_t tcp_send(void* sock, u8 *buf, i32 len);
 
 /*
  * fnp_tcp_recv

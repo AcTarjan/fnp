@@ -34,6 +34,10 @@ add_library(fnp SHARED
         src/common/hash.h
         src/inc/worker.h
         src/fnp.c
+        src/tcp/tcp.c
+        src/tcp/inc/tcp.h
+        src/tcp/tcp_api.c
+        src/tcp/inc/tcp_api.h
 )
 
 target_compile_definitions(fnp PRIVATE USE_DPDK)

@@ -1,51 +1,12 @@
 #ifndef FNP_TCP_SOCK_H
 #define FNP_TCP_SOCK_H
 
-#include <semaphore.h>
-#include "fnp_init.h"
-
 #include "fnp_ring.h"
 #include "fnp_init.h"
 #include "tcp_comm.h"
 #include "rbtree.h"
 
 #include <rte_tcp.h>
-
-#define TCP_USER_CONNECT   0x01
-#define TCP_USER_CLOSE   0x02
-#define TCP_USER_FREE   0x04
-
-#define TCP_LISTEN_BACKLOG 128
-
-
-
-typedef struct tcp_option {
-    u8 wnd_scale;
-    u8 permit_sack;
-    u16 mss;
-    struct {
-        u32 ts_val;
-        u32 ts_ecr;
-    } ts;
-} tcp_option;
-
-
-typedef struct tcp_segment
-{
-    u32 lip;
-    u32 rip;
-    u16 lport;
-    u16 rport;
-    u32 seq;
-    u32 ack;
-    u32 rx_win;
-    u16 data_len;
-    u16 iface_id;
-    u8 hdr_len;
-    u8 flags;
-    tcp_option opt;
-    u8* data;
-} tcp_segment;
 
 typedef struct tcp_sock {
     struct tcp_sock* parent;
@@ -55,7 +16,7 @@ typedef struct tcp_sock {
     u32 user_req;               //tcp connect
 
     bool can_free;           //进入accept队列后，和被用户使用后，不能释放
-
+    bool permit_sack;
     u32 iss;                // initial sending sequence number
     u32 snd_una;            // send unacknowledged
     u32 snd_nxt;            // send next
@@ -94,23 +55,14 @@ typedef struct tcp_sock {
     struct rte_timer timers[TCPT_NTIMERS];
 } tcp_sock;
 
-typedef void (*tcp_recv_func)(tcp_sock* sk, tcp_segment* seg);
-typedef void (*tcp_send_func)(tcp_sock* sk);
-
-extern tcp_recv_func tcp_recv[TCP_STATE_END];
-extern tcp_send_func tcp_send[TCP_STATE_END];
-
-inline static i32 tcp_state(tcp_sock* sk)
-{
-    return sk->state;
-}
-
-
+#define tcp_state(sk)  ((sk)->state)
 void tcp_set_state(tcp_sock* sk, i32 state);
 
-void* tcp_bind(sock_param* param);
-void* tcp_listen(sock_param* param);
-void* tcp_connect(sock_param* param);
-void tcp_free_sock(void* sock);
+tcp_sock* tcp_bind_sock(sock_param* param);
+
+bool tcp_lookup_sock(tcp_segment* cb, tcp_sock** sk);
+
+void tcp_free_sock(tcp_sock* sock);
+
 
 #endif //FNP_TCP_SOCK_H

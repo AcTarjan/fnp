@@ -14,38 +14,40 @@ static u8 tcp_outflags[TCP_STATE_END] = {
         RTE_TCP_ACK_FLAG, RTE_TCP_ACK_FLAG,
 };
 
-void tcp_write_options(tcp_sock* sk, struct rte_tcp_hdr* hdr, bool syn)
+void tcp_write_syn_options(tcp_sock* sk, struct rte_tcp_hdr* hdr)
 {
     u8* optStart = (u8*)(hdr + 1);
     u8 i = 0;
 
-    if(syn) {
-        // Maximum Segment Size Option
-        optStart[i] = 2;
-        optStart[i + 1] = 4;
-        u16 *mss = optStart + i + 2;
-        *mss = fnp_swap_16(sk->mss);
-        i += 4;
+    // Maximum Segment Size Option
+    optStart[i] = 2;
+    optStart[i + 1] = 4;
+    u16 *mss = optStart + i + 2;
+    *mss = fnp_swap_16(sk->mss);
+    i += 4;
 
 
-        //Window Scale option, shift count = 7
-        optStart[i] = 3;
-        optStart[i + 1] = 3;
-        optStart[i + 2] = sk->rcv_wnd_scale;
-        i += 3;
+    //Window Scale option, shift count = 7
+    optStart[i] = 3;
+    optStart[i + 1] = 3;
+    optStart[i + 2] = sk->rcv_wnd_scale;
+    i += 3;
 
-        //permit sack
-//        optStart[i] = 4;
-//        optStart[i + 1] = 2;
-//        i += 2;
-    }
+    // NOP Option填充
+    optStart[i] = 1;
+    i++;
+
+
+    //SACK Permitted Option
+    optStart[i] = 4;
+    optStart[i + 1] = 2;
+    i += 2;
 
     //End of Option List Option
     while (i % 4 != 0) {
         optStart[i] = 0;
         i++;
     }
-
 }
 
 void tcp_send_syn(tcp_sock* sk, rte_mbuf* m, u8 flags) {
@@ -65,7 +67,7 @@ void tcp_send_syn(tcp_sock* sk, rte_mbuf* m, u8 flags) {
     hdr->tcp_urp = fnp_swap_16(sk->snd_up);
     hdr->data_off = ((hdr_len) / 4) << 4;
 
-    tcp_write_options(sk, hdr, true);
+    tcp_write_syn_options(sk, hdr);
 
 //    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 
@@ -89,7 +91,7 @@ void tcp_send_data(tcp_sock* sk, rte_mbuf* m, u8 flags)
     hdr->tcp_urp = fnp_swap_16(sk->snd_up);
     hdr->data_off = ((hdr_len) / 4) << 4;
 
-    tcp_write_options(sk, hdr, false);
+//    tcp_write_syn_options(sk, hdr, false);
 //    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
 
     ipv4_send_mbuf(m, sk->param->rip, IPPROTO_TCP);
@@ -215,29 +217,10 @@ void tcp_data_send(tcp_sock* sk) {
     }
 }
 
-void tcp_handle_user_req(tcp_sock* sk) {
-    // 处理用户调用
-    if (sk->user_req & TCP_USER_CLOSE) {
-        sk->user_req &= ~TCP_USER_CLOSE;
-        if(tcp_state(sk) == TCP_CLOSE_WAIT)
-            tcp_set_state(sk, TCP_LAST_ACK);
-        else
-            tcp_set_state(sk, TCP_FIN_WAIT_1);
-        sk->can_free = true;
-    }
+void tcp_listen_send(tcp_sock* sk) {}
 
-    if (sk->user_req & TCP_USER_CONNECT) {
-        sk->user_req &= ~TCP_USER_CONNECT;
-        tcp_set_state(sk, TCP_SYN_SENT);
-    }
-
+void tcp_closed_send(tcp_sock* sk) {
+    if(sk->can_free)
+        tcp_free_sock(sk);
 }
 
-void tcp_socket_output() {
-    u8* key;  tcp_sock* sk; u32 next = 0; i32 state;
-    while (hash_iterate(fnp.tcpTbl, &key, (void**)&sk, &next)) {
-        state = tcp_state(sk);
-        tcp_handle_user_req(sk);
-        tcp_send[state](sk);
-    }
-}

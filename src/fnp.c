@@ -1,4 +1,4 @@
-#include "tcp_sock.h"
+#include "tcp_api.h"
 
 u32 fnp_ipv4_ston(const char* ip)
 {
@@ -49,7 +49,7 @@ void* fnp_tcp_bind(void* param) {
         return NULL;
     }
 
-    return tcp_bind(param);
+    return tcp_bind_sock(param);
 }
 
 void* fnp_tcp_listen(void* param) {
@@ -59,7 +59,7 @@ void* fnp_tcp_listen(void* param) {
         return NULL;
     }
 
-    return tcp_listen(param);
+    return tcp_listen((sock_param*) param);
 }
 
 void* fnp_tcp_connect(void* param) {
@@ -69,20 +69,21 @@ void* fnp_tcp_connect(void* param) {
         return NULL;
     }
 
-    return tcp_connect(param);
+    return tcp_connect((sock_param*)param);
 }
 
-void* fnp_tcp_accept(void* sock) {
-    tcp_sock * sk = (tcp_sock *) sock;
+void* fnp_tcp_accept(void* sk) {
+    return tcp_accept((tcp_sock*)sk);
+}
 
-    tcp_sock* conn = NULL;
-    while (1) {
-        if(fnp_pring_dequeue(sk->accept, (void**)&conn)) {
-            if (tcp_state(conn) != TCP_CLOSED) {
-                break;
-            }
-            sk->can_free = true;
-        }
-    }
-    return conn;
+int fnp_tcp_send(void* sk, void* buf, int len) {
+    return tcp_send((tcp_sock*)sk, buf, len);
+}
+
+int fnp_tcp_recv(void* sk, void* buf, int len) {
+    return tcp_recv((tcp_sock*)sk, buf, len);
+}
+
+void fnp_tcp_close(void* sk) {
+    tcp_close((tcp_sock*)sk);
 }

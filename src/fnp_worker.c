@@ -14,7 +14,7 @@
 #include "../examples/exp_common.h"
 #include "fnp_pring.h"
 
-extern void tcp_socket_output();
+extern void tcp_output();
 
 int fnp_process_worker()
 {
@@ -45,7 +45,7 @@ int fnp_process_worker()
         }
 
         /**** tcp send data ****/
-        tcp_socket_output();
+        tcp_output();
 
         if (cur_tsc - prev_tsc > hz/1000) {    // 1ms
             rte_timer_manage();         //触发定时器

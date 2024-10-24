@@ -13,7 +13,6 @@
 
 #define MAX_IFACES      8
 
-typedef struct rte_mbuf rte_mbuf;
 
 typedef struct {
     struct rte_ether_addr mac;
