@@ -1,16 +1,13 @@
 #include "fnp_ipv4.h"
 #include "fnp_arp.h"
-#include "fnp_ether.h"
-#include "rte_tcp.h"
+#include <rte_tcp.h>
+#include <rte_ip.h>
 
-
-extern void tcp_recv_mbuf(rte_mbuf* m);
 extern void icmp_recv_mbuf(rte_mbuf *m);
 
-typedef void (*ipv4_recv_handler)(rte_mbuf*);
-ipv4_recv_handler handlers[IPPROTO_MAX];
+static ipv4_recv_handler handlers[IPPROTO_MAX];
 
-static inline void ipv4_register(int proto, ipv4_recv_handler h) {
+void ipv4_register(int proto, ipv4_recv_handler h) {
     handlers[proto] = h;
 }
 
@@ -23,7 +20,6 @@ void ipv4_init() {
         handlers[i] = ipv4_recv_default;
     }
     ipv4_register(IPPROTO_ICMP, icmp_recv_mbuf);
-    ipv4_register(IPPROTO_TCP, tcp_recv_mbuf);
 }
 
 void ipv4_recv_mbuf(rte_mbuf *m, u64 tsc)

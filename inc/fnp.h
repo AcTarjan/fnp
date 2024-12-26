@@ -55,7 +55,7 @@ void* fnp_tcp_connect(void* param);
  * len: 数据长度
  * 返回值: 成功发送的数据长度
  */
-int32_t tcp_send(void* sock, u8 *buf, i32 len);
+int32_t fnp_tcp_send(void* sock, u8 *buf, i32 len);
 
 /*
  * fnp_tcp_recv
@@ -65,7 +65,7 @@ int32_t tcp_send(void* sock, u8 *buf, i32 len);
  * len: 数据长度
  * 返回值: 成功接收的数据长度
  */
-int32_t fnp_tcp_recv(void* sock, uint8_t* buf, int32_t len);
+int fnp_tcp_recv(void* sock, u8* buf, int32_t len);
 
 /*
  * fnp_tcp_close

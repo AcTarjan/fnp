@@ -5,7 +5,6 @@
 #include "tcp_in.h"
 #include "tcp_out.h"
 #include "tcp_timer.h"
-#include <rte_ip.h>
 #include <unistd.h>
 
 
@@ -58,7 +57,6 @@ static inline void tcp_handle_in_order_data(tcp_sock* sk, tcp_segment* seg) {
 static inline void tcp_handle_ack(tcp_sock* sk, tcp_segment* seg) {
     //RFC5961: snd_una - max_snd_wnd =< ack =< snd_max
     if(SEQ_LE(sk->snd_una - sk->max_snd_wnd, seg->ack) && SEQ_LE(seg->ack, sk->snd_max)) {
-
         // snd_una < ack <= snd_max
         if(SEQ_LT(sk->snd_una, seg->ack) && SEQ_LE(seg->ack, sk->snd_max)) {
             //注意：txbuf中不包括SYN和FIN，但是SYN和FIN占用1个seq，此时队列为空, 也pop不出来

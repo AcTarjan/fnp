@@ -76,11 +76,11 @@ void* fnp_tcp_accept(void* sk) {
     return tcp_accept((tcp_sock*)sk);
 }
 
-int fnp_tcp_send(void* sk, void* buf, int len) {
+int fnp_tcp_send(void* sk, u8* buf, int len) {
     return tcp_send((tcp_sock*)sk, buf, len);
 }
 
-int fnp_tcp_recv(void* sk, void* buf, int len) {
+int fnp_tcp_recv(void* sk, u8* buf, int len) {
     return tcp_recv((tcp_sock*)sk, buf, len);
 }
 

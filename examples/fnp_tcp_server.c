@@ -62,7 +62,7 @@ void* process(void* conn) {
             break;
         }
 
-        int32_t send_ret = tcp_send(conn, buf, ret);
+        int32_t send_ret = fnp_tcp_send(conn, buf, ret);
         if(ret != w || ret != send_ret) {
             printf("%lu send error! %d:%d\n", pid,ret, send_ret);
             break;

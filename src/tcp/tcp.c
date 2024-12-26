@@ -3,6 +3,7 @@
 #include "tcp_sock.h"
 #include "tcp_in.h"
 #include "tcp_out.h"
+#include "fnp_ipv4.h"
 #include <rte_ip.h>
 
 static tcp_recv_func tcp_recv[TCP_STATE_END];
@@ -128,6 +129,7 @@ static inline void tcp_handle_user_req(tcp_sock* sk) {
         else
             tcp_set_state(sk, TCP_FIN_WAIT_1);
         sk->can_free = true;
+        return;
     }
 
     if (sk->user_req & TCP_USER_CONNECT) {
@@ -154,6 +156,8 @@ i32 tcp_init() {
     }
 
     tcp_register();
+
+    ipv4_register(IPPROTO_TCP, tcp_recv_mbuf);
 
     return 0;
 }

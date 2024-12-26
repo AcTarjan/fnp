@@ -56,8 +56,9 @@ i32 tcp_send(tcp_sock* sk, u8* buf, i32 len)
 {
     u32 state = tcp_state(sk);
 
+
     if(state == TCP_ESTABLISHED || state == TCP_CLOSE_WAIT) {
-        while (fnp_ring_avail(sk->txbuf) < len);
+        while (fnp_ring_avail(sk->txbuf) < len && tcp_state(sk) != TCP_CLOSED);
         return fnp_ring_push(sk->txbuf, buf, len);
     } else
         return 0;
@@ -65,12 +66,18 @@ i32 tcp_send(tcp_sock* sk, u8* buf, i32 len)
 
 static inline bool tcp_still_recv(tcp_sock* sk) {
     i32 state = tcp_state(sk);
+
+    if(state == TCP_CLOSED)
+        return false;
+
     if(state == TCP_ESTABLISHED ||
        state == TCP_FIN_WAIT_1 ||
        state == TCP_FIN_WAIT_2 ) {  //可以接收数据
         return true;
     }
 
+
+    //接收到FIN，但是还有数据未接收
     if(fnp_ring_len(sk->rxbuf) > 0) {
         return true;
     }
