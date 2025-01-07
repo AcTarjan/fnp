@@ -1,0 +1,68 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: {}
+  labels:
+    k8s.kuboard.cn/name: dpdk-slave-deployment
+  name: dpdk-slave-deployment
+  namespace: default
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 0
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      k8s.kuboard.cn/name: dpdk-slave-deployment
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        k8s.kuboard.cn/name: dpdk-slave-deployment
+    spec:
+      containers:
+        - image: 'dpdk-slave:v1'
+          imagePullPolicy: IfNotPresent
+          name: dpdk-slave
+          resources: {}
+          securityContext:
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /root/k8s
+              name: k8s
+            - mountPath: /opt/dpdk
+              name: dpdk
+              readOnly: true
+            - mountPath: /var/run/dpdk
+              name: var-dpdk
+            - mountPath: /dev/hugepages
+              name: hugepages
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - hostPath:
+            path: /root/fnp/deploy/k8s
+            type: Directory
+          name: k8s
+        - hostPath:
+            path: /opt/dpdk
+            type: Directory
+          name: dpdk
+        - hostPath:
+            path: /var/run/dpdk
+            type: Directory
+          name: var-dpdk
+        - hostPath:
+            path: /dev/hugepages
+            type: Directory
+          name: hugepages

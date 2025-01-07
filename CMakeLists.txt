@@ -69,3 +69,13 @@ target_link_libraries(tcp_server fnp
 
 
 add_executable(linux_tcp_server examples/linux_tcp_server.c)
+
+
+#进程间通信
+add_executable(ipc_slave examples/ipc_slave.c)
+target_link_libraries(ipc_slave rte_mempool rte_mbuf rte_ring rte_ethdev rte_eal)
+set_target_properties(ipc_slave PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/deploy/k8s)
+set_target_properties(ipc_slave PROPERTIES OUTPUT_NAME dpdkSlaveApp)
+
+add_executable(ipc_master examples/ipc_master.c)
+target_link_libraries(ipc_master rte_mempool rte_mbuf rte_ring rte_ethdev rte_eal)
