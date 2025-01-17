@@ -113,7 +113,7 @@ struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
 
 static void arp_send_request(u16 iface_id, u32 tip)
 {
-    fnp_iface* iface = fnp_iface_get(iface_id);
+    fnp_iface_t* iface = fnp_iface_get(iface_id);
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REQUEST);
     mbuf->port = iface_id;
 
@@ -131,7 +131,7 @@ static void arp_send_request(u16 iface_id, u32 tip)
     ether_send_mbuf(mbuf, &broadcast, RTE_ETHER_TYPE_ARP);
 }
 
-static void arp_send_reply(fnp_iface* iface, struct rte_arp_hdr* req)
+static void arp_send_reply(fnp_iface_t* iface, struct rte_arp_hdr* req)
 {
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REPLY);
     mbuf->port = iface->id;
@@ -153,11 +153,17 @@ static void arp_send_reply(fnp_iface* iface, struct rte_arp_hdr* req)
 
 void arp_recv_mbuf(struct rte_mbuf* m)
 {
-    fnp_iface* iface = fnp_iface_get(m->port);
+    fnp_iface_t* iface = fnp_iface_get(m->port);
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(m, struct rte_arp_hdr*);
 
     u32 src_ip = arpHdr->arp_data.arp_sip;
-    if(iface->ip == arpHdr->arp_data.arp_tip)
+    u32 tip = arpHdr->arp_data.arp_tip;
+    char* ipstr1 = ipv4_ntos(src_ip);
+    char* ipstr2 = ipv4_ntos(tip);
+    FNP_INFO("recv arp from %s for %s\n", ipstr1, ipstr2);
+    rte_free(ipstr1);
+    rte_free(ipstr2);
+    if(iface->ip == tip)
     {
         arp_insert_entry(src_ip, &arpHdr->arp_data.arp_sha);
         switch(fnp_swap_16(arpHdr->arp_opcode))
@@ -177,7 +183,7 @@ void arp_recv_mbuf(struct rte_mbuf* m)
     rte_pktmbuf_free(m);
 }
 
-void arp_send_mbuf(rte_mbuf *m, u32 next_ip)
+void arp_send_mbuf(struct rte_mbuf *m, u32 next_ip)
 {
     arp_entry_t* e = arp_lookup(next_ip);
     if(likely(e != NULL && e->valid)) {
@@ -198,19 +204,19 @@ void arp_update_entry()
     u64 hz = rte_get_tsc_hz();
     u32* key = NULL;
     arp_entry_t* e = NULL;
-    rte_mbuf* m = NULL;
+    struct rte_mbuf* m = NULL;
     while (hash_iterate(fnp.arpTbl, &key, &e, &next)) {
         if(e->valid) {
             while (fnp_pring_dequeue(e->pending, &m)) {
                 ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
             }
 
-            if(cur_tsc - e->tsc > 5 * hz) {
-                arp_del_entry(e);
-            }
+            // if(cur_tsc - e->tsc > 20 * hz) {
+            //     arp_del_entry(e);
+            // }
         }
 
-        arp_send_request(0, e->ip);
+        // arp_send_request(0, e->ip);
     }
 }
 

@@ -6,12 +6,13 @@
 #include "tcp_comm.h"
 #include "rbtree.h"
 
-#include <rte_tcp.h>
+
+#include "fnp_sock.h"
 
 typedef struct tcp_sock {
+    sock_t sock;
     struct tcp_sock* parent;
-    sock_param* param;
-    fnp_iface* iface;
+    fnp_iface_t* iface;
     i32 state;
     u32 user_req;               //tcp connect
 
@@ -53,16 +54,15 @@ typedef struct tcp_sock {
     rb_tree ofo_root;
 
     struct rte_timer timers[TCPT_NTIMERS];
-} tcp_sock;
+} tcp_sock_t;
 
 #define tcp_state(sk)  ((sk)->state)
-void tcp_set_state(tcp_sock* sk, i32 state);
+void tcp_set_state(tcp_sock_t* sk, i32 state);
 
-tcp_sock* tcp_bind_sock(sock_param* param);
+tcp_sock_t* tcp_sock_ipv4(ipv4_5tuple_t* key);
 
-bool tcp_lookup_sock(tcp_segment* cb, tcp_sock** sk);
 
-void tcp_free_sock(tcp_sock* sock);
+void tcp_free_sock(tcp_sock_t* sock);
 
 
 #endif //FNP_TCP_SOCK_H

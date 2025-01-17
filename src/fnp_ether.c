@@ -1,5 +1,7 @@
 #include "fnp_arp.h"
 #include "fnp_ipv4.h"
+#include "fnp_init.h"
+#include "fnp_pring.h"
 
 void ether_recv_mbuf(struct rte_mbuf *m, u64 tsc)
 {
@@ -27,7 +29,7 @@ u64 txCount = 0;
 
 void ether_send_mbuf(struct rte_mbuf *m, struct rte_ether_addr *dmac, u16 type)
 {
-    fnp_iface* iface = fnp_iface_get(m->port);
+    fnp_iface_t* iface = fnp_iface_get(m->port);
     struct rte_ether_hdr* hdr = (struct rte_ether_hdr*)rte_pktmbuf_prepend(m, RTE_ETHER_HDR_LEN);
 
     rte_ether_addr_copy(&iface->mac, &hdr->src_addr);
@@ -35,11 +37,6 @@ void ether_send_mbuf(struct rte_mbuf *m, struct rte_ether_addr *dmac, u16 type)
     hdr->ether_type = fnp_swap_16(type);
     m->l2_len = RTE_ETHER_HDR_LEN;
 
-//    txCount++;
-//    if (txCount % 10 > 7) {
-//        rte_pktmbuf_free(m);
-//        return;
-//    }
 
     if(!fnp_pring_enqueue(iface->tx_queue, m))
     {

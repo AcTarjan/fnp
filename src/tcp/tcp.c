@@ -4,36 +4,12 @@
 #include "tcp_in.h"
 #include "tcp_out.h"
 #include "fnp_ipv4.h"
+
 #include <rte_ip.h>
+#include <rte_tcp.h>
 
 static tcp_recv_func tcp_recv[TCP_STATE_END];
 static tcp_send_func tcp_send[TCP_STATE_END];
-
-void tcp_register() {
-    tcp_recv[TCP_CLOSED] = tcp_closed_recv;
-    tcp_recv[TCP_LISTEN] = tcp_listen_recv;
-    tcp_recv[TCP_SYN_SENT] = tcp_synsent_recv;
-    tcp_recv[TCP_SYN_RECV] = tcp_synrecv_recv;
-    tcp_recv[TCP_ESTABLISHED] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSE_WAIT] = tcp_estab_recv;
-    tcp_recv[TCP_LAST_ACK] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_1] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_2] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSING] = tcp_estab_recv;
-    tcp_recv[TCP_TIME_WAIT] = tcp_estab_recv;
-
-    tcp_send[TCP_CLOSED] = tcp_closed_send;
-    tcp_send[TCP_LISTEN] = tcp_listen_send;
-    tcp_send[TCP_SYN_SENT] = tcp_syn_send;
-    tcp_send[TCP_SYN_RECV] = tcp_syn_send;
-    tcp_send[TCP_ESTABLISHED] = tcp_data_send;
-    tcp_send[TCP_CLOSE_WAIT] = tcp_data_send;
-    tcp_send[TCP_LAST_ACK] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_1] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_2] = tcp_data_send;
-    tcp_send[TCP_CLOSING] = tcp_data_send;
-    tcp_send[TCP_TIME_WAIT] = tcp_data_send;
-}
 
 static inline void tcp_decode_option(tcp_option* opt, u8* bytes, u8 len) {
     opt->mss = 0;
@@ -73,7 +49,7 @@ static inline void tcp_decode_option(tcp_option* opt, u8* bytes, u8 len) {
     }
 }
 
-static inline void tcp_seg_init(rte_mbuf* m, tcp_segment* seg)
+static inline void tcp_seg_init(struct rte_mbuf* m, tcp_segment* seg)
 {
     struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
     u8 ipv4_hdr_len = rte_ipv4_hdr_len(ipv4Hdr);
@@ -100,15 +76,17 @@ static inline void tcp_seg_init(rte_mbuf* m, tcp_segment* seg)
 }
 
 // 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
-void tcp_recv_mbuf(rte_mbuf* m)
+void tcp_recv_mbuf(struct rte_mbuf* m)
 {
-    tcp_sock* sk = NULL;
+    tcp_sock_t* sk = NULL;
     tcp_segment seg;
+    struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
     tcp_seg_init(m, &seg);
 
-    if(unlikely(!tcp_lookup_sock(&seg, &sk) ||
-        tcp_state(sk) == TCP_CLOSED)) {  //没有该连接
-        printf("can't find socket\n");
+    sock_t* sock = get_sock_from_hash(ipv4Hdr);
+    sk = (tcp_sock_t*)sock;
+    if(sk == NULL || tcp_state(sk) == TCP_CLOSED) {  //没有该连接
+        printf("can't find tcp socket\n");
         if(!seg_set_rst(&seg))     //不是RST包
             tcp_send_rst(&seg);
         fnp_mbuf_free(m);
@@ -120,7 +98,7 @@ void tcp_recv_mbuf(rte_mbuf* m)
     fnp_mbuf_free(m);
 }
 
-static inline void tcp_handle_user_req(tcp_sock* sk) {
+static inline void tcp_handle_user_req(tcp_sock_t* sk) {
     // 处理用户调用
     if (sk->user_req & TCP_USER_CLOSE) {
         sk->user_req &= ~TCP_USER_CLOSE;
@@ -140,24 +118,36 @@ static inline void tcp_handle_user_req(tcp_sock* sk) {
 }
 
 void tcp_output() {
-    u8* key;  tcp_sock* sk; u32 next = 0; i32 state;
-    while (hash_iterate(fnp.tcpTbl, &key, (void**)&sk, &next)) {
-        state = tcp_state(sk);
-        tcp_handle_user_req(sk);
-        tcp_send[state](sk);
-    }
+    // u8* key;  tcp_sock_t* sk; u32 next = 0; i32 state;
+    // while (hash_iterate(fnp.tcpTbl, &key, (void**)&sk, &next)) {
+    //     state = tcp_state(sk);
+    //     tcp_handle_user_req(sk);
+    //     tcp_send[state](sk);
+    // }
 }
 
-i32 tcp_init() {
-    fnp.tcpTbl = hash_create("TcpSocketTable",1024, sizeof(sock_param));
-    if(fnp.tcpTbl == NULL) {
-        printf( "alloc tcp sock table error!\n");
-        return -1;
-    }
+void tcp_init() {
+    tcp_recv[TCP_CLOSED] = tcp_closed_recv;
+    tcp_recv[TCP_LISTEN] = tcp_listen_recv;
+    tcp_recv[TCP_SYN_SENT] = tcp_synsent_recv;
+    tcp_recv[TCP_SYN_RECV] = tcp_synrecv_recv;
+    tcp_recv[TCP_ESTABLISHED] = tcp_estab_recv;
+    tcp_recv[TCP_CLOSE_WAIT] = tcp_estab_recv;
+    tcp_recv[TCP_LAST_ACK] = tcp_estab_recv;
+    tcp_recv[TCP_FIN_WAIT_1] = tcp_estab_recv;
+    tcp_recv[TCP_FIN_WAIT_2] = tcp_estab_recv;
+    tcp_recv[TCP_CLOSING] = tcp_estab_recv;
+    tcp_recv[TCP_TIME_WAIT] = tcp_estab_recv;
 
-    tcp_register();
-
-    ipv4_register(IPPROTO_TCP, tcp_recv_mbuf);
-
-    return 0;
+    tcp_send[TCP_CLOSED] = tcp_closed_send;
+    tcp_send[TCP_LISTEN] = tcp_listen_send;
+    tcp_send[TCP_SYN_SENT] = tcp_syn_send;
+    tcp_send[TCP_SYN_RECV] = tcp_syn_send;
+    tcp_send[TCP_ESTABLISHED] = tcp_data_send;
+    tcp_send[TCP_CLOSE_WAIT] = tcp_data_send;
+    tcp_send[TCP_LAST_ACK] = tcp_data_send;
+    tcp_send[TCP_FIN_WAIT_1] = tcp_data_send;
+    tcp_send[TCP_FIN_WAIT_2] = tcp_data_send;
+    tcp_send[TCP_CLOSING] = tcp_data_send;
+    tcp_send[TCP_TIME_WAIT] = tcp_data_send;
 }

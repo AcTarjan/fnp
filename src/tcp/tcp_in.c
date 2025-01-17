@@ -6,9 +6,10 @@
 #include "tcp_out.h"
 #include "tcp_timer.h"
 #include <unistd.h>
+#include <rte_tcp.h>
 
 
-static inline void tcp_handle_syn_option(tcp_sock* sk, tcp_segment* seg) {
+static inline void tcp_handle_syn_option(tcp_sock_t* sk, tcp_segment* seg) {
     if (seg_has_opt(seg)) {
         if (unlikely(seg_set_syn(seg))) {
             if (seg->opt.mss != 0) {    //支持MSS选项
@@ -27,7 +28,7 @@ static inline void tcp_handle_syn_option(tcp_sock* sk, tcp_segment* seg) {
     }
 }
 
-static inline u8 acceptable_seq(tcp_sock* sk, tcp_segment* cb)
+static inline u8 acceptable_seq(tcp_sock_t* sk, tcp_segment* cb)
 {
     // 必须所有字节都在接收窗口内
     if(unlikely(cb->data_len == 0))
@@ -38,7 +39,7 @@ static inline u8 acceptable_seq(tcp_sock* sk, tcp_segment* cb)
            (SEQ_LE(sk->rcv_nxt, end_seq) && SEQ_LT(end_seq, sk->rcv_nxt + sk->rcv_wnd));
 }
 
-static inline void tcp_handle_in_order_data(tcp_sock* sk, tcp_segment* seg) {
+static inline void tcp_handle_in_order_data(tcp_sock_t* sk, tcp_segment* seg) {
     i32 state = tcp_state(sk);
     if(likely(seg->data_len > 0 && (state == TCP_ESTABLISHED ||
         state == TCP_FIN_WAIT_1))) {
@@ -54,7 +55,7 @@ static inline void tcp_handle_in_order_data(tcp_sock* sk, tcp_segment* seg) {
     }
 }
 
-static inline void tcp_handle_ack(tcp_sock* sk, tcp_segment* seg) {
+static inline void tcp_handle_ack(tcp_sock_t* sk, tcp_segment* seg) {
     //RFC5961: snd_una - max_snd_wnd =< ack =< snd_max
     if(SEQ_LE(sk->snd_una - sk->max_snd_wnd, seg->ack) && SEQ_LE(seg->ack, sk->snd_max)) {
         // snd_una < ack <= snd_max
@@ -132,7 +133,7 @@ static inline void tcp_handle_ack(tcp_sock* sk, tcp_segment* seg) {
     }
 }
 
-static inline void tcp_handle_data(tcp_sock* sk, tcp_segment* seg) {
+static inline void tcp_handle_data(tcp_sock_t* sk, tcp_segment* seg) {
     if (sk->rcv_nxt == seg->seq) {
         tcp_handle_in_order_data(sk, seg);
         return;
@@ -148,7 +149,7 @@ static inline void tcp_handle_data(tcp_sock* sk, tcp_segment* seg) {
     tcp_send_ack(sk, false);         //收到乱序的数据，立即回ACK
 }
 
-static inline void tcp_handle_fin(tcp_sock* sk, tcp_segment* seg) {
+static inline void tcp_handle_fin(tcp_sock_t* sk, tcp_segment* seg) {
     if (seg_set_fin(seg)) {
         sk->rcv_nxt++;      //FIN占用一个序列号
         tcp_send_ack(sk, false);
@@ -175,7 +176,7 @@ static inline void tcp_handle_fin(tcp_sock* sk, tcp_segment* seg) {
 // 收到SYN|ACK
 // 收到ACK
 // 收到数据包（可能乱序），对方已经是ESTABLISHED状态
-void tcp_synrecv_recv(tcp_sock* sk, tcp_segment* seg) {
+void tcp_synrecv_recv(tcp_sock_t* sk, tcp_segment* seg) {
     if (!acceptable_seq(sk, seg) && seg->seq != sk->irs) {
         if (!seg_set_rst(seg))
             tcp_send_ack(sk, false);
@@ -241,7 +242,7 @@ void tcp_synrecv_recv(tcp_sock* sk, tcp_segment* seg) {
     }
 }
 
-void tcp_listen_recv(tcp_sock* sk, tcp_segment* seg)  {
+void tcp_listen_recv(tcp_sock_t* sk, tcp_segment* seg)  {
     //check for an RST
     if(seg_set_rst(seg)) {
         return;
@@ -255,8 +256,8 @@ void tcp_listen_recv(tcp_sock* sk, tcp_segment* seg)  {
 
     //check for a SYN
     if(seg_set_syn(seg)) {
-        sock_param* param = fnp_sock_param(seg->lip, seg->lport, seg->rip, seg->rport);
-        tcp_sock *newsk = tcp_bind_sock(param);
+        sock_t* sock = sock_create(IPPROTO_TCP, seg->lip, seg->lport, seg->rip, seg->rport);
+        tcp_sock_t *newsk = (tcp_sock_t*) sock;
         if (newsk == NULL) {
             tcp_send_rst(seg);
             printf("fail to new a tcp_sock\n");
@@ -275,7 +276,7 @@ void tcp_listen_recv(tcp_sock* sk, tcp_segment* seg)  {
 
 }
 
-void tcp_synsent_recv(tcp_sock* sk, tcp_segment* seg)  {
+void tcp_synsent_recv(tcp_sock_t* sk, tcp_segment* seg)  {
     if(seg_set_ack(seg)) {
         // ack is bad: ack =< iss or ack > snd.max
         if(SEQ_LE(seg->ack, sk->iss) || SEQ_GT(seg->ack, sk->snd_max)) {
@@ -326,7 +327,7 @@ void tcp_synsent_recv(tcp_sock* sk, tcp_segment* seg)  {
     }
 }
 
-void tcp_estab_recv(tcp_sock* sk, tcp_segment* seg)  {
+void tcp_estab_recv(tcp_sock_t* sk, tcp_segment* seg)  {
     if(!acceptable_seq(sk, seg)) {
         if(!seg_set_rst(seg))
             tcp_send_ack(sk, false);
@@ -363,4 +364,4 @@ void tcp_estab_recv(tcp_sock* sk, tcp_segment* seg)  {
     tcp_handle_fin(sk, seg);
 }
 
-void tcp_closed_recv(tcp_sock* sk, tcp_segment* seg) {}
+void tcp_closed_recv(tcp_sock_t* sk, tcp_segment* seg) {}

@@ -65,7 +65,7 @@ struct req_param
     char tx_name[32];
 };
 
-static int create_socket(const struct rte_mp_msg *msg, const void *peer)
+static int bind_sock_msg(const struct rte_mp_msg *msg, const void *peer)
 {
     int ret;
 
@@ -116,7 +116,7 @@ int main()
 
     init_shm_rings();
 
-    int ret = rte_mp_action_register(MSG_NAME, create_socket);
+    int ret = rte_mp_action_register(MSG_NAME, bind_sock_msg);
     if (ret && rte_errno != ENOTSUP)
         return -1;
 

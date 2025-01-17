@@ -3,6 +3,8 @@ dpdk:
   argv:
     - "-l 2,3,4"                            # 指定DPDK使用的核心
     - "--proc-type=primary"                 # dpdk进程类型, 取值：primary or secondary or auto
+    - "--file-prefix=fnp"                   # 文件前缀
+    - "--log-level=8"                       # 日志级别
 #    - "--main-lcore=2"                      # 指定主核，必须出现在lcores中
 #    - "--iova-mode=pa"                      # iova模式, 取值：pa or va
 #    - "--base-virtaddr=0x000000000000"      # 虚拟基地址

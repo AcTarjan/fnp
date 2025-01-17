@@ -1,4 +1,5 @@
 #include "fnp_init.h"
+#include "fnp_ipv4.h"
 #include "worker.h"
 
 #include <rte_ethdev.h>
@@ -19,7 +20,7 @@ i32 iface_init(fnp_config* conf)
 
     for (u16 id = 0; id < conf->ports_count; id++)
     {
-        fnp_iface *iface = fnp_iface_get(id);
+        fnp_iface_t *iface = fnp_iface_get(id);
         port_config* pconf = &conf->ports[id];
 
         int ret = rte_eth_dev_info_get(id, &dev_info);
@@ -33,9 +34,9 @@ i32 iface_init(fnp_config* conf)
         printf("max_rx_queues: %u\n", dev_info.max_rx_queues);
 
         iface->id = id;
-        iface->ip = fnp_ipv4_ston(pconf->ip);
-        iface->mask = fnp_ipv4_ston(pconf->ip_mask);
-        iface->gateway = fnp_ipv4_ston(pconf->gateway);
+        iface->ip = ipv4_ston(pconf->ip);
+        iface->mask = ipv4_ston(pconf->ip_mask);
+        iface->gateway = ipv4_ston(pconf->gateway);
         iface->rx_queue = fnp_pring_alloc(pconf->rx_ring_size);
         if (iface->rx_queue == NULL) {
             printf("create rx_queue error!\n");
@@ -117,7 +118,7 @@ i32 dpdk_init(fnp_context* ctxt) {
     /* init RTE timer library */
     rte_timer_subsystem_init();
 
-    ctxt->pool = rte_pktmbuf_pool_create("FnpMbufPool", dconf->mbuf_pool_size, 256,
+    ctxt->pool = rte_pktmbuf_pool_create(FNP_MBUF_MEMPOOL_NAME, dconf->mbuf_pool_size, 256,
                                          0, RTE_MBUF_DEFAULT_BUF_SIZE, socket_id);
     if (ctxt->pool == NULL)
     {
@@ -129,8 +130,9 @@ i32 dpdk_init(fnp_context* ctxt) {
 }
 
 extern int arp_init();
-extern void ipv4_init();
 extern int tcp_init();
+extern int sock_init();
+extern int msg_init();
 
 i32 fnp_init(char* path)
 {
@@ -154,8 +156,15 @@ i32 fnp_init(char* path)
     }
 
     ipv4_init();
+    tcp_init();
 
-    if (tcp_init() != 0) {
+    //初始化sock层
+    if (sock_init() != 0) {
+        return -1;
+    }
+
+    //初始化msg
+    if (msg_init() != 0) {
         return -1;
     }
 

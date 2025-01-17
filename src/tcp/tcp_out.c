@@ -3,9 +3,9 @@
 #include "tcp_comm.h"
 #include "tcp_timer.h"
 #include "fnp_ipv4.h"
+#include <rte_tcp.h>
 
 
-#include <netinet/ip.h>
 
 static u8 tcp_outflags[TCP_STATE_END] = {
         RTE_TCP_RST_FLAG|RTE_TCP_ACK_FLAG, 0, RTE_TCP_SYN_FLAG, RTE_TCP_SYN_FLAG|RTE_TCP_ACK_FLAG,
@@ -14,7 +14,7 @@ static u8 tcp_outflags[TCP_STATE_END] = {
         RTE_TCP_ACK_FLAG, RTE_TCP_ACK_FLAG,
 };
 
-void tcp_write_syn_options(tcp_sock* sk, struct rte_tcp_hdr* hdr)
+void tcp_write_syn_options(tcp_sock_t* sk, struct rte_tcp_hdr* hdr)
 {
     u8* optStart = (u8*)(hdr + 1);
     u8 i = 0;
@@ -50,15 +50,16 @@ void tcp_write_syn_options(tcp_sock* sk, struct rte_tcp_hdr* hdr)
     }
 }
 
-void tcp_send_syn(tcp_sock* sk, rte_mbuf* m, u8 flags) {
+void tcp_send_syn(tcp_sock_t* sk, struct rte_mbuf* m, u8 flags) {
     sk->rcv_wnd = fnp_ring_avail(sk->rxbuf);
     sk->snd_nxt = sk->iss;
 
     u8 hdr_len = TCP_HDR_MIN_LEN + 8;
+    sock_t* sock = &sk->sock;
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, hdr_len);
-    hdr->src_port = sk->param->lport;
-    hdr->dst_port = sk->param->rport;
+    hdr->src_port = sock->local_port;
+    hdr->dst_port = sock->remote_port;
     hdr->sent_seq = fnp_swap_32(sk->snd_nxt);
     hdr->recv_ack = fnp_swap_32(sk->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -69,20 +70,23 @@ void tcp_send_syn(tcp_sock* sk, rte_mbuf* m, u8 flags) {
 
     tcp_write_syn_options(sk, hdr);
 
-//    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+//    m->ol_flags |= struct rte_mbuf_F_TX_TCP_CKSUM;
 
-    ipv4_send_mbuf(m, sk->param->rip, IPPROTO_TCP);
+    ipv4_send_mbuf(m, IPPROTO_TCP, sock->remote_ip);
 }
 
-void tcp_send_data(tcp_sock* sk, rte_mbuf* m, u8 flags)
+void tcp_send_data(tcp_sock_t* sk, struct rte_mbuf* m, u8 flags)
 {
+    sock_t* sock = &sk->sock;
+
     sk->rcv_wnd = fnp_ring_avail(sk->rxbuf);
     u8 hdr_len = TCP_HDR_MIN_LEN;
 
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, hdr_len);
-    hdr->src_port = sk->param->lport;
-    hdr->dst_port = sk->param->rport;
+
+    hdr->src_port = sock->local_port;
+    hdr->dst_port = sock->remote_port;
     hdr->sent_seq = fnp_swap_32(sk->snd_nxt);
     hdr->recv_ack = fnp_swap_32(sk->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -92,13 +96,13 @@ void tcp_send_data(tcp_sock* sk, rte_mbuf* m, u8 flags)
     hdr->data_off = ((hdr_len) / 4) << 4;
 
 //    tcp_write_syn_options(sk, hdr, false);
-//    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+//    m->ol_flags |= struct rte_mbuf_F_TX_TCP_CKSUM;
 
-    ipv4_send_mbuf(m, sk->param->rip, IPPROTO_TCP);
+    ipv4_send_mbuf(m, IPPROTO_TCP, sock->remote_ip);
 }
 
 void tcp_send_rst(tcp_segment* seg) {
-    rte_mbuf* m = fnp_mbuf_alloc();
+    struct rte_mbuf* m = fnp_mbuf_alloc();
     m->port = seg->iface_id;
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*) rte_pktmbuf_prepend(m, TCP_HDR_MIN_LEN);
@@ -120,12 +124,12 @@ void tcp_send_rst(tcp_segment* seg) {
         hdr->recv_ack = fnp_swap_32(recv_ack);
     }
 
-//    m->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+//    m->ol_flags |= struct rte_mbuf_F_TX_TCP_CKSUM;
 
-    ipv4_send_mbuf(m, seg->rip, IPPROTO_TCP);
+    ipv4_send_mbuf(m, IPPROTO_TCP, seg->rip);
 }
 
-void tcp_send_ack(tcp_sock* sk, bool delay)
+void tcp_send_ack(tcp_sock_t* sk, bool delay)
 {
     if(likely(delay)) {
         if (tcp_timer_is_running(sk, TCPT_DELAY_ACK))
@@ -139,7 +143,7 @@ void tcp_send_ack(tcp_sock* sk, bool delay)
 }
 
 //send SYN or SYN|ACK
-void tcp_syn_send(tcp_sock* sk) {
+void tcp_syn_send(tcp_sock_t* sk) {
     if (sk->snd_nxt == sk->snd_una) {  //还未发送过SYN
         struct rte_mbuf *m = fnp_mbuf_alloc();
         if (m == NULL) {
@@ -158,7 +162,7 @@ void tcp_syn_send(tcp_sock* sk) {
 }
 
 //send tcp segment
-void tcp_data_send(tcp_sock* sk) {
+void tcp_data_send(tcp_sock_t* sk) {
     for(i32 i = 0; i < TCP_MAX_SEND_BURST; i++) {
         //当触发重传后，结果收到了ACK，导致snd_una变大, 要保证：snd_nxt >= snd_una
         sk->snd_nxt = FNP_MAX(sk->snd_una, sk->snd_nxt);
@@ -217,9 +221,9 @@ void tcp_data_send(tcp_sock* sk) {
     }
 }
 
-void tcp_listen_send(tcp_sock* sk) {}
+void tcp_listen_send(tcp_sock_t* sk) {}
 
-void tcp_closed_send(tcp_sock* sk) {
+void tcp_closed_send(tcp_sock_t* sk) {
     if(sk->can_free)
         tcp_free_sock(sk);
 }

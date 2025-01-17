@@ -10,20 +10,21 @@ char* tcp_state_str[11] = {
     "TCP_FIN_WAIT_2", "TCP_CLOSING", "TCP_TIME_WAIT",
 };
 
-void tcp_set_state(tcp_sock* sk, i32 state)
+void tcp_set_state(tcp_sock_t* sk, i32 state)
 {
     i32 old_state = tcp_state(sk);
     sk->state = state;
     printf("state from %s to %s\n", tcp_state_str[old_state], tcp_state_str[state]);
 }
 
-tcp_sock* tcp_bind_sock(sock_param* param)
+tcp_sock_t* tcp_sock_ipv4(ipv4_5tuple_t* key)
 {
-    tcp_sock* sk = fnp_malloc(sizeof(tcp_sock));
+    tcp_sock_t* sk = fnp_malloc(sizeof(tcp_sock_t));
     if(unlikely(sk == NULL))
         return NULL;
 
-    sk->param = param;
+    sock_t* sock = &sk->sock;
+    rte_memcpy(&sock->key, key, sizeof(ipv4_5tuple_t));
     sk->user_req = 0;
     sk->iface = fnp_iface_get(0);
     sk->can_free = true;
@@ -58,38 +59,27 @@ tcp_sock* tcp_bind_sock(sock_param* param)
     for(int i = 0; i < TCPT_NTIMERS; i++)
         rte_timer_init(&sk->timers[i]);
 
-    if(unlikely(!hash_add(fnp.tcpTbl, param, sk)))
-    {
-        fnp_ring_free(sk->txbuf);
-        fnp_ring_free(sk->rxbuf);
-        fnp_free(sk);
-        return NULL;
-    }
-
     return sk;
 }
 
-
-bool tcp_lookup_sock(tcp_segment* cb, tcp_sock** sk)
-{
-    sock_param param = {cb->lip, cb->rip, cb->lport, cb->rport};
-    if(unlikely(!hash_lookup(fnp.tcpTbl, &param, (void**)sk)))
-    {
-        param.rip = 0;
-        param.rport = 0;
-        return hash_lookup(fnp.tcpTbl, &param, (void**)sk);
-    }
-
-    return true;
-}
+//
+// bool tcp_lookup_sock(tcp_segment* cb, tcp_sock_t** sk)
+// {
+//     sock_param param = {cb->lip, cb->rip, cb->lport, cb->rport};
+//     if(unlikely(!hash_lookup(fnp.tcpTbl, &param, (void**)sk)))
+//     {
+//         param.rip = 0;
+//         param.rport = 0;
+//         return hash_lookup(fnp.tcpTbl, &param, (void**)sk);
+//     }
+//
+//     return true;
+// }
 
 // socket释放的时机：
 // 被用户使用的socket，需要由用户主动释放，但最终还是在协议栈中释放
 // 没有被用户使用的socket，由协议栈自动释放
-void tcp_free_sock(tcp_sock* sk) {
-    hash_del(fnp.tcpTbl, sk->param);
-    fnp_free(sk->param);
-
+void tcp_free_sock(tcp_sock_t* sk) {
     if(tcp_state(sk) == TCP_LISTEN) {
         fnp_pring_free(sk->accept);
         fnp_free(sk);
