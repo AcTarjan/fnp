@@ -1,5 +1,5 @@
 dpdk:
-  mbuf_pool_size: 8191
+  mbuf_pool_size: 4096
   argv:
     - "-l 2,3,4"                            # 指定DPDK使用的核心
     - "--proc-type=primary"                 # dpdk进程类型, 取值：primary or secondary or auto
