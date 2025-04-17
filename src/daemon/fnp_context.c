@@ -202,7 +202,7 @@ i32 init_fnp_daemon(char *path)
 
     init_tcp_layer();
 
-    // 初始化sock层
+       // 初始化sock层
     ret = init_socket_layer();
     CHECK_RET(ret);
 
@@ -212,6 +212,8 @@ i32 init_fnp_daemon(char *path)
     // 初始化msg
     ret = init_msg_layer();
     CHECK_RET(ret);
+
+    init_quic_layer();
 
     return 0;
 }

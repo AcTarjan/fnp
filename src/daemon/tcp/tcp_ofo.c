@@ -116,7 +116,7 @@ void tcp_ofo_enqueue(rb_tree *rbt, tcp_ofo_seg *seg)
 
 u8 tcp_ofo_dequeue(tcp_sock_t *sock)
 {
-    fnp_socket_t *socket = &sock->socket;
+    fsocket_t *socket = &sock->socket;
     rb_tree *rbt = &sock->ofo_root;
     tcp_ofo_seg *seg = NULL;
     rb_node *node = rb_first(rbt);

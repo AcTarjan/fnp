@@ -4,6 +4,7 @@
 #include "fnp_context.h"
 #include "fnp_socket.h"
 #include "fnp_pring.h"
+#include "quic.h"
 
 #include <rte_ethdev.h>
 #include <unistd.h>
@@ -65,13 +66,14 @@ int fnp_net_worker()
         // 检查mempool, 每2s检查一次
         if (cur_tsc - mem_prev_tsc > hz * 5)
         {
-            show_mempool_info();
+            // show_mempool_info();
             mem_prev_tsc = cur_tsc;
         }
 
         // 放在重传定时器后面，snd_nxt变小后，在该函数下执行重传动作。
         recv_data_from_app();
 
+        quic_loop();
         // 更新ARP表
         if (cur_tsc - arp_prev_tsc > hz)
         { // 1s

@@ -61,29 +61,6 @@ typedef long long int i64;
 
 // #define likely(a) __glibc_likely((a))
 
-static inline uint32_t ipv4_ston(const char *ip)
-{
-    if (ip == NULL)
-        return 0;
-    struct in_addr addr;
-    inet_aton(ip, &addr);
-
-    return addr.s_addr;
-}
-
-static inline char *ipv4_ntos(uint32_t ip)
-{
-    if (ip == 0)
-        return NULL;
-    u8 seg1 = ip & 0xFF;
-    u8 seg2 = (ip >> 8) & 0xFF;
-    u8 seg3 = (ip >> 16) & 0xFF;
-    u8 seg4 = (ip >> 24) & 0xFF;
-    char *str = rte_malloc(NULL, 16, 0);
-    sprintf(str, "%d.%d.%d.%d", seg1, seg2, seg3, seg4);
-    return str;
-}
-
 #define FNP_MBUF_MEMPOOL_NAME "fnp_mbuf_pool2"
 
 #endif // FNP_COMMON_H

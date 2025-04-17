@@ -15,7 +15,9 @@
 
 #define SOCKET_TX_BURST_NUM 16
 
-typedef void (*socket_handler)(void *);
+typedef struct fnp_socket fsocket_t;
+
+typedef void (*socket_handler)(fsocket_t *);
 
 typedef struct fnp_socket
 {
@@ -31,53 +33,56 @@ typedef struct fnp_socket
             u16 rport;
             u16 lport;
         };
-        fnp_sockaddr_t addr;
+        fsockaddr_t addr;
     };
-    struct rte_ring *rx; // 从fnp-daemon接收数据的队列
-    struct rte_ring *tx; // 向fnp-daemon发送数据的队列
-    i32 opt;             // socket的可选标记
-    i32 user_req;        // user向fnp-daemon发送的用户请求，仅用户修改, 不能直接修改tcp state，因为多线程冲突
+    socket_handler handler; // 负责socket协议处理的函数
+    struct rte_ring *rx;    // 从fnp-daemon接收数据的队列
+    struct rte_ring *tx;    // 向fnp-daemon发送数据的队列
+    i32 opt;                // socket的可选标记
+    i32 user_req;           // user向fnp-daemon发送的用户请求，仅用户修改, 不能直接修改tcp state，因为多线程冲突
     fnp_iface_t *iface;
     struct rte_ether_addr next_mac;
     bool can_recv; // 是否还可以接收数据，主要用于TCP
     bool can_free; // daemon处是否可以释放, 被用户使用就不能释放.
     char name[64]; // name of socket
-} fnp_socket_t;
+} fsocket_t;
 
-#define fnp_socket(sock) ((fnp_socket_t *)sock)
+#define fsocket(sock) ((fsocket_t *)sock)
 
 int init_socket_layer();
 
-// 协议栈内部使用，目前收到TCP连接请求时调用
-fnp_socket_t *create_socket(fnp_sockaddr_t *addr, i32 opt);
+// 协议栈内部使用，使用情况
+// 1. 收到TCP连接请求时调用
+// 2. picoquic创建udp
+fsocket_t *create_socket(fsockaddr_t *addr, i32 opt);
 
-int socket_connect(fnp_socket_t *socket, u32 rip, u16 rport);
+int socket_connect(fsocket_t *socket, u32 rip, u16 rport);
 
-static inline void set_socket_opt(fnp_socket_t *socket, i32 opt)
+static inline void set_socket_opt(fsocket_t *socket, i32 opt)
 {
     socket->opt |= opt;
 }
 
-static inline bool get_socket_opt(fnp_socket_t *socket, i32 opt)
+static inline bool get_socket_opt(fsocket_t *socket, i32 opt)
 {
     return socket->opt & opt;
 }
 
-static inline void set_socket_req(fnp_socket_t *socket, i32 req)
+static inline void set_socket_req(fsocket_t *socket, i32 req)
 {
     socket->user_req = req;
 }
 
-int add_socket_to_hash(fnp_socket_t *socket);
+int add_socket_to_hash(fsocket_t *socket);
 
-bool lookup_socket_from_hash(fnp_sockaddr_t *addr);
+bool lookup_socket_from_hash(fsockaddr_t *addr);
 
 // 接收数据包时，根据数据包的5元组信息查找对应的sock
-fnp_socket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr);
+fsocket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr);
 
-void remove_socket_from_hash(fnp_socket_t *socket);
+void remove_socket_from_hash(fsocket_t *socket);
 
-void free_socket(fnp_socket_t *socket);
+void free_socket(fsocket_t *socket);
 
 // 处理应用层数据, 然后发送出去
 void recv_data_from_app();

@@ -59,7 +59,7 @@ void tcp_write_syn_options(tcp_sock_t *sock, struct rte_tcp_hdr *hdr)
 
 void tcp_send_syn_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t *socket = fsocket(sock);
     sock->rcv_wnd = rte_ring_free_count(socket->rx) * sock->mss;
     sock->snd_nxt = sock->iss;
 
@@ -85,7 +85,7 @@ void tcp_send_syn_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
 
 void tcp_send_data_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t *socket = fsocket(sock);
     sock->rcv_wnd = rte_ring_free_count(socket->rx) * sock->mss;
     u8 hdr_len = TCP_HDR_MIN_LEN;
 
@@ -270,7 +270,7 @@ void tcp_listen_send(tcp_sock_t *sock) {}
 
 void tcp_closed_send(tcp_sock_t *sock)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t *socket = fsocket(sock);
     if (socket->can_free)
         free_socket(socket);
 }

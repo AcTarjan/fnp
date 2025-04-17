@@ -131,7 +131,7 @@ void tcp_recv_mbuf(struct rte_mbuf *m)
     i32 state = TCP_CLOSED;
     tcp_sock_t *sock = NULL;
 
-    fnp_socket_t *socket = get_socket_from_hash(ipv4Hdr);
+    fsocket_t *socket = get_socket_from_hash(ipv4Hdr);
     if (likely(socket != NULL))
     {
         sock = socket;
@@ -142,7 +142,7 @@ void tcp_recv_mbuf(struct rte_mbuf *m)
     tcp_recv[state](sock, &seg);
 }
 
-static inline void tcp_handle_user_req(fnp_socket_t *socket)
+static inline void tcp_handle_user_req(fsocket_t *socket)
 {
     tcp_sock_t *sock = socket;
 
@@ -166,7 +166,7 @@ static inline void tcp_handle_user_req(fnp_socket_t *socket)
     }
 }
 
-void tcp_recv_from_app(fnp_socket_t *socket)
+void tcp_recv_from_app(fsocket_t *socket)
 {
     struct rte_mbuf *mbufs[64];
     tcp_sock_t *sock = socket;

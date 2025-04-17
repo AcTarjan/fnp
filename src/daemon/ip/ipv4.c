@@ -102,9 +102,9 @@ void ipv4_send_mbuf(struct rte_mbuf *m, u8 proto, u32 rip)
 
 // ipv4_fast_send_mbuf
 // 用于已知目的ip情况，加速连接的数据发送
-void ipv4_fast_send_mbuf(fnp_socket_t *socket, struct rte_mbuf *m)
+void ipv4_fast_send_mbuf(fsocket_t *socket, struct rte_mbuf *m)
 {
-    fnp_sockaddr_t *addr = &socket->addr;
+    fsockaddr_t *addr = &socket->addr;
 
     struct rte_ipv4_hdr *hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_prepend(m, IPV4_HDR_LEN);
     hdr->version_ihl = 0x45;

@@ -10,7 +10,7 @@
 void init_tcp_layer();
 
 // 接收来自应用层的tcp数据，并发送给TCP协议
-void tcp_recv_from_app(fnp_socket_t *socket);
+void tcp_recv_from_app(fsocket_t *socket);
 
 // 接收来自网络的TCP数据，并发送给TCP协议
 void tcp_recv_mbuf(struct rte_mbuf *m);

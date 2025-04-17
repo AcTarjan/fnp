@@ -39,7 +39,7 @@ static inline xmm_t em_mask_key(void *key, xmm_t mask)
 static inline uint32_t ipv4_hash_crc(const void *data, __rte_unused uint32_t data_len,
                                      uint32_t init_val)
 {
-    const fnp_sockaddr_t *k;
+    const fsockaddr_t *k;
     uint32_t t;
     const uint32_t *p;
 
@@ -72,7 +72,7 @@ int init_socket_layer()
     struct rte_hash_parameters params = {
         .name = name,
         .entries = SOCK_TABLE_SIZE,
-        .key_len = sizeof(fnp_sockaddr_t),
+        .key_len = sizeof(fsockaddr_t),
         .hash_func = ipv4_hash_crc,
         .hash_func_init_val = 0,
         .socket_id = socket_id,
@@ -92,7 +92,7 @@ int init_socket_layer()
     return 0;
 }
 
-static void encode_socket_name(fnp_socket_t *socket)
+static void encode_socket_name(fsocket_t *socket)
 {
     char *ipstr1 = ipv4_ntos(socket->lip);
     u16 port1 = fnp_swap16(socket->lport);
@@ -108,20 +108,20 @@ static void encode_socket_name(fnp_socket_t *socket)
     rte_free(ipstr2);
 }
 
-int add_socket_to_hash(fnp_socket_t *socket)
+int add_socket_to_hash(fsocket_t *socket)
 {
     return rte_hash_add_key_data(fnp.sockTbl, &socket->addr, socket);
 }
 
-bool lookup_socket_from_hash(fnp_sockaddr_t *addr)
+bool lookup_socket_from_hash(fsockaddr_t *addr)
 {
     return rte_hash_lookup(fnp.sockTbl, addr) >= 0;
 }
 
-fnp_socket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr)
+fsocket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr)
 {
-    fnp_socket_t *socket = NULL;
-    fnp_sockaddr_t key;
+    fsocket_t *socket = NULL;
+    fsockaddr_t key;
 
     void *data = (u8 *)hdr + offsetof(struct rte_ipv4_hdr, time_to_live);
 
@@ -148,7 +148,7 @@ fnp_socket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr)
     return socket;
 }
 
-void remove_socket_from_hash(fnp_socket_t *socket)
+void remove_socket_from_hash(fsocket_t *socket)
 {
     rte_hash_del_key(fnp.sockTbl, &socket->addr);
 }
@@ -157,7 +157,7 @@ void show_all_socket()
 {
     uint32_t next = 0;
     void *key = NULL;
-    fnp_socket_t *socket = NULL;
+    fsocket_t *socket = NULL;
     FNP_INFO("************sockets start***************\n");
     while (rte_hash_iterate(fnp.sockTbl, &key, (void **)&socket, &next) >= 0)
     {
@@ -167,7 +167,7 @@ void show_all_socket()
 }
 
 // 通过此接口最终释放socket
-void free_socket(fnp_socket_t *socket)
+void free_socket(fsocket_t *socket)
 {
     FNP_INFO("free socket: %s\n", socket->name)
     remove_socket_from_hash(socket);
@@ -191,7 +191,7 @@ void free_socket(fnp_socket_t *socket)
 }
 
 // 初始化socket，交给用户程序使用
-static int create_socket_ring(fnp_socket_t *socket)
+static int create_socket_ring(fsocket_t *socket)
 {
     u32 socket_id = rte_socket_id();
 
@@ -217,9 +217,9 @@ static int create_socket_ring(fnp_socket_t *socket)
     return 0;
 }
 
-fnp_socket_t *create_socket(fnp_sockaddr_t *addr, i32 opt)
+fsocket_t *create_socket(fsockaddr_t *addr, i32 opt)
 {
-    fnp_socket_t *socket = NULL;
+    fsocket_t *socket = NULL;
 
     // 检查本地ip是否合法
     fnp_iface_t *iface = lookup_iface(addr->lip);
@@ -241,12 +241,12 @@ fnp_socket_t *create_socket(fnp_sockaddr_t *addr, i32 opt)
     {
     case IPPROTO_UDP:
     {
-        socket = (fnp_socket_t *)create_udp_sock();
+        socket = (fsocket_t *)create_udp_sock();
         break;
     }
     case IPPROTO_TCP:
     {
-        socket = (fnp_socket_t *)create_tcp_sock();
+        socket = (fsocket_t *)create_tcp_sock();
         break;
     }
     default:
@@ -286,7 +286,7 @@ fnp_socket_t *create_socket(fnp_sockaddr_t *addr, i32 opt)
 }
 
 // 提前确定下一跳mac地址
-static int get_socket_next_mac(fnp_socket_t *socket, u32 rip)
+static int get_socket_next_mac(fsocket_t *socket, u32 rip)
 {
     fnp_iface_t *iface = socket->iface;
     u32 next_ip = find_next_hop(iface, rip);
@@ -303,7 +303,7 @@ static int get_socket_next_mac(fnp_socket_t *socket, u32 rip)
 }
 
 // 运行在控制线程
-int socket_connect(fnp_socket_t *socket, u32 rip, u16 rport)
+int socket_connect(fsocket_t *socket, u32 rip, u16 rport)
 {
     int ret = get_socket_next_mac(socket, rip);
     CHECK_RET(ret);
@@ -344,10 +344,11 @@ void recv_data_from_app()
 {
     uint32_t next = 0;
     void *key = NULL;
-    fnp_socket_t *socket = NULL;
+    fsocket_t *socket = NULL;
     while (rte_hash_iterate(fnp.sockTbl, &key, (void **)&socket, &next) >= 0)
     {
         // UDP 或 TCP的处理函数
         socket_handlers[socket->proto](socket);
+        // socket->handler(socket);
     }
 }

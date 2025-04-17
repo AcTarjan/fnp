@@ -1,0 +1,26 @@
+[
+{
+  "directory": "/root/fnp/examples/build",
+  "command": "/usr/bin/gcc  -mssse3 -g -std=gnu11 -o CMakeFiles/server.dir/socket.c.o -c /root/fnp/examples/socket.c",
+  "file": "/root/fnp/examples/socket.c",
+  "output": "CMakeFiles/server.dir/socket.c.o"
+},
+{
+  "directory": "/root/fnp/examples/build",
+  "command": "/usr/bin/gcc  -mssse3 -g -std=gnu11 -o CMakeFiles/server.dir/server.c.o -c /root/fnp/examples/server.c",
+  "file": "/root/fnp/examples/server.c",
+  "output": "CMakeFiles/server.dir/server.c.o"
+},
+{
+  "directory": "/root/fnp/examples/build",
+  "command": "/usr/bin/gcc  -mssse3 -g -std=gnu11 -o CMakeFiles/client.dir/socket.c.o -c /root/fnp/examples/socket.c",
+  "file": "/root/fnp/examples/socket.c",
+  "output": "CMakeFiles/client.dir/socket.c.o"
+},
+{
+  "directory": "/root/fnp/examples/build",
+  "command": "/usr/bin/gcc  -mssse3 -g -std=gnu11 -o CMakeFiles/client.dir/client.c.o -c /root/fnp/examples/client.c",
+  "file": "/root/fnp/examples/client.c",
+  "output": "CMakeFiles/client.dir/client.c.o"
+}
+]

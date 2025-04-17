@@ -18,23 +18,6 @@
 static int pid; // 进程号，用来标识fnp前端
 static struct rte_mempool *pool = NULL;
 
-uint32_t fnp_ipv4_ston(const char *ip)
-{
-  if (ip == NULL)
-    return 0;
-  struct in_addr addr;
-  inet_aton(ip, &addr);
-
-  return addr.s_addr;
-}
-
-char *fnp_ipv4_ntos(uint32_t ip)
-{
-  struct in_addr addr;
-  addr.s_addr = ip;
-  return inet_ntoa(addr);
-}
-
 /************* mbuf api start **************/
 
 inline MBUF_TYPE fnp_alloc_mbuf()
@@ -153,9 +136,9 @@ int fnp_init()
 }
 
 /******************** fnp socket api start *****************/
-SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt)
+FNP_SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt)
 {
-  fnp_socket_t *socket = NULL;
+  fsocket_t *socket = NULL;
   struct rte_mp_msg msg;
   struct rte_mp_reply reply;
   struct timespec ts = {.tv_sec = 5, .tv_nsec = 0}; // 5s
@@ -165,7 +148,7 @@ SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt)
   msg.num_fds = 0;
   msg.len_param = sizeof(create_socket_req_t); // 参数长度
   create_socket_req_t *req = msg.param;
-  set_fnp_sockaddr(&req->addr, proto, lip, 0, lport, 0);
+  init_fsockaddr(&req->addr, proto, lip, 0, lport, 0);
   req->opt = opt;
 
   if (rte_mp_request_sync(&msg, &reply, &ts) == 0 &&
@@ -186,7 +169,7 @@ SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt)
   return NULL;
 }
 
-static int tcp_connect(fnp_socket_t *socket)
+static int tcp_connect(fsocket_t *socket)
 {
   i32 state = 0;
   tcp_sock_t *sock = (tcp_sock_t *)socket;
@@ -198,9 +181,9 @@ static int tcp_connect(fnp_socket_t *socket)
   return FNP_OK;
 }
 
-int fnp_connect(SOCKET_TYPE socketfd, u32 rip, u16 rport)
+int fnp_connect(FNP_SOCKET_TYPE socketfd, u32 rip, u16 rport)
 {
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
+  fsocket_t *socket = (fsocket_t *)socketfd;
   struct rte_mp_msg msg;
   struct rte_mp_reply reply;
   struct timespec ts = {.tv_sec = 5, .tv_nsec = 0}; // 5s
@@ -238,10 +221,10 @@ int fnp_connect(SOCKET_TYPE socketfd, u32 rip, u16 rport)
   return FNP_ERR_MSG_TIMEOUT;
 }
 
-SOCKET_TYPE fnp_accept(SOCKET_TYPE socketfd)
+FNP_SOCKET_TYPE fnp_accept(FNP_SOCKET_TYPE socketfd)
 {
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
-  fnp_socket_t *new = NULL;
+  fsocket_t *socket = (fsocket_t *)socketfd;
+  fsocket_t *new = NULL;
 
   while (rte_ring_dequeue(socket->rx, (void **)&new) != 0)
     ; // 等待tcp连接
@@ -252,17 +235,17 @@ SOCKET_TYPE fnp_accept(SOCKET_TYPE socketfd)
   return new;
 }
 
-void fnp_close(SOCKET_TYPE socketfd)
+void fnp_close(FNP_SOCKET_TYPE socketfd)
 {
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
+  fsocket_t *socket = (fsocket_t *)socketfd;
 
   socket->can_free = true; // 用户空间不使用了
   set_socket_req(socket, FNP_CLOSE_REQ);
 }
 
-int fnp_send(SOCKET_TYPE socket, MBUF_TYPE m)
+int fnp_send(FNP_SOCKET_TYPE socket, MBUF_TYPE m)
 {
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
+  fsocket_t *sk = (fsocket_t *)socket;
 
   // 等待一段时间，避免发送过快，内存池不足
   rte_delay_us_block(200); // 200us
@@ -279,11 +262,11 @@ int fnp_send(SOCKET_TYPE socket, MBUF_TYPE m)
   return 0;
 }
 
-int fnp_sendto(SOCKET_TYPE socket, MBUF_TYPE m, fnp_addr_t *remote)
+int fnp_sendto(FNP_SOCKET_TYPE socket, MBUF_TYPE m, faddr_t *remote)
 {
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
+  fsocket_t *sk = (fsocket_t *)socket;
 
-  fnp_mbufinfo_t *info = fnp_mbufinfo(m);
+  fsockinfo_t *info = fsockinfo(m);
   info->addr.ip = remote->ip;
   info->addr.port = remote->port;
 
@@ -296,10 +279,10 @@ int fnp_sendto(SOCKET_TYPE socket, MBUF_TYPE m, fnp_addr_t *remote)
   return 0;
 }
 
-MBUF_TYPE fnp_recv(SOCKET_TYPE socketfd)
+MBUF_TYPE fnp_recv(FNP_SOCKET_TYPE socketfd)
 {
   struct rte_mbuf *m = NULL;
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
+  fsocket_t *socket = (fsocket_t *)socketfd;
 
   // 没有数据
   while (rte_ring_dequeue(socket->rx, (void **)&m) != 0)
@@ -315,14 +298,14 @@ MBUF_TYPE fnp_recv(SOCKET_TYPE socketfd)
   return m;
 }
 
-MBUF_TYPE fnp_recvfrom(SOCKET_TYPE socket, fnp_addr_t *remote)
+MBUF_TYPE fnp_recvfrom(FNP_SOCKET_TYPE socket, faddr_t *remote)
 {
   struct rte_mbuf *m = NULL;
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
-  while (rte_ring_dequeue(sk->rx, (void **)&m) != 0)
-    ;
+  fsocket_t *sk = (fsocket_t *)socket;
+  while (rte_ring_dequeue(sk->rx, (void **)&m) != 0) // 应用设置超时
+    return NULL;
 
-  fnp_mbufinfo_t *info = fnp_mbufinfo(m);
+  fsockinfo_t *info = fsockinfo(m);
   remote->ip = info->addr.ip;
   remote->port = info->addr.port;
 

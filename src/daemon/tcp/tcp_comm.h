@@ -80,7 +80,7 @@ typedef struct tcp_segment
             u16 rport;
             u16 lport;
         };
-        fnp_sockaddr_t addr;
+        fsockaddr_t addr;
     };
     u32 seq;
     u32 ack;

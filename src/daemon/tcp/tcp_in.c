@@ -47,7 +47,7 @@ static inline bool acceptable_seq(tcp_sock_t *sk, tcp_segment *seg)
 
 static inline void tcp_handle_fin(tcp_sock_t *sock)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t *socket = fsocket(sock);
     u16 port = fnp_swap16(socket->rport);
     sock->rcv_nxt++; // FIN占用一个序列号
     printf("#####%d recv FIN!!!!! %u\n", port, sock->rcv_nxt - sock->irs);
@@ -81,7 +81,7 @@ static inline void tcp_handle_fin(tcp_sock_t *sock)
 
 static inline void tcp_handle_in_order_data(tcp_sock_t *sock, tcp_segment *seg)
 {
-    fnp_socket_t *socket = &sock->socket;
+    fsocket_t *socket = &sock->socket;
     if (rte_ring_enqueue(socket->rx, seg->data) != 0)
     {
         FNP_WARN("can't enqueue tcp data!!!!!!\n");
@@ -246,7 +246,7 @@ static void tcp_accept_conn(tcp_sock_t *sock)
     if (sock->parent != NULL)
     {
         tcp_sock_t *parent = sock->parent;
-        fnp_socket_t *socket = &sock->socket;
+        fsocket_t *socket = &sock->socket;
         socket->can_free = false; // 不能释放, 会被用户空间接收
         if (rte_ring_enqueue(parent->socket.rx, socket) != 0)
         {
@@ -368,7 +368,7 @@ void tcp_listen_recv(tcp_sock_t *sk, tcp_segment *seg)
     // 检查SYN
     if (seg_set_syn(seg))
     {
-        fnp_socket_t *new_socket = create_socket(&seg->addr, FNP_SO_REUSEADDR);
+        fsocket_t *new_socket = create_socket(&seg->addr, FNP_SO_REUSEADDR);
         if (new_socket == NULL)
         {
             tcp_send_rst(seg);

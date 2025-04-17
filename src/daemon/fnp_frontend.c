@@ -67,6 +67,7 @@ static check_all_frontend()
     // 遍历所有的frontend
     while (hash_iterate(fnp.frontendTbl, (void **)&pid, (void **)&info, &next))
     {
+        
         if (info->alive)
         {
             info->alive = false; // 重新发送

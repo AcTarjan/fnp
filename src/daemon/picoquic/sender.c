@@ -4646,6 +4646,7 @@ int picoquic_prepare_packet_ex(picoquic_cnx_t* cnx,
 
     SET_LAST_WAKE(cnx->quic, PICOQUIC_SENDER);
 
+    //处理
     if (cnx->recycle_sooner_needed) {
         picoquic_process_sooner_packets(cnx, current_time);
     }
@@ -4654,8 +4655,10 @@ int picoquic_prepare_packet_ex(picoquic_cnx_t* cnx,
     memset(&addr_from_log, 0, sizeof(addr_from_log));
     *send_length = 0;
 
+    //检查空闲计时器，如果空闲时间超过了设定的最大空闲时间，则返回错误
     ret = picoquic_check_idle_timer(cnx, &next_wake_time, current_time);
 
+    //
     if (send_buffer_max < PICOQUIC_ENFORCED_INITIAL_MTU) {
         DBG_PRINTF("Invalid buffer size: %zu", send_buffer_max);
         ret = -1;

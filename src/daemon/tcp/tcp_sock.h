@@ -11,7 +11,7 @@
 // 用来表示一个TCP Connection
 typedef struct tcp_sock
 {
-    fnp_socket_t socket;
+    fsocket_t socket;
     struct tcp_sock *parent;
 
     i32 state;
