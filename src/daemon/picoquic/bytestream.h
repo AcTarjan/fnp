@@ -80,8 +80,8 @@ int byteread_vlen(bytestream * s, size_t * value);
 int bytewrite_buffer(bytestream * s, const void * buffer, size_t length);
 int byteread_buffer(bytestream * s, void * buffer, size_t length);
 
-int bytewrite_cid(bytestream * s, const picoquic_connection_id_t * cid);
-int byteread_cid(bytestream * s, picoquic_connection_id_t * cid);
+int bytewrite_cid(bytestream * s, const quic_connection_id_t * cid);
+int byteread_cid(bytestream * s, quic_connection_id_t * cid);
 int byteskip_cid(bytestream * s);
 
 int bytewrite_cstr(bytestream* s, const char* cstr);

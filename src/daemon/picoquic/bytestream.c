@@ -314,14 +314,14 @@ int byteread_buffer(bytestream * s, void * buffer, size_t length)
 
 /* supplementary byte stream I/O */
 
-int bytewrite_cid(bytestream * s, const picoquic_connection_id_t * cid)
+int bytewrite_cid(bytestream * s, const quic_connection_id_t * cid)
 {
     int ret = bytewrite_int8(s, cid->id_len);
     ret |= bytewrite_buffer(s, cid->id, cid->id_len);
     return ret;
 }
 
-int byteread_cid(bytestream * s, picoquic_connection_id_t * cid)
+int byteread_cid(bytestream * s, quic_connection_id_t * cid)
 {
     int ret = byteread_int8(s, &cid->id_len);
 

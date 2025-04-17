@@ -2,61 +2,80 @@
 #define FNP_SOCKADDR_H
 
 #include "fnp_common.h"
+#include "fnp_error.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
-typedef struct fnp_addr
+typedef struct sockaddr sockaddr_t;
+typedef struct sockaddr_in sockaddr_in_t;
+typedef struct sockaddr_in6 sockaddr_in6_t;
+
+#define FNP_SO_REUSEADDR 0x01
+#define FNP_SO_REUSEPORT 0x02
+
+#define FSOCKADDR_NONE   0
+#define FSOCKADDR_IPV4   4
+#define FSOCKADDR_IPV6   6
+
+typedef struct fsockaddr
 {
-    u32 ip;
+    u16 family;
     u16 port;
-} fnp_addr_t;
+    u32 ip;
+} fsockaddr_t;
 
-typedef union fnp_sockaddr
+typedef enum fnp_protocol
 {
-    struct
-    { //
-        u8 pad0;
-        u8 proto;
-        u16 pad1;
-        u32 rip;
-        u32 lip;
-        u16 rport;
-        u16 lport;
-    };
-    xmm_t xmm;
-} fnp_sockaddr_t;
+    fnp_protocol_tcp = IPPROTO_TCP,
+    fnp_protocol_udp = IPPROTO_UDP,
+    fnp_protocol_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
+} fnp_protocol_t;
 
-static inline void set_fnp_sockaddr(fnp_sockaddr_t *addr,
-                                    u8 proto, u32 lip, u32 rip, u16 lport, u16 rport)
+
+static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
 {
-    addr->pad0 = 0;
-    addr->pad1 = 0;
-    addr->proto = proto;
-    addr->lip = lip;
-    addr->rip = rip;
-    addr->lport = lport;
-    addr->rport = rport;
+    if (src == NULL)
+    {
+        dst->family = FSOCKADDR_NONE;
+        return;
+    }
+    dst->family = src->family;
+    dst->ip = src->ip;
+    dst->port = src->port;
 }
 
-static inline void copy_fnp_sockaddr(fnp_sockaddr_t *dst, fnp_sockaddr_t *src)
+static inline bool fsockaddr_compare(const fsockaddr_t* expected, const fsockaddr_t* actual)
 {
-    rte_memcpy(dst, src, sizeof(fnp_sockaddr_t));
+    if (expected == NULL || actual == NULL)
+        return false;
+    if (expected->family == actual->family && expected->family == FSOCKADDR_IPV4)
+    {
+        return expected->ip == actual->ip &&
+            expected->port == actual->port;
+    }
+
+    return false;
 }
 
-static inline void encode_ring_name(char *ring_name, char *prefix, void *addr)
+static inline int fsockaddr_init(fsockaddr_t* addr, int family, const char* ip, int port)
 {
-    sprintf(ring_name, "%s:%p", prefix, addr);
+    if (addr == NULL)
+        return -1;
+
+    addr->family = family;
+    addr->port = fnp_swap16(port);
+    addr->ip = ipv4_ston(ip);
+    return FNP_OK;
 }
 
-typedef struct fnp_mbufinfo
+// 最大256字节
+// 参见picoquic_stateless_packet_t
+typedef struct fnp_mbuf_info
 {
-    fnp_addr_t addr;
-} fnp_mbufinfo_t;
+    fsockaddr_t local;
+    fsockaddr_t remote;
+} fmbuf_info_t;
 
-static inline void print_fnp_sockaddr(fnp_sockaddr_t *addr)
-{
-    FNP_INFO("proto: %d, lip: %s, rip: %s, lport: %d, rport: %d\n",
-             addr->proto, addr->lip, addr->rip, addr->lport, addr->rport);
-}
-
-#define fnp_mbufinfo(m) (fnp_mbufinfo_t *)(((struct rte_mbuf *)m)->buf_addr)
+#define get_fmbuf_info(m) (fmbuf_info_t *)rte_mbuf_to_priv(m);
 
 #endif // FNP_SOCKADDR_H

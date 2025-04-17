@@ -3,83 +3,96 @@
 
 #include "fnp_sockaddr.h"
 #include "fnp_iface.h"
-#include "fnp_error.h"
+#include "fnp_list.h"
 
 #include <rte_ip.h>
 
-#define FNP_SO_REUSEADDR 0x01
-#define FNP_SO_REUSEPORT 0x02
-
-#define FNP_CONNECT_REQ 0x01
-#define FNP_CLOSE_REQ 0x02
 
 #define SOCKET_TX_BURST_NUM 16
 
-typedef void (*socket_handler)(void *);
+typedef struct fnp_socket fsocket_t;
 
+typedef void (*socket_handler)(fsocket_t*);
+
+
+// 与应用层交互的接口
 typedef struct fnp_socket
 {
+    fnp_protocol_t proto; // 协议类型
+    fsockaddr_t local;
+    fsockaddr_t remote;
+    char name[48]; // socket的名称, 用于调试和日志
+    socket_handler handler; // TCP,UDP和QUIC协议实体处理来自应用层/网络层的数据
+    fnp_list_node_t worker_node; // 用于worker使用链表管理socket
+    fnp_list_node_t frontend_node; // 用于frontend使用链表管理socket
     union
     {
         struct
         {
-            u8 pad0;
-            u8 proto;
-            u16 pad1;
-            u32 rip;
-            u32 lip;
-            u16 rport;
-            u16 lport;
+            fnp_pring_t* rx; // 从fnp-daemon接收数据的队列
+            fnp_pring_t* tx; // 向fnp-daemon发送数据的队列
         };
-        fnp_sockaddr_t addr;
+
+        fnp_pring_t* pending_cnxs; // QUIC/TCP服务端收到的暂存的TCP or QUIC cnx
+        fnp_pring_t* pending_streams; // QUIC cnx收到的暂存的TCP or QUIC Stream
     };
-    struct rte_ring *rx; // 从fnp-daemon接收数据的队列
-    struct rte_ring *tx; // 向fnp-daemon发送数据的队列
-    i32 opt;             // socket的可选标记
-    i32 user_req;        // user向fnp-daemon发送的用户请求，仅用户修改, 不能直接修改tcp state，因为多线程冲突
-    fnp_iface_t *iface;
-    struct rte_ether_addr next_mac;
-    bool can_recv; // 是否还可以接收数据，主要用于TCP
-    bool can_free; // daemon处是否可以释放, 被用户使用就不能释放.
-    char name[64]; // name of socket
-} fnp_socket_t;
 
-#define fnp_socket(sock) ((fnp_socket_t *)sock)
+    int frontend_id; //frontend_id为0的socket是可以释放的, 因为frontend不会再使用了
+    int worker_id; //服务端socket不需要记录worker_id, 因为服务端socket不需要发送数据; 接收数据时，新连接(不同的5元组)可能位于不同的worker.
+    struct rte_mempool* pool;
+    u32 request_syn : 1; // 应用层请求建立连接
+    u32 is_connected : 1; // 连接已建立
+    u32 request_close : 1; // 应用层请求关闭socket
+    u32 receive_fin : 1; // 收到对方的fin
+} fsocket_t;
 
-int init_socket_layer();
+#define fsocket(sock) ((fsocket_t *)sock)
+#define is_server_socket(socket)   ((socket)->remote.ip == 0)
+#define is_tcp_socket(socket)   ((socket)->proto == fnp_protocol_tcp)
+#define is_udp_socket(socket)   ((socket)->proto == fnp_protocol_udp)
+#define is_quic_socket(socket)   ((socket)->proto == fnp_protocol_quic)
+#define is_tcp_server_socket(socket)   (is_tcp_socket(socket) && is_server_socket(socket))
+#define is_udp_server_socket(socket)   (is_udp_socket(socket) && is_server_socket(socket))
+#define is_quic_server_socket(socket)   (is_quic_socket(socket) && is_server_socket(socket))
 
-// 协议栈内部使用，目前收到TCP连接请求时调用
-fnp_socket_t *create_socket(fnp_sockaddr_t *addr, i32 opt);
 
-int socket_connect(fnp_socket_t *socket, u32 rip, u16 rport);
-
-static inline void set_socket_opt(fnp_socket_t *socket, i32 opt)
+// quic stream与应用层交互的接口
+typedef struct fnp_quic_stream
 {
-    socket->opt |= opt;
-}
+    u64 stream_id;
+    fnp_pring_t* rx;
+    fnp_pring_t* tx;
+    u64 local_error;
+    u64 remote_error;
+    u64 local_stop_error;
+    u64 remote_stop_error;
+    u8 priority;
+    u32 is_unidirectional : 1; // 是否单向流
+    u32 is_local : 1; // 是否是本地创建的流
+    u32 request_close : 1; //关闭本地发送端
+    u32 request_fin : 1; //请求发送fin
+    u32 receive_fin : 1; //收到对方的fin
+    u32 request_stop_sending : 1; //请求对方停止发送数据
+    u32 receive_stop_sending : 1; //收到停止发送帧
+    u32 request_reset : 1; //本地请求立即停止发送
+    u32 receive_reset : 1; //收到对方的请求发送
+} fnp_quic_stream_t;
 
-static inline bool get_socket_opt(fnp_socket_t *socket, i32 opt)
-{
-    return socket->opt & opt;
-}
 
-static inline void set_socket_req(fnp_socket_t *socket, i32 req)
-{
-    socket->user_req = req;
-}
+struct rte_hash* create_socket_table();
 
-int add_socket_to_hash(fnp_socket_t *socket);
+fsocket_t* lookup_socket_table_by_ipv4(struct rte_ipv4_hdr* hdr);
 
-bool lookup_socket_from_hash(fnp_sockaddr_t *addr);
+int fnp_socket_init(fsocket_t* socket, fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote);
 
-// 接收数据包时，根据数据包的5元组信息查找对应的sock
-fnp_socket_t *get_socket_from_hash(struct rte_ipv4_hdr *hdr);
+/*
+ 协议栈worker线程调用，使用情况
+ 1. 用户创建socket时调用
+ 2. TCP创建新连接时调用
+ 3. picoquic创建udp socket时调用
+*/
+fsocket_t* create_socket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote, void* conf, int worker_id);
 
-void remove_socket_from_hash(fnp_socket_t *socket);
-
-void free_socket(fnp_socket_t *socket);
-
-// 处理应用层数据, 然后发送出去
-void recv_data_from_app();
+void free_socket(fsocket_t* socket);
 
 #endif // FNP_SOCKET_H

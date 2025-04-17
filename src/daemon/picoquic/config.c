@@ -32,14 +32,17 @@
 #include "picoquic_binlog.h"
 #include "picoquic_logger.h"
 #include "picoquic_unified_log.h"
+#include "tls_api.h"
 #include "picoquic_config.h"
 
-typedef struct st_option_param_t {
-    char const * param;
+typedef struct st_option_param_t
+{
+    char const* param;
     size_t length;
 } option_param_t;
 
-typedef struct st_option_table_line_t {
+typedef struct st_option_table_line_t
+{
     picoquic_option_enum_t option_num;
     char option_letter;
     char const* option_name;
@@ -49,120 +52,101 @@ typedef struct st_option_table_line_t {
 } option_table_line_t;
 
 static option_table_line_t option_table[] = {
-    { picoquic_option_CERT, 'c', "cert", 1, "file", "cert file" },
-    { picoquic_option_KEY, 'k', "key", 1, "file", "key file" },
-    { picoquic_option_SERVER_PORT, 'p', "port", 1, "number", "server port" },
-    { picoquic_option_PROPOSED_VERSION, 'v', "proposed_version", 1, "", "Version proposed by client, e.g. -v ff000012" },
-    { picoquic_option_OUTDIR, 'o', "outdir", 1, "folder", "Folder where client writes downloaded files, defaults to current directory." },
-    { picoquic_option_WWWDIR, 'w', "wwwdir", 1, "folder", "Folder containing web pages served by server" },
-    { picoquic_option_MAX_CONNECTIONS, 'x', "max_connections", 1, "number",
-    "Maximum number of concurrent connections, default 256" },
-    { picoquic_option_DO_RETRY, 'r', "do_retry", 0, "", "Do Retry Request" },
-    { picoquic_option_INITIAL_RANDOM, 'R', "initial_random", 1, "option", "Randomize packet number spaces: none(0), initial(1, default), all(2)." },
-    { picoquic_option_RESET_SEED, 's', "reset_seed", 2, "<64b 64b>", "Reset seed" },
-    { picoquic_option_DisablePortBlocking, 'X', "disable_block", 0, "", "Disable the check for blocked ports"},
-    { picoquic_option_SOLUTION_DIR, 'S', "solution_dir", 1, "folder", "Set the path to the source files to find the default files" },
-    { picoquic_option_CC_ALGO, 'G', "cc_algo", 1, "cc_algorithm",
-    "Use the specified congestion control algorithm: reno, cubic, bbr or fast. Defaults to bbr." },
-    { picoquic_option_SPINBIT, 'P', "spinbit", 1, "number", "Set the default spinbit policy" },
-    { picoquic_option_LOSSBIT, 'O', "lossbit", 1, "number", "Set the default lossbit policy" },
-    { picoquic_option_MULTIPATH, 'M', "multipath", 1, "number", "Multipath option: none(0), full(1), simple(2), both(3)" },
-    { picoquic_option_DEST_IF, 'e', "dest_if", 1, "if", "Send on interface (default: -1)" },
-    { picoquic_option_CIPHER_SUITE, 'C', "cipher_suite", 1, "cipher_suite_id", "specify cipher suite (e.g. -C 20 = chacha20)" },
-    { picoquic_option_INIT_CNXID, 'i', "cnxid_params", 1, "per-text-lb-spec", "See documentation for LB compatible CID configuration" },
-    { picoquic_option_LOG_FILE, 'l', "text_log", 1, "file", "Log file, Log to stdout if file = \"-\". No text logging if absent." },
-    { picoquic_option_LONG_LOG, 'L', "long_log", 0, "", "Log all packets. If absent, log stops after 100 packets." },
-    { picoquic_option_BINLOG_DIR, 'b', "binlog_dir", 1, "folder", "Binary logging to this directory. No binary logging if absent." },
-    { picoquic_option_QLOG_DIR, 'q', "qlog_dir", 1, "folder", 
-    "Qlog logging to this directory. No qlog logging if absent, but qlogs could be produced using picolog if binary logs are available." },
-    { picoquic_option_MTU_MAX, 'm', "mtu_max", 1, "mtu_max", "Largest mtu value that can be tried for discovery." },
-    { picoquic_option_SNI, 'n', "sni", 1, "sni", "sni (default: server name)" },
-    { picoquic_option_ALPN, 'a', "alpn", 1, "alpn", "alpn (default function of version)" },
-    { picoquic_option_ROOT_TRUST_FILE, 't', "root_trust_file", 1, "file", "root trust file" },
-    { picoquic_option_FORCE_ZERO_SHARE, 'z', "force_zero_share", 0, "", "Set TLS zero share behavior on client, to force HRR" },
-    { picoquic_option_CNXID_LENGTH, 'I', "cnxid_length", 1, "length", "Length of CNX_ID used by the client, default=8" },
-    { picoquic_option_Idle_Timeout, 'd', "idle_timeout", 1, "ms", "Duration of idle timeout in milliseconds" },
-    { picoquic_option_NO_DISK, 'D', "no_disk", 0, "", "no disk: do not save received files on disk" },
-    { picoquic_option_LARGE_CLIENT_HELLO, 'Q', "large_client_hello", 0, "",
-    "send a large client hello in order to test post quantum readiness" },
-    { picoquic_option_Ticket_File_Name, 'T', "ticket_file", 1, "file", "File storing the session tickets" },
-    { picoquic_option_Token_File_Name, 'N', "token_file", 1, "file", "File storing the new tokens" },
-    { picoquic_option_Socket_buffer_size, 'B', "so_buf_size", 1, "number", "Set buffer size with SO_SNDBUF SO_RCVBUF" },
-    { picoquic_option_Performance_Log, 'F', "log_file_name", 1, "file", "Append performance reports to performance log" },
-    { picoquic_option_Preemptive_Repeat, 'V', "preemptive_repeat", 0, "", "enable preemptive repeat" },
-    { picoquic_option_Version_Upgrade, 'U', "version_upgrade", 1, "", "Version upgrade if server agrees, e.g. -U 6b3343cf" },
-    { picoquic_option_No_GSO, '0', "no_gso", 0, "", "Do not use UDP GSO or equivalent" },
-    { picoquic_option_BDP_frame, 'j', "bdp", 1, "number", "use bdp extension frame(1) or don\'t (0). Default=0" },
-    { picoquic_option_HELP, 'h', "help", 0, "This help message" }
+    {picoquic_option_CERT, 'c', "cert", 1, "file", "cert file"},
+    {picoquic_option_KEY, 'k', "key", 1, "file", "key file"},
+    {picoquic_option_SERVER_PORT, 'p', "port", 1, "number", "server port"},
+    {picoquic_option_PROPOSED_VERSION, 'v', "proposed_version", 1, "", "Version proposed by client, e.g. -v ff000012"},
+    {
+        picoquic_option_OUTDIR, 'o', "outdir", 1, "folder",
+        "Folder where client writes downloaded files, defaults to current directory."
+    },
+    {picoquic_option_WWWDIR, 'w', "wwwdir", 1, "folder", "Folder containing web pages served by server"},
+    {
+        picoquic_option_MAX_CONNECTIONS, 'x', "max_connections", 1, "number",
+        "Maximum number of concurrent connections, default 256"
+    },
+    {picoquic_option_DO_RETRY, 'r', "do_retry", 0, "", "Do Retry Request"},
+    {
+        picoquic_option_INITIAL_RANDOM, 'R', "initial_random", 1, "option",
+        "Randomize packet number spaces: none(0), initial(1, default), all(2)."
+    },
+    {picoquic_option_RESET_SEED, 's', "reset_seed", 1, "<32 hex chars>", "Reset seed"},
+    {picoquic_option_DisablePortBlocking, 'X', "disable_block", 0, "", "Disable the check for blocked ports"},
+    {
+        picoquic_option_SOLUTION_DIR, 'S', "solution_dir", 1, "folder",
+        "Set the path to the source files to find the default files"
+    },
+    {
+        picoquic_option_CC_ALGO, 'G', "cc_algo", 1, "cc_algorithm",
+        "Use the specified congestion control algorithm. Defaults to bbr. Supported values are:"
+    },
+    {
+        picoquic_option_CC_OPTION, 'H', "cco", 1, "option",
+        "Set option string if required by congestion control algorithm."
+    },
+    {picoquic_option_SPINBIT, 'P', "spinbit", 1, "number", "Set the default spinbit policy"},
+    {picoquic_option_LOSSBIT, 'O', "lossbit", 1, "number", "Set the default lossbit policy"},
+    {picoquic_option_MULTIPATH, 'M', "multipath", 0, "", "Enable QUIC multipath extension"},
+    {picoquic_option_DEST_IF, 'e', "dest_if", 1, "if", "Send on interface (default: -1)"},
+    {
+        picoquic_option_CIPHER_SUITE, 'C', "cipher_suite", 1, "cipher_suite_id",
+        "specify cipher suite (e.g. -C 20 = chacha20)"
+    },
+    {
+        picoquic_option_INIT_CNXID, 'i', "cnxid_params", 1, "per-text-lb-spec",
+        "See documentation for LB compatible CID configuration"
+    },
+    {
+        picoquic_option_LOG_FILE, 'l', "text_log", 1, "file",
+        "Log file, Log to stdout if file = \"-\". No text logging if absent."
+    },
+    {picoquic_option_LONG_LOG, 'L', "long_log", 0, "", "Log all packets. If absent, log stops after 100 packets."},
+    {
+        picoquic_option_BINLOG_DIR, 'b', "binlog_dir", 1, "folder",
+        "Binary logging to this directory. No binary logging if absent."
+    },
+    {
+        picoquic_option_QLOG_DIR, 'q', "qlog_dir", 1, "folder",
+        "Qlog logging to this directory. No qlog logging if absent, but qlogs could be produced using picolog if binary logs are available."
+    },
+    {picoquic_option_MTU_MAX, 'm', "mtu_max", 1, "mtu_max", "Largest mtu value that can be tried for discovery."},
+    {picoquic_option_SNI, 'n', "sni", 1, "sni", "sni (default: server name)"},
+    {picoquic_option_ALPN, 'a', "alpn", 1, "alpn", "alpn (default function of version)"},
+    {picoquic_option_ROOT_TRUST_FILE, 't', "root_trust_file", 1, "file", "root trust file"},
+    {
+        picoquic_option_FORCE_ZERO_SHARE, 'z', "force_zero_share", 0, "",
+        "Set TLS zero share behavior on client, to force HRR"
+    },
+    {picoquic_option_CNXID_LENGTH, 'I', "cnxid_length", 1, "length", "Length of CNX_ID used by the client, default=8"},
+    {
+        picoquic_option_Idle_Timeout, 'd', "idle_timeout", 1, "ms",
+        "Duration of idle timeout in milliseconds (Default 30,000ms)"
+    },
+    {picoquic_option_NO_DISK, 'D', "no_disk", 0, "", "no disk: do not save received files on disk"},
+    {
+        picoquic_option_LARGE_CLIENT_HELLO, 'Q', "large_client_hello", 0, "",
+        "send a large client hello in order to test post quantum readiness"
+    },
+    {picoquic_option_Ticket_File_Name, 'T', "ticket_file", 1, "file", "File storing the session tickets"},
+    {picoquic_option_Token_File_Name, 'N', "token_file", 1, "file", "File storing the new tokens"},
+    {picoquic_option_Socket_buffer_size, 'B', "so_buf_size", 1, "number", "Set buffer size with SO_SNDBUF SO_RCVBUF"},
+    {picoquic_option_Performance_Log, 'F', "log_file_name", 1, "file", "Append performance reports to performance log"},
+    {picoquic_option_Preemptive_Repeat, 'V', "preemptive_repeat", 0, "", "enable preemptive repeat"},
+    {
+        picoquic_option_Version_Upgrade, 'U', "version_upgrade", 1, "",
+        "Version upgrade if server agrees, e.g. -U 6b3343cf"
+    },
+    {picoquic_option_No_GSO, '0', "no_gso", 0, "", "Do not use UDP GSO or equivalent"},
+    {picoquic_option_BDP_frame, 'j', "bdp", 1, "number", "use bdp extension frame(1) or don\'t (0). Default=0"},
+    {picoquic_option_CWIN_MAX, 'W', "cwin_max", 1, "bytes", "Max value for CWIN. Default=UINT64_MAX"},
+#ifndef PICOQUIC_WITHOUT_SSLKEYLOG
+    {picoquic_option_SSLKEYLOG, '8', "sslkeylog", 0, "", "Enable SSLKEYLOG"},
+#endif
+    {picoquic_option_AddressDiscovery, 'J', "addr_disc", 1, "mode", "provider (0), receiver (1) or both (2)."},
+    {picoquic_option_HELP, 'h', "help", 0, "", "This help message"}
 };
 
 static size_t option_table_size = sizeof(option_table) / sizeof(option_table_line_t);
-
-static int skip_spaces(const char* line, int offset)
-{
-    int c;
-
-    while ((c = line[offset]) != 0) {
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-            offset++;
-        }
-        else {
-            break;
-        }
-    }
-    return offset;
-}
-
-static int skip_name(const char* line, int offset)
-{
-    int c;
-
-    while ((c = line[offset]) != 0) {
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ':' || c == '#') {
-            break;
-        }
-        else {
-            offset++;
-        }
-    }
-    return offset;
-}
-
-static int parse_line_params(const char* line, int offset, option_param_t* params, int params_max, int* nb_params)
-{
-    int nb_found = 0;
-
-    offset = skip_spaces(line, offset);
-    if (line[offset] == ':') {
-        while (nb_found < params_max) {
-            int offset_start;
-            offset_start = skip_spaces(line, offset);
-            offset = skip_name(line, offset);
-            if (offset == offset_start) {
-                /* Nothing there. */
-                break;
-            }
-            else {
-                params[nb_found].param = line + offset_start;
-                params[nb_found].length = offset - offset_start;
-                nb_found++;
-            }
-        }
-    }
-    *nb_params = nb_found;
-    return offset;
-}
-
-static int compare_option_name(const char * line, int offset, size_t length, char const* option_name)
-{
-    int ret = -1;
-    
-    if (length == strlen(option_name)) {
-        ret = strncmp(option_name, line + offset, length);
-    }
-
-    return ret;
-}
 
 static uint32_t config_parse_target_version(char const* v_arg)
 {
@@ -170,21 +154,26 @@ static uint32_t config_parse_target_version(char const* v_arg)
     uint32_t v = 0;
     char const* x = v_arg;
 
-    while (*x != 0) {
+    while (*x != 0)
+    {
         int c = *x;
 
-        if (c >= '0' && c <= '9') {
+        if (c >= '0' && c <= '9')
+        {
             c -= '0';
         }
-        else if (c >= 'a' && c <= 'f') {
+        else if (c >= 'a' && c <= 'f')
+        {
             c -= 'a';
             c += 10;
         }
-        else if (c >= 'A' && c <= 'F') {
+        else if (c >= 'A' && c <= 'F')
+        {
             c -= 'A';
             c += 10;
         }
-        else {
+        else
+        {
             v = 0;
             break;
         }
@@ -201,7 +190,8 @@ static int config_set_string_param(char const** v, const option_param_t* params,
     int ret = 0;
     char* p_dup = NULL;
 
-    if (*v != NULL) {
+    if (*v != NULL)
+    {
         free((void*)*v);
         *v = NULL;
     }
@@ -210,20 +200,24 @@ static int config_set_string_param(char const** v, const option_param_t* params,
     {
         size_t alloc_length = params[x].length + 1;
 
-        if (params[x].length > 0 && alloc_length > params[x].length) {
-            p_dup = (char *)malloc(alloc_length);
+        if (params[x].length > 0 && alloc_length > params[x].length)
+        {
+            p_dup = (char*)malloc(alloc_length);
         }
-        if (p_dup != NULL) {
+        if (p_dup != NULL)
+        {
             memcpy(p_dup, params[x].param, params[x].length);
             p_dup[params[x].length] = 0;
             *v = (char const*)p_dup;
         }
-        else {
+        else
+        {
             fprintf(stderr, "Cannot allocate %zu characters\n", params[x].length);
             ret = -1;
         }
     }
-    else {
+    else
+    {
         ret = -1;
     }
     return ret;
@@ -231,7 +225,8 @@ static int config_set_string_param(char const** v, const option_param_t* params,
 
 static char* config_optval_string(char* buffer, size_t buffer_max, const char* p, size_t p_length)
 {
-    if (p_length + 1 > buffer_max) {
+    if (p_length + 1 > buffer_max)
+    {
         p_length = buffer_max - 1;
     }
     memcpy(buffer, p, p_length);
@@ -239,13 +234,16 @@ static char* config_optval_string(char* buffer, size_t buffer_max, const char* p
     return buffer;
 }
 
-static char* config_optval_param_string(char* buffer, size_t buffer_max, const option_param_t* params, int nb_param, int x)
+static char* config_optval_param_string(char* buffer, size_t buffer_max, const option_param_t* params, int nb_param,
+                                        int x)
 {
-    if (params == NULL || x < 0 || x >= nb_param) {
+    if (params == NULL || x < 0 || x >= nb_param)
+    {
         buffer[0] = 0;
         return buffer;
     }
-    else {
+    else
+    {
         return config_optval_string(buffer, buffer_max, params[x].param, params[x].length);
     }
 }
@@ -254,17 +252,23 @@ int config_atoi(const option_param_t* params, int nb_param, int x, int* ret)
 {
     int v = 0;
 
-    if (params == NULL || x < 0 || x >= nb_param) {
+    if (params == NULL || x < 0 || x >= nb_param)
+    {
         *ret = -1;
     }
-    else {
-        for (size_t i = 0; i < params[x].length; i++) {
+    else
+    {
+        for (size_t i = 0; i < params[x].length; i++)
+        {
             int c = params[x].param[i] - '0';
-            if (c < 0 || c > 9) {
+            if (c < 0 || c > 9)
+            {
                 v = -1;
+                *ret = -1;
                 break;
             }
-            else {
+            else
+            {
                 v *= 10;
                 v += c;
             }
@@ -273,43 +277,14 @@ int config_atoi(const option_param_t* params, int nb_param, int x, int* ret)
     return v;
 }
 
-uint64_t config_atoull(const option_param_t* params, int nb_param, int x, int * ret)
-{
-    uint64_t v = 0;
-
-    if (params == NULL || x < 0 || x >= nb_param) {
-        *ret = -1;
-    }
-    else {
-        for (size_t i = 0; i < params[x].length; i++) {
-            int c = params[x].param[i];
-            unsigned int d = 0;
-            if (c >= '0' || c <= '9') {
-                d = c - '0';
-            }
-            else if (c >= 'a' || c <= 'f') {
-                d = c - 'a' + 10;
-            }
-            else if (c >= 'A' || c <= 'F') {
-                d = c - 'A' + 10;
-            }
-            else {
-                continue;
-            }
-            v <<= 4;
-            v += d;
-        }
-    }
-
-    return v;
-}
-
-static int config_set_option(option_table_line_t* option_desc, option_param_t* params, int nb_params, picoquic_quic_config_t* config)
+static int config_set_option(option_table_line_t* option_desc, option_param_t* params, int nb_params,
+                             picoquic_quic_config_t* config)
 {
     int ret = 0;
     char opval_buffer[256];
 
-    switch (option_desc->option_num) {
+    switch (option_desc->option_num)
+    {
     case picoquic_option_CERT:
         ret = config_set_string_param(&config->server_cert_file, params, nb_params, 0);
         break;
@@ -318,13 +293,17 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
         break;
     case picoquic_option_SERVER_PORT:
         config->server_port = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0) {
+        if (ret != 0)
+        {
             fprintf(stderr, "Invalid port: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
         }
         break;
     case picoquic_option_PROPOSED_VERSION:
-        if ((config->proposed_version = config_parse_target_version(config_optval_param_string(opval_buffer, 256, params, nb_params, 0))) <= 0) {
-            fprintf(stderr, "Invalid version: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if ((config->proposed_version = config_parse_target_version(
+            config_optval_param_string(opval_buffer, 256, params, nb_params, 0))) <= 0)
+        {
+            fprintf(stderr, "Invalid version: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
@@ -334,77 +313,101 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
     case picoquic_option_WWWDIR:
         ret = config_set_string_param(&config->www_dir, params, nb_params, 0);
         break;
-    case picoquic_option_MAX_CONNECTIONS: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v <= 0 ) {
-            fprintf(stderr, "Invalid max connections: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
+    case picoquic_option_MAX_CONNECTIONS:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v <= 0)
+            {
+                fprintf(stderr, "Invalid max connections: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->nb_connections = (uint32_t)v;
+            }
+            break;
         }
-        else {
-            config->nb_connections = (uint32_t)v;
-        }
-        break;
-    }
     case picoquic_option_DO_RETRY:
         config->do_retry = 1;
         break;
-    case picoquic_option_INITIAL_RANDOM: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v < 0 || v > 2) {
-            fprintf(stderr, "Invalid initial random value: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
+    case picoquic_option_INITIAL_RANDOM:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0 || v > 2)
+            {
+                fprintf(stderr, "Invalid initial random value: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->initial_random = v;
+            }
+            break;
         }
-        else {
-            config->initial_random = v;
-        }
-        break;
-    }
     case picoquic_option_RESET_SEED:
-        config->reset_seed[1] = config_atoull(params, nb_params, 0, &ret);
-        config->reset_seed[0] = config_atoull(params, nb_params, 1, &ret);
+        config->has_reset_seed = 1;
+        ret = (picoquic_parse_hexa(params[0].param, params[0].length, config->reset_seed, sizeof(config->reset_seed)) ==
+                  sizeof(config->reset_seed))
+                  ? 0
+                  : -1;
+        if (ret != 0)
+        {
+            fprintf(stderr, "Invalid reset seed: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        }
         break;
     case picoquic_option_DisablePortBlocking:
         config->disable_port_blocking = 1;
         break;
+#ifndef PICOQUIC_WITHOUT_SSLKEYLOG
+    case picoquic_option_SSLKEYLOG:
+        config->enable_sslkeylog = 1;
+        break;
+#endif
     case picoquic_option_SOLUTION_DIR:
         ret = config_set_string_param(&config->solution_dir, params, nb_params, 0);
         break;
     case picoquic_option_CC_ALGO:
         ret = config_set_string_param(&config->cc_algo_id, params, nb_params, 0);
         break;
-    case picoquic_option_SPINBIT: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v < 0 || v > (int)picoquic_spinbit_on) {
-            fprintf(stderr, "Invalid spinbit policy: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
-        }
-        else {
-            config->spinbit_policy = (picoquic_spinbit_version_enum)v;
-        }
+    case picoquic_option_CC_OPTION:
+        ret = config_set_string_param(&config->cc_algo_option_string, params, nb_params, 0);
         break;
-    }
-    case picoquic_option_LOSSBIT: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v < 0 || v >(int)picoquic_lossbit_send_receive) {
-            fprintf(stderr, "Invalid lossbit policy: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
+    case picoquic_option_SPINBIT:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0 || v > (int)picoquic_spinbit_on)
+            {
+                fprintf(stderr, "Invalid spinbit policy: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->spinbit_policy = (picoquic_spinbit_version_enum)v;
+            }
+            break;
         }
-        else {
-            config->lossbit_policy = (picoquic_lossbit_version_enum)v;
+    case picoquic_option_LOSSBIT:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0 || v > (int)picoquic_lossbit_send_receive)
+            {
+                fprintf(stderr, "Invalid lossbit policy: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->lossbit_policy = (picoquic_lossbit_version_enum)v;
+            }
+            break;
         }
+    case picoquic_option_MULTIPATH:
+        config->multipath_option = 1;
         break;
-    }
-    case picoquic_option_MULTIPATH: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v < 0 || v > 3) {
-            fprintf(stderr, "Invalid multipath option: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
-        }
-        else {
-            config->multipath_option = v;
-        }
-        break;
-    }
     case picoquic_option_DEST_IF:
         config->dest_if = config_atoi(params, nb_params, 0, &ret);
         break;
@@ -428,8 +431,10 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
         break;
     case picoquic_option_MTU_MAX:
         config->mtu_max = config_atoi(params, nb_params, 0, &ret);
-        if (config->mtu_max <= 0 || config->mtu_max > PICOQUIC_MAX_PACKET_SIZE) {
-            fprintf(stderr, "Invalid max mtu: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if (config->mtu_max <= 0 || config->mtu_max > PICOQUIC_MAX_PACKET_SIZE)
+        {
+            fprintf(stderr, "Invalid max mtu: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
@@ -447,15 +452,19 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
         break;
     case picoquic_option_CNXID_LENGTH:
         config->cnx_id_length = config_atoi(params, nb_params, 0, &ret);
-        if (config->cnx_id_length < 0 || config->cnx_id_length > PICOQUIC_CONNECTION_ID_MAX_SIZE) {
-            fprintf(stderr, "Invalid connection id length: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if (config->cnx_id_length < 0 || config->cnx_id_length > PICOQUIC_CONNECTION_ID_MAX_SIZE)
+        {
+            fprintf(stderr, "Invalid connection id length: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
     case picoquic_option_Idle_Timeout:
         config->idle_timeout = config_atoi(params, nb_params, 0, &ret);
-        if (config->idle_timeout < 0) {
-            fprintf(stderr, "Invalid idle timer: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if (config->idle_timeout < 0)
+        {
+            fprintf(stderr, "Invalid idle timer: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
@@ -473,8 +482,10 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
         break;
     case picoquic_option_Socket_buffer_size:
         config->socket_buffer_size = config_atoi(params, nb_params, 0, &ret);
-        if (config->socket_buffer_size < 0 ) {
-            fprintf(stderr, "Invalid socket_buffer_size: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if (config->socket_buffer_size < 0)
+        {
+            fprintf(stderr, "Invalid socket_buffer_size: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
@@ -485,25 +496,62 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
         config->do_preemptive_repeat = 1;
         break;
     case picoquic_option_Version_Upgrade:
-        if ((config->desired_version = config_parse_target_version(config_optval_param_string(opval_buffer, 256, params, nb_params, 0))) <= 0) {
-            fprintf(stderr, "Invalid version: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+        if ((config->desired_version = config_parse_target_version(
+            config_optval_param_string(opval_buffer, 256, params, nb_params, 0))) <= 0)
+        {
+            fprintf(stderr, "Invalid version: %s\n",
+                    config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
             ret = -1;
         }
         break;
     case picoquic_option_No_GSO:
         config->do_not_use_gso = 1;
         break;
-    case picoquic_option_BDP_frame: {
-        int v = config_atoi(params, nb_params, 0, &ret);
-        if (ret != 0 || v < 0 || v > 1) {
-            fprintf(stderr, "Invalid bdp option: %s\n", config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
-            ret = (ret == 0) ? -1 : ret;
+    case picoquic_option_BDP_frame:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0 || v > 1)
+            {
+                fprintf(stderr, "Invalid bdp option: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->bdp_frame_option = v;
+            }
+            break;
         }
-        else {
-            config->bdp_frame_option = v;
+    case picoquic_option_CWIN_MAX:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0)
+            {
+                fprintf(stderr, "Invalid cwin max option: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->cwin_max = (v == 0) ? UINT64_MAX : v;
+            }
+            break;
         }
-        break;
-    }
+    case picoquic_option_AddressDiscovery:
+        {
+            int v = config_atoi(params, nb_params, 0, &ret);
+            if (ret != 0 || v < 0 || v > 2)
+            {
+                fprintf(stderr, "Invalid address discovery option: %s\n",
+                        config_optval_param_string(opval_buffer, 256, params, nb_params, 0));
+                ret = (ret == 0) ? -1 : ret;
+            }
+            else
+            {
+                config->address_discovery_mode = v + 1;
+            }
+            break;
+        }
     case picoquic_option_HELP:
         ret = -1;
         break;
@@ -514,18 +562,22 @@ static int config_set_option(option_table_line_t* option_desc, option_param_t* p
     return ret;
 }
 
-int picoquic_config_option_letters(char* option_string, size_t string_max, size_t * string_length)
+int picoquic_config_option_letters(char* option_string, size_t string_max, size_t* string_length)
 {
     size_t l = 0;
     int ret = 0;
 
-    for (size_t i = 0; l + 1 < string_max && i < option_table_size; i++) {
+    for (size_t i = 0; l + 1 < string_max && i < option_table_size; i++)
+    {
         option_string[l++] = option_table[i].option_letter;
-        if (option_table[i].nb_params_required > 0) {
-            if (l + 1 < string_max) {
+        if (option_table[i].nb_params_required > 0)
+        {
+            if (l + 1 < string_max)
+            {
                 option_string[l++] = ':';
             }
-            else {
+            else
+            {
                 l--;
                 ret = -1;
                 break;
@@ -533,43 +585,77 @@ int picoquic_config_option_letters(char* option_string, size_t string_max, size_
         }
     }
     option_string[l] = 0;
-    if (string_length != NULL) {
+    if (string_length != NULL)
+    {
         *string_length = l;
     }
     return ret;
 }
 
-void picoquic_config_usage()
+void picoquic_config_usage_file(FILE* F)
 {
-    fprintf(stderr, "Picoquic options:\n");
-    for (size_t i = 0; i < option_table_size; i++) {
+    fprintf(F, "Picoquic options:\n");
+    for (size_t i = 0; i < option_table_size; i++)
+    {
         size_t spacer = strlen(option_table[i].param_sample);
-        fprintf(stderr, "  -%c %s", option_table[i].option_letter, option_table[i].param_sample);
-        while (spacer++ < 12) {
-            putc(' ', stderr);
+        fprintf(F, "  -%c %s", option_table[i].option_letter, option_table[i].param_sample);
+        while (spacer++ < 12)
+        {
+            putc(' ', F);
         }
-        fprintf(stderr, " %s\n", option_table[i].option_help);
+        fprintf(F, " %s\n", option_table[i].option_help);
+        if (option_table[i].option_num == picoquic_option_CC_ALGO)
+        {
+            if (picoquic_congestion_control_algorithms != NULL &&
+                picoquic_nb_congestion_control_algorithms > 0)
+            {
+                /* Add a line with supported values. */
+                for (size_t j = 0; j < 18; j++)
+                {
+                    putc(' ', F);
+                }
+                for (size_t k = 0; k < picoquic_nb_congestion_control_algorithms; k++)
+                {
+                    if (k != 0)
+                    {
+                        fprintf(F, ", ");
+                    }
+                    fprintf(F, "%s", picoquic_congestion_control_algorithms[k]->congestion_algorithm_id);
+                }
+                fprintf(F, ".\n");
+            }
+        }
     }
 }
 
-int picoquic_config_set_option(picoquic_quic_config_t* config, picoquic_option_enum_t option_num, const char * opt_val)
+void picoquic_config_usage()
+{
+    picoquic_config_usage_file(stderr);
+}
+
+int picoquic_config_set_option(picoquic_quic_config_t* config, picoquic_option_enum_t option_num, const char* opt_val)
 {
     int ret = 0;
     option_table_line_t* option_desc = NULL;
     option_param_t params[1];
     int nb_params = 0;
 
-    for (size_t i = 0; i < option_table_size; i++) {
-        if (option_table[i].option_num == option_num) {
+    for (size_t i = 0; i < option_table_size; i++)
+    {
+        if (option_table[i].option_num == option_num)
+        {
             option_desc = &option_table[i];
         }
     }
-    if (option_desc == NULL) {
+    if (option_desc == NULL)
+    {
         fprintf(stderr, "Unknow option number: %d\n", option_num);
         ret = -1;
     }
-    else{
-        if (opt_val != NULL) {
+    else
+    {
+        if (opt_val != NULL)
+        {
             params[0].param = opt_val;
             params[0].length = strlen(opt_val);
             nb_params = 1;
@@ -579,58 +665,150 @@ int picoquic_config_set_option(picoquic_quic_config_t* config, picoquic_option_e
     return ret;
 }
 
-int picoquic_config_command_line(int opt, int * p_optind, int argc, char const ** argv, char const* optarg, picoquic_quic_config_t * config)
+int picoquic_config_get_option_char_index(int opt)
 {
-    int ret = 0;
     int option_index = -1;
-    option_param_t params[5];
-    int nb_params = 0;
 
-    /* Get the parameters */
-    for (size_t i = 0; i < option_table_size; i++) {
-        if (option_table[i].option_letter == opt) {
+    for (size_t i = 0; i < option_table_size; i++)
+    {
+        if (option_table[i].option_letter == opt)
+        {
             option_index = (int)i;
             break;
         }
     }
+    return option_index;
+}
 
-    if (option_index == -1) {
-        fprintf(stderr, "Unknown option: -%c\n", opt);
+int picoquic_config_get_option_name_index(char const* s, size_t l)
+{
+    int option_index = -1;
+
+    for (size_t i = 0; i < option_table_size; i++)
+    {
+        if (strncmp(s, option_table[i].option_name, l) == 0)
+        {
+            option_index = (int)i;
+            break;
+        }
     }
-    else {
-        if (option_table[option_index].nb_params_required > 0) {
-            params[0].param = optarg;
-            if (optarg == NULL) {
-                fprintf(stderr, "option -%c requires %d arguments\n", opt, option_table[option_index].nb_params_required);
-                ret = -1;
-            }
-            else {
-                params[0].length = strlen(optarg);
-                nb_params++;
-                while (nb_params < option_table[option_index].nb_params_required) {
-                    if (*p_optind + 1 > argc) {
-                        fprintf(stderr, "option -%c requires %d arguments\n", opt, option_table[option_index].nb_params_required);
-                        ret = -1;
-                        break;
-                    }
-                    else {
-                        params[nb_params].param = argv[*p_optind];
-                        params[nb_params].length = (int)strlen(argv[*p_optind]);
-                        nb_params++;
-                        *p_optind += 1;
-                    }
+    return option_index;
+}
+
+int picoquic_config_get_command_line_option_index(char const* opt_string)
+{
+    int option_index = -1;
+
+    if (opt_string[0] == '-' && opt_string[1] != 0)
+    {
+        if (opt_string[2] == 0)
+        {
+            option_index = picoquic_config_get_option_char_index(opt_string[1]);
+        }
+        else if (opt_string[1] == '-' && opt_string[2] != 0)
+        {
+            char const* opt_name = opt_string + 2;
+            option_index = picoquic_config_get_option_name_index(opt_name, strlen(opt_name));
+        }
+    }
+    return option_index;
+}
+
+int picoquic_get_command_line_option_value(int option_index, char const* opt_string, int* p_optind, const char** argv,
+                                           int argc, char const* optarg, picoquic_quic_config_t* config)
+{
+    int ret = 0;
+    option_param_t params[5];
+    int nb_params = 0;
+
+    if (option_table[option_index].nb_params_required > 0)
+    {
+        params[0].param = optarg;
+        if (optarg == NULL)
+        {
+            fprintf(stderr, "option %s requires %d arguments\n", opt_string,
+                    option_table[option_index].nb_params_required);
+            ret = -1;
+        }
+        else
+        {
+            params[0].length = strlen(optarg);
+            nb_params++;
+            while (nb_params < option_table[option_index].nb_params_required)
+            {
+                if (*p_optind + 1 > argc)
+                {
+                    fprintf(stderr, "option %s requires %d arguments\n", opt_string,
+                            option_table[option_index].nb_params_required);
+                    ret = -1;
+                    break;
+                }
+                else
+                {
+                    params[nb_params].param = argv[*p_optind];
+                    params[nb_params].length = (int)strlen(argv[*p_optind]);
+                    nb_params++;
+                    *p_optind += 1;
                 }
             }
         }
     }
 
-    if (ret == 0) {
+    if (ret == 0)
+    {
         ret = config_set_option(&option_table[option_index], params, nb_params, config);
     }
 
     return ret;
 }
 
+int picoquic_config_command_line(int opt, int* p_optind, int argc, char const** argv, char const* optarg,
+                                 picoquic_quic_config_t* config)
+{
+    int ret = 0;
+    int option_index = -1;
+    char opt_string[3] = {'-', 0, 0};
+
+    opt_string[1] = (char)opt;
+    option_index = picoquic_config_get_option_char_index(opt);
+
+    if (option_index == -1)
+    {
+        fprintf(stderr, "Unknown option: -%c\n", opt);
+        ret = -1;
+    }
+    else
+    {
+        ret = picoquic_get_command_line_option_value(option_index, opt_string, p_optind,
+                                                     argv, argc, optarg, config);
+    }
+    return ret;
+}
+
+int picoquic_config_command_line_ex(char const* opt_string, int* p_optind, int argc, char const** argv,
+                                    char const* optarg, picoquic_quic_config_t* config)
+{
+    int ret = 0;
+    int option_index = -1;
+
+    option_index = picoquic_config_get_command_line_option_index(opt_string);
+
+    if (option_index == -1)
+    {
+        fprintf(stderr, "Unknown option: %s\n", opt_string);
+    }
+    else
+    {
+        ret = picoquic_get_command_line_option_value(option_index, opt_string, p_optind,
+                                                     argv, argc, optarg, config);
+    }
+    return ret;
+}
+
+#if 0
+/* Reading parameters from a file instead of the command line.
+* Apparently never used, also not tested.
+ */
 int picoquic_config_file(char const* file_name, picoquic_quic_config_t* config)
 {
     int ret = 0;
@@ -672,12 +850,14 @@ int picoquic_config_file(char const* file_name, picoquic_quic_config_t* config)
 
                 if (option_index == -1) {
                     char buffer[256];
-                    fprintf(stderr, "Unknown option: -%s\n", config_optval_string(buffer, 256, line + name_offset, name_length));
+                    fprintf(stderr, "Line %d, unknown option: -%s\n", line_number,
+                        config_optval_string(buffer, 256, line + name_offset, name_length));
                     ret = -1;
                 }
                 else {
                     if (option_table[option_index].nb_params_required != nb_params) {
-                        fprintf(stderr, "option %s requires %d arguments, %d present\n",
+                        fprintf(stderr, "Line %d, option %s requires %d arguments, %d present\n",
+                            line_number,
                             option_table[option_index].option_name,
                             option_table[option_index].nb_params_required,
                             nb_params);
@@ -688,7 +868,7 @@ int picoquic_config_file(char const* file_name, picoquic_quic_config_t* config)
                 if (ret == 0) {
                     offset = skip_name(line, offset);
                     if (line[offset] != 0 && line[offset] != '#') {
-                        fprintf(stderr, "Unexpected character at position %d\n", offset);
+                        fprintf(stderr, "Line %d, unexpected character at position %d\n", line_number, offset);
                     }
                 }
 
@@ -704,8 +884,7 @@ int picoquic_config_file(char const* file_name, picoquic_quic_config_t* config)
 
     return ret;
 }
-
-
+#endif
 
 /* Create a QUIC Context based on configuration data.
  * Arguments from configuration:
@@ -728,14 +907,14 @@ int picoquic_config_file(char const* file_name, picoquic_quic_config_t* config)
  */
 
 picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
-    picoquic_stream_data_cb_fn default_callback_fn,
-    void* default_callback_ctx,
-    uint64_t current_time,
-    uint64_t * p_simulated_time)
+                                               picoquic_stream_data_cb_fn default_callback_fn,
+                                               void* default_callback_ctx,
+                                               uint64_t current_time,
+                                               uint64_t* p_simulated_time)
 {
     /* Create context */
-    /* TODO: padding policy 
-     * TODO: mtu max accessor 
+    /* TODO: padding policy
+     * TODO: mtu max accessor
      * TODO: set supported CC without linking every option
      * TODO: set logging option without linking every option
      * TODO: set key log file option
@@ -750,37 +929,41 @@ picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
         default_callback_ctx,
         NULL,
         NULL,
-        (uint8_t *)config->reset_seed,
+        (config->has_reset_seed) ? (uint8_t*)config->reset_seed : NULL,
         current_time,
         p_simulated_time,
         config->ticket_file_name,
         config->ticket_encryption_key,
         config->ticket_encryption_key_length);
 
-    if (quic != NULL) {
+    if (quic != NULL)
+    {
         int ret = 0;
         picoquic_congestion_algorithm_t const* cc_algo = NULL;
 
         /* Additional configuration options */
         /* picoquic_set_alpn_select_fn(qserver, picoquic_demo_server_callback_select_alpn); */
-        if (config->do_retry) {
+        if (config->do_retry)
+        {
             picoquic_set_cookie_mode(quic, 1);
         }
-        else {
+        else
+        {
             /* TODO: option to provide cookie by default or not */
             picoquic_set_cookie_mode(quic, 2);
         }
 
-        if (config->cc_algo_id != NULL) {
+        if (config->cc_algo_id != NULL)
+        {
             cc_algo = picoquic_get_congestion_algorithm(config->cc_algo_id);
-            if (cc_algo == NULL) {
+            if (cc_algo == NULL)
+            {
                 fprintf(stderr, "Unrecognized congestion algorithm: %s. Using BBR isntead.\n", config->cc_algo_id);
             }
         }
-        if (cc_algo == NULL) {
-            cc_algo = picoquic_bbr_algorithm;
-        }
-        picoquic_set_default_congestion_algorithm(quic, cc_algo);
+
+
+        picoquic_set_default_congestion_algorithm_ex(quic, cc_algo, config->cc_algo_option_string);
 
         picoquic_set_default_spinbit_policy(quic, config->spinbit_policy);
         picoquic_set_default_lossbit_policy(quic, config->lossbit_policy);
@@ -788,22 +971,31 @@ picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
         picoquic_set_default_multipath_option(quic, config->multipath_option);
         picoquic_set_default_idle_timeout(quic, (uint64_t)config->idle_timeout);
 
-        if (config->token_file_name) {
-            if (picoquic_load_retry_tokens(quic, config->token_file_name) != 0) {
+        picoquic_set_cwin_max(quic, config->cwin_max);
+        picoquic_set_default_address_discovery_mode(quic, config->address_discovery_mode);
+
+        if (config->token_file_name)
+        {
+            if (picoquic_load_retry_tokens(quic, config->token_file_name) != 0)
+            {
                 fprintf(stderr, "No token file present. Will create one as <%s>.\n", config->token_file_name);
             }
         }
 
-        if (config->force_zero_share) {
+        if (config->force_zero_share)
+        {
             quic->client_zero_share = 1;
         }
 
-        if (config->mtu_max > 0) {
+        if (config->mtu_max > 0)
+        {
             picoquic_set_mtu_max(quic, config->mtu_max);
         }
 
-        if (config->cnx_id_length != -1) {
-            if (picoquic_set_default_connection_id_length(quic, (uint8_t)config->cnx_id_length) != 0) {
+        if (config->cnx_id_length != -1)
+        {
+            if (picoquic_set_default_connection_id_length(quic, (uint8_t)config->cnx_id_length) != 0)
+            {
                 fprintf(stderr, "Could not set CNX-ID length #%d.\n", config->cnx_id_length);
             }
         }
@@ -816,7 +1008,7 @@ picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
 
         picoquic_set_binlog(quic, config->bin_dir);
 
-        /* We cannot set qlog here, because of the dependency on libraries 
+        /* We cannot set qlog here, because of the dependency on libraries
          * that are not linked with picoquic by default. The application
          * will have to call:
          *    picoquic_set_qlog(quic, config->qlog_dir);
@@ -830,20 +1022,42 @@ picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
 
         picoquic_disable_port_blocking(quic, config->disable_port_blocking);
 
-        if (config->initial_random >= 0 && config->initial_random <= 2) {
+#ifndef PICOQUIC_WITHOUT_SSLKEYLOG
+        picoquic_enable_sslkeylog(quic, config->enable_sslkeylog);
+#endif
+
+        if (config->initial_random >= 0 && config->initial_random <= 2)
+        {
             picoquic_set_random_initial(quic, config->initial_random);
         }
 
-        if (config->cipher_suite_id != 0) {
-            if (picoquic_set_cipher_suite(quic, config->cipher_suite_id) != 0) {
+        if (config->cipher_suite_id != 0)
+        {
+            int iana_cipher_suite_code = config->cipher_suite_id;
+            if (config->cipher_suite_id == 20)
+            {
+                iana_cipher_suite_code = PICOQUIC_CHACHA20_POLY1305_SHA256;
+            }
+            else if (config->cipher_suite_id == 128)
+            {
+                iana_cipher_suite_code = PICOQUIC_AES_128_GCM_SHA256;
+            }
+            else if (config->cipher_suite_id == 256)
+            {
+                iana_cipher_suite_code = PICOQUIC_AES_256_GCM_SHA384;
+            }
+            if (picoquic_set_cipher_suite(quic, iana_cipher_suite_code) != 0)
+            {
                 fprintf(stderr, "Could not set cipher suite #%d.\n", config->cipher_suite_id);
             }
         }
 
-        if (config->do_retry != 0) {
+        if (config->do_retry != 0)
+        {
             picoquic_set_cookie_mode(quic, 1);
         }
-        else {
+        else
+        {
             picoquic_set_cookie_mode(quic, 2);
         }
         /* TODO: control whether to */
@@ -851,7 +1065,8 @@ picoquic_quic_t* picoquic_create_and_configure(picoquic_quic_config_t* config,
 
         picoquic_set_default_bdp_frame_option(quic, config->bdp_frame_option);
 
-        if (ret != 0) {
+        if (ret != 0)
+        {
             /* Something went wrong */
             DBG_PRINTF("QUIC configuration fails, ret = %d (0x%x)", ret, ret);
             picoquic_free(quic);
@@ -868,6 +1083,8 @@ void picoquic_config_init(picoquic_quic_config_t* config)
     config->cnx_id_length = -1;
     config->nb_connections = 256;
     config->initial_random = 3;
+    config->cwin_max = UINT64_MAX;
+    config->idle_timeout = PICOQUIC_MICROSEC_HANDSHAKE_MAX / 1000;
 }
 
 void picoquic_config_clear(picoquic_quic_config_t* config)
@@ -903,6 +1120,10 @@ void picoquic_config_clear(picoquic_quic_config_t* config)
     if (config->cc_algo_id != NULL)
     {
         free((void*)config->cc_algo_id);
+    }
+    if (config->cc_algo_option_string != NULL)
+    {
+        free((void*)config->cc_algo_option_string);
     }
     if (config->cnx_id_cbdata != NULL)
     {

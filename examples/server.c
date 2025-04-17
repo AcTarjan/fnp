@@ -7,7 +7,7 @@
 
 typedef long long int i64;
 
-#define PORT 18888
+#define PORT 18880
 #define BUFFER_SIZE 2024
 
 static inline i64 get_timestamp_us()
@@ -90,6 +90,7 @@ void start_tcp_server(int fd)
         perror("listen");
         exit(EXIT_FAILURE);
     }
+    return;
 
     // 接受客户端连接
     while (1)
@@ -157,30 +158,13 @@ void start_server(int is_udp)
     struct sockaddr_in address;
     int opt = 0;
 
-    // 创建socket文件描述符
-    int sock_type = is_udp ? SOCK_DGRAM : SOCK_STREAM;
-    if ((server_fd = socket(AF_INET, sock_type, 0)) == 0)
-    {
-        perror("socket failed");
-        exit(EXIT_FAILURE);
-    }
+    server_fd = create_socket(is_udp);
+    set_sockopt(server_fd);
+    bind_socket(server_fd, NULL, PORT);
 
-    // 设置socket选项
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)))
-    {
-        perror("setsockopt");
-        exit(EXIT_FAILURE);
-    }
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    // 绑定socket到指定地址和端口
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
-    {
-        perror("bind failed");
-        exit(EXIT_FAILURE);
-    }
+    int server_fd2 = create_socket(is_udp);
+    set_sockopt(server_fd2);
+    bind_socket(server_fd2, NULL, PORT);
 
     if (is_udp)
     {
@@ -190,20 +174,21 @@ void start_server(int is_udp)
     else
     {
         start_tcp_server(server_fd);
+        start_tcp_server(server_fd2);
     }
 }
 
 int main(int argc, char *argv[])
 {
-    if (argc < 2)
-    {
-        printf("Usage: %s <protocol>\n", argv[0]);
-        printf("  <protocol>: tcp or udp\n");
-        return -1;
-    }
+    // if (argc < 2)
+    // {
+    //     printf("Usage: %s <protocol>\n", argv[0]);
+    //     printf("  <protocol>: tcp or udp\n");
+    //     return -1;
+    // }
 
-    int is_udp = strcmp(argv[1], "udp") == 0;
-    start_server(is_udp);
+    // int is_udp = strcmp(argv[1], "udp") == 0;
+    start_server(0);
 
     return 0;
 }

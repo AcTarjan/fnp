@@ -2,6 +2,8 @@
 
 /* package command-line-arguments */
 
+#ifndef LIBFNP_CONF_H
+#define LIBFNP_CONF_H
 
 #line 1 "cgo-builtin-export-prolog"
 
@@ -11,7 +13,11 @@
 #define GO_CGO_EXPORT_PROLOGUE_H
 
 #ifndef GO_CGO_GOSTRING_TYPEDEF
-typedef struct { const char *p; ptrdiff_t n; } _GoString_;
+typedef struct
+{
+	const char* p;
+	ptrdiff_t n;
+} _GoString_;
 #endif
 
 #endif
@@ -24,33 +30,45 @@ typedef struct { const char *p; ptrdiff_t n; } _GoString_;
 
 #include <stdbool.h>
 
-typedef struct {
-	int mbuf_pool_size;
+typedef struct
+{
 	char* argv[32];
 	int argc;
 } dpdk_config;
 
-
-typedef struct {
+typedef struct
+{
+	char* name;
 	char* ip;
 	char* ip_mask;
 	char* gateway;
-    bool promiscuous;
-	int nb_rx_queue;		//接收队列数
-	int nb_rx_desc;			//接收描述符数
-	int nb_tx_queue;		//发送队列数
-	int nb_tx_desc;			//发送描述符数
-	int rx_ring_size;		//接收环形队列大小
-	int tx_ring_size;		//发送环形队列大小
-	int rx_mbuf_pool_size;	//用于网卡队列接收的mbuf pool大小
+} network_config;
+
+typedef struct
+{
+	network_config networks[8];
+	int networks_count;
+	bool promiscuous;
+	int nb_rx_desc; //接收描述符数
+	int nb_tx_desc; //发送描述符数
 } port_config;
 
-typedef struct {
+typedef struct
+{
+	int lcores[8];
+	int lcores_count;
+	int mbuf_pool_size;
+	int clone_pool_size;
+	int rx_pool_size;
+	int tx_ring_size; //发送环形队列大小
+} worker_config;
+
+typedef struct
+{
 	dpdk_config dpdk;
-	int worker1;
-	int worker2;
 	port_config ports[8];
 	int ports_count;
+	worker_config worker;
 } fnp_config;
 
 
@@ -92,15 +110,26 @@ typedef double _Complex GoComplex128;
   static assertion to make sure the file is being used on architecture
   at least with matching size of GoInt.
 */
-typedef char _check_for_64_bit_pointer_matching_GoInt[sizeof(void*)==64/8 ? 1:-1];
+typedef char _check_for_64_bit_pointer_matching_GoInt[sizeof(void*) == 64 / 8 ? 1 : -1];
 
 #ifndef GO_CGO_GOSTRING_TYPEDEF
 typedef _GoString_ GoString;
 #endif
-typedef void *GoMap;
-typedef void *GoChan;
-typedef struct { void *t; void *v; } GoInterface;
-typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
+typedef void* GoMap;
+typedef void* GoChan;
+
+typedef struct
+{
+	void* t;
+	void* v;
+} GoInterface;
+
+typedef struct
+{
+	void* data;
+	GoInt len;
+	GoInt cap;
+} GoSlice;
 
 #endif
 
@@ -114,4 +143,6 @@ extern int parse_fnp_config(char* path, fnp_config* conf);
 
 #ifdef __cplusplus
 }
+#endif
+
 #endif

@@ -61,49 +61,53 @@ extern "C" {
 #define PICOQUIC_PACKET 2
 #define PICOQUIC_QUICCTX 3
 #define PICOQUIC_FRAME 4
+#define PICOQUIC_LOSS_RECOVERY 5
 #define SET_LAST_WAKE(quic, file_id) ((quic)->wake_file = file_id, (quic)->wake_line = __LINE__)
 
 
-void debug_set_stream(FILE *F);
+void debug_set_stream(FILE* F);
+#if 0
+void debug_set_callback(void (*cb)(const char *msg, void *argp), void *argp);
+#endif
 void debug_printf(const char* fmt, ...);
 void debug_printf_push_stream(FILE* f);
 void debug_printf_pop_stream(void);
 void debug_printf_suspend(void);
 void debug_printf_resume(void);
 int debug_printf_reset(int suspended);
+#ifdef _DEBUG
 void debug_dump(const void * x, int len);
+#endif
 
 /* utilities */
 char* picoquic_string_create(const char* original, size_t len);
 char* picoquic_string_duplicate(const char* original);
 char* picoquic_string_free(char* str);
-int picoquic_sprintf(char* buf, size_t buf_len, size_t * nb_chars, const char* fmt, ...);
+int picoquic_sprintf(char* buf, size_t buf_len, size_t* nb_chars, const char* fmt, ...);
 
-extern const picoquic_connection_id_t picoquic_null_connection_id;
-uint8_t picoquic_format_connection_id(uint8_t* bytes, size_t bytes_max, picoquic_connection_id_t cnx_id);
-uint8_t picoquic_parse_connection_id(const uint8_t* bytes, uint8_t len, picoquic_connection_id_t *cnx_id);
-int picoquic_is_connection_id_null(const picoquic_connection_id_t * cnx_id);
-int picoquic_compare_connection_id(const picoquic_connection_id_t * cnx_id1, const picoquic_connection_id_t * cnx_id2);
-uint64_t picoquic_connection_id_hash(const picoquic_connection_id_t * cid);
-uint64_t picoquic_val64_connection_id(picoquic_connection_id_t cnx_id);
-void picoquic_set64_connection_id(picoquic_connection_id_t * cnx_id, uint64_t val64);
-uint64_t picoquic_hash_addr(const struct sockaddr* addr);
+extern const quic_connection_id_t picoquic_null_connection_id;
+uint8_t picoquic_format_connection_id(uint8_t* bytes, size_t bytes_max, quic_connection_id_t cnx_id);
+uint8_t picoquic_parse_connection_id(const uint8_t* bytes, uint8_t len, quic_connection_id_t* cnx_id);
+int picoquic_is_connection_id_null(const quic_connection_id_t* cnx_id);
+int picoquic_compare_connection_id(const quic_connection_id_t* cnx_id1, const quic_connection_id_t* cnx_id2);
+uint64_t picoquic_connection_id_hash(const quic_connection_id_t* cid, const uint8_t* hash_seed);
+uint64_t picoquic_val64_connection_id(quic_connection_id_t cnx_id);
+size_t picoquic_hash_addr_bytes(const fsockaddr_t* addr, uint8_t* bytes);
+uint64_t picoquic_hash_addr(const fsockaddr_t* addr, const uint8_t* hash_seed);
 size_t picoquic_parse_hexa(char const* hex_input, size_t input_length, uint8_t* bin_output, size_t output_max);
-uint8_t picoquic_parse_connection_id_hexa(char const * hex_input, size_t input_length, picoquic_connection_id_t * cnx_id);
-int picoquic_print_connection_id_hexa(char* buf, size_t buf_len, const picoquic_connection_id_t* cnxid);
-uint8_t picoquic_create_packet_header_cnxid_lengths(uint8_t dest_len, uint8_t srce_len);
+uint8_t picoquic_parse_connection_id_hexa(char const* hex_input, size_t input_length, quic_connection_id_t* cnx_id);
+int picoquic_print_connection_id_hexa(char* buf, size_t buf_len, const quic_connection_id_t* cnxid);
 
-int picoquic_compare_addr(const struct sockaddr* expected, const struct sockaddr* actual);
-int picoquic_addr_length(const struct sockaddr* addr);
-void picoquic_store_addr(struct sockaddr_storage * stored_addr, const struct sockaddr * addr);
-void picoquic_get_ip_addr(struct sockaddr * addr, uint8_t ** ip_addr, uint8_t * ip_addr_len);
+
+void picoquic_get_ip_addr(fsockaddr_t* addr, uint8_t** ip_addr, uint8_t* ip_addr_len);
 int picoquic_store_text_addr(struct sockaddr_storage* stored_addr, const char* ip_address_text, uint16_t port);
-char const* picoquic_addr_text(struct sockaddr* addr, char* text, size_t text_size);
+char const* picoquic_addr_text(const struct sockaddr* addr, char* text, size_t text_size);
 int picoquic_store_loopback_addr(struct sockaddr_storage* stored_addr, int addr_family, uint16_t port);
 
 /* Setting the solution dir when not executing from default location */
 void picoquic_set_solution_dir(char const* solution_dir);
-int picoquic_get_input_path(char * target_file_path, size_t file_path_max, const char * solution_path, const char * file_name);
+int picoquic_get_input_path(char* target_file_path, size_t file_path_max, const char* solution_path,
+                            const char* file_name);
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -143,29 +147,32 @@ int picoquic_get_input_path(char * target_file_path, size_t file_path_max, const
 #endif //#ifdef DISABLE_DEBUG_PRINTF
 
 /* Safely open files in a portable way */
-FILE * picoquic_file_open_ex(char const * file_name, char const * flags, int * last_err);
-FILE * picoquic_file_open(char const * file_name, char const * flags);
-FILE * picoquic_file_close(FILE * F);
+FILE* picoquic_file_open_ex(char const* file_name, char const* flags, int* last_err);
+FILE* picoquic_file_open(char const* file_name, char const* flags);
+FILE* picoquic_file_close(FILE* F);
 
 int picoquic_file_delete(char const* file_name, int* last_err);
 
 /* Skip and decoding functions */
-const uint8_t* picoquic_frames_fixed_skip(const uint8_t * bytes, const uint8_t * bytes_max, uint64_t size);
-const uint8_t* picoquic_frames_varint_skip(const uint8_t * bytes, const uint8_t * bytes_max);
-const uint8_t* picoquic_frames_varint_decode(const uint8_t * bytes, const uint8_t * bytes_max, uint64_t * n64);
-const uint8_t* picoquic_frames_varlen_decode(const uint8_t * bytes, const uint8_t * bytes_max, size_t * n);
-const uint8_t* picoquic_frames_uint8_decode(const uint8_t * bytes, const uint8_t * bytes_max, uint8_t * n);
-const uint8_t* picoquic_frames_uint16_decode(const uint8_t * bytes, const uint8_t * bytes_max, uint16_t * n);
-const uint8_t* picoquic_frames_uint32_decode(const uint8_t * bytes, const uint8_t * bytes_max, uint32_t * n);
-const uint8_t* picoquic_frames_uint64_decode(const uint8_t * bytes, const uint8_t * bytes_max, uint64_t * n);
-const uint8_t* picoquic_frames_length_data_skip(const uint8_t * bytes, const uint8_t * bytes_max);
-const uint8_t* picoquic_frames_cid_decode(const uint8_t * bytes, const uint8_t * bytes_max, picoquic_connection_id_t * cid);
+const uint8_t* picoquic_frames_fixed_skip(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t size);
+const uint8_t* picoquic_frames_varint_skip(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_frames_varint_decode(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t* n64);
+const uint8_t* picoquic_frames_varlen_decode(const uint8_t* bytes, const uint8_t* bytes_max, size_t* n);
+const uint8_t* picoquic_frames_uint8_decode(const uint8_t* bytes, const uint8_t* bytes_max, uint8_t* n);
+const uint8_t* picoquic_frames_uint16_decode(const uint8_t* bytes, const uint8_t* bytes_max, uint16_t* n);
+const uint8_t* picoquic_frames_uint32_decode(const uint8_t* bytes, const uint8_t* bytes_max, uint32_t* n);
+const uint8_t* picoquic_frames_uint64_decode(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t* n);
+const uint8_t* picoquic_frames_length_data_skip(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_frames_cid_decode(const uint8_t* bytes, const uint8_t* bytes_max,
+                                          quic_connection_id_t* cid);
 
 #define VARINT_LEN(bytes) (((uint8_t)1) << ((bytes[0] >> 6)&3))
 #define VARINT_LEN_T(bytes, t_len) (((t_len)1) << ((bytes[0] >> 6)&3))
 
+#if 0
 /* Predict length of a varint encoding */
 size_t picoquic_frames_varint_encode_length(uint64_t n64);
+#endif
 
 /* Encoding functions of the form uint8_t * picoquic_frame_XXX_encode(uint8_t * bytes, uint8_t * bytes-max, ...)
  */
@@ -173,12 +180,12 @@ uint8_t* picoquic_frames_varint_encode(uint8_t* bytes, const uint8_t* bytes_max,
 uint8_t* picoquic_frames_varlen_encode(uint8_t* bytes, const uint8_t* bytes_max, size_t n);
 uint8_t* picoquic_frames_uint8_encode(uint8_t* bytes, const uint8_t* bytes_max, uint8_t n);
 uint8_t* picoquic_frames_uint16_encode(uint8_t* bytes, const uint8_t* bytes_max, uint16_t n);
-uint8_t* picoquic_frames_uint24_encode(uint8_t * bytes, const uint8_t * bytes_max, uint32_t n);
+uint8_t* picoquic_frames_uint24_encode(uint8_t* bytes, const uint8_t* bytes_max, uint32_t n);
 uint8_t* picoquic_frames_uint32_encode(uint8_t* bytes, const uint8_t* bytes_max, uint32_t n);
 uint8_t* picoquic_frames_uint64_encode(uint8_t* bytes, const uint8_t* bytes_max, uint64_t n);
 uint8_t* picoquic_frames_length_data_encode(uint8_t* bytes, const uint8_t* bytes_max, size_t l, const uint8_t* v);
-uint8_t* picoquic_frames_cid_encode(uint8_t* bytes, const uint8_t* bytes_max, const picoquic_connection_id_t* cid);
-uint8_t* picoquic_frames_charz_encode(uint8_t * bytes, const uint8_t * bytes_max, char const* s);
+uint8_t* picoquic_frames_cid_encode(uint8_t* bytes, const uint8_t* bytes_max, const quic_connection_id_t* cid);
+uint8_t* picoquic_frames_charz_encode(uint8_t* bytes, const uint8_t* bytes_max, char const* s);
 
 /* Constant time memory comparison may be required on some platforms for testing reset secrets */
 int picoquic_constant_time_memcmp(const uint8_t* x, const uint8_t* y, size_t l);
@@ -194,20 +201,22 @@ typedef DWORD (WINAPI* picoquic_thread_fn)(LPVOID lpParam);
 #define picoquic_event_t HANDLE
 #define picoquic_thread_do_return return 0
 #else
- /* Linux routine returns */
+/* Linux routine returns */
 #define picoquic_thread_t pthread_t
 #define picoquic_thread_return_t void*
-typedef void* (*picoquic_thread_fn) (void* lpParam);
-#define picoquic_mutex_t pthread_mutex_t 
+typedef void* (*picoquic_thread_fn)(void* lpParam);
+#define picoquic_mutex_t pthread_mutex_t
 #define picoquic_thread_do_return return (void *)NULL
 
-typedef struct st_picoquic_event_t {
+typedef struct st_picoquic_event_t
+{
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 } picoquic_event_t;
 #endif
 
 int picoquic_create_thread(picoquic_thread_t* thread, picoquic_thread_fn thread_fn, void* arg);
+int picoquic_wait_thread(picoquic_thread_t thread);
 void picoquic_delete_thread(picoquic_thread_t* thread);
 
 int picoquic_create_mutex(picoquic_mutex_t* mutex);
@@ -219,6 +228,10 @@ int picoquic_create_event(picoquic_event_t* event);
 void picoquic_delete_event(picoquic_event_t* event);
 int picoquic_signal_event(picoquic_event_t* event);
 int picoquic_wait_for_event(picoquic_event_t* event, uint64_t microsec_wait);
+
+/* Simple portable random number generation
+ */
+uint64_t picoquic_uniform_random(uint64_t rnd_max);
 
 /* Set of random number generation functions, designed for tests.
  * The random numbers are defined by a 64 bit context, initialized to a seed.
@@ -243,7 +256,8 @@ char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, si
  * Get packet out of link at time T + L + Queue.
  */
 
-typedef struct st_picoquictest_sim_packet_t {
+typedef struct st_picoquictest_sim_packet_t
+{
     struct st_picoquictest_sim_packet_t* next_packet;
     uint64_t arrival_time;
     size_t length;
@@ -253,9 +267,11 @@ typedef struct st_picoquictest_sim_packet_t {
     uint8_t bytes[PICOQUIC_MAX_PACKET_SIZE];
 } picoquictest_sim_packet_t;
 
-typedef struct st_picoquictest_sim_link_t {
+typedef struct st_picoquictest_sim_link_t
+{
     uint64_t next_send_time;
     uint64_t queue_time;
+    uint64_t resume_time;
     uint64_t queue_delay_max;
     uint64_t picosec_per_byte;
     uint64_t microsec_latency;
@@ -280,10 +296,13 @@ typedef struct st_picoquictest_sim_link_t {
     /* Variable for multipath simulation */
     int is_switched_off;
     int is_unreachable;
+    /* variable for simulating suspension */
+    int is_suspended;
 } picoquictest_sim_link_t;
 
 picoquictest_sim_link_t* picoquictest_sim_link_create(double data_rate_in_gps,
-    uint64_t microsec_latency, uint64_t* loss_mask, uint64_t queue_delay_max, uint64_t current_time);
+                                                      uint64_t microsec_latency, uint64_t* loss_mask,
+                                                      uint64_t queue_delay_max, uint64_t current_time);
 
 void picoquictest_sim_link_delete(picoquictest_sim_link_t* link);
 
@@ -292,10 +311,21 @@ picoquictest_sim_packet_t* picoquictest_sim_link_create_packet();
 uint64_t picoquictest_sim_link_next_arrival(picoquictest_sim_link_t* link, uint64_t current_time);
 
 picoquictest_sim_packet_t* picoquictest_sim_link_dequeue(picoquictest_sim_link_t* link,
-    uint64_t current_time);
+                                                         uint64_t current_time);
 
 void picoquictest_sim_link_submit(picoquictest_sim_link_t* link, picoquictest_sim_packet_t* packet,
-    uint64_t current_time);
+                                  uint64_t current_time);
+
+/* picoquic_test_simlink_suspend simulates and interuption of transmission until the
+* specified "end of interval" time. There are two modes:
+*
+* - simulate_receive = 1: receive side. Simulate suspension of reception until the
+*   specified end of interval. All rpending packets are delivered at this point.
+* - simulate_receive = 0: sender side. Simulate suspension of transmission until the
+*   specified end of interval. Packets are queued as if transmitted in sequence
+*   after that interval.
+ */
+void picoquic_test_simlink_suspend(picoquictest_sim_link_t* link, uint64_t time_end_of_interval, int simulate_receive);
 
 /* SNI, Stores and Certificates used for test
  */
@@ -307,14 +337,18 @@ void picoquictest_sim_link_submit(picoquictest_sim_link_t* link, picoquictest_si
 #define PICOQUIC_TEST_FILE_SERVER_BAD_CERT "certs\\badcert.pem"
 #define PICOQUIC_TEST_FILE_SERVER_KEY "certs\\key.pem"
 #define PICOQUIC_TEST_FILE_CERT_STORE "certs\\test-ca.crt"
+#define PICOQUIC_TEST_FILE_SERVER_CERT_ECDSA "certs\\ecdsa\\cert.pem"
+#define PICOQUIC_TEST_FILE_SERVER_KEY_ECDSA "certs\\ecdsa\\key.pem"
 #else
 #define PICOQUIC_TEST_FILE_SERVER_CERT "certs/cert.pem"
 #define PICOQUIC_TEST_FILE_SERVER_BAD_CERT "certs/badcert.pem"
 #define PICOQUIC_TEST_FILE_SERVER_KEY "certs/key.pem"
 #define PICOQUIC_TEST_FILE_CERT_STORE "certs/test-ca.crt"
+#define PICOQUIC_TEST_FILE_SERVER_CERT_ECDSA "certs/ecdsa/cert.pem"
+#define PICOQUIC_TEST_FILE_SERVER_KEY_ECDSA "certs/ecdsa/key.pem"
 #endif
 
- /* To set the solution directory for tests */
+/* To set the solution directory for tests */
 extern char const* picoquic_solution_dir;
 #ifdef __cplusplus
 }

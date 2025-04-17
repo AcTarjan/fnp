@@ -5,6 +5,7 @@
 
 typedef struct rte_hash rte_hash;
 
+// 默认支持单线程写，多线程读
 rte_hash *hash_create(char *name, uint32_t entries, uint32_t key_len);
 
 void hash_free(rte_hash *h);

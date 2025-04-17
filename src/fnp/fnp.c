@@ -3,273 +3,136 @@
 #include "fnp_error.h"
 #include "fnp_common.h"
 #include "fnp_socket.h"
+#include "fnp_internal.h"
 #include "fnp_msg.h"
 
 #include "tcp_sock.h"
 
 #include <arpa/inet.h>
+#include <sys/epoll.h>
+#include <sys/time.h>
 
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_time.h>
+#include <unistd.h>
 
-static int pid; // 进程号，用来标识fnp前端
-static struct rte_mempool *pool = NULL;
-
-uint32_t fnp_ipv4_ston(const char *ip)
-{
-  if (ip == NULL)
-    return 0;
-  struct in_addr addr;
-  inet_aton(ip, &addr);
-
-  return addr.s_addr;
-}
-
-char *fnp_ipv4_ntos(uint32_t ip)
-{
-  struct in_addr addr;
-  addr.s_addr = ip;
-  return inet_ntoa(addr);
-}
-
-/************* mbuf api start **************/
-
-inline MBUF_TYPE fnp_alloc_mbuf()
-{
-  struct rte_mbuf *m = NULL;
-  while ((m = rte_pktmbuf_alloc(pool)) == NULL)
-  {
-    printf("alloc mbuf failed, wait 1s\n");
-    rte_delay_us_block(1000000);
-    i32 avail = rte_mempool_avail_count(pool);
-    printf("mempool avail count: %d\n", avail);
-  }
-  return m;
-}
-
-inline void fnp_free_mbuf(MBUF_TYPE m)
-{
-  rte_pktmbuf_free((struct rte_mbuf *)m);
-}
-
-inline i32 fnp_get_mbuf_len(MBUF_TYPE m)
-{
-  if (m == NULL)
-    return 0;
-  return rte_pktmbuf_data_len((struct rte_mbuf *)m);
-}
-
-inline void fnp_set_mbuf_len(MBUF_TYPE m, i32 len)
-{
-  rte_pktmbuf_append((struct rte_mbuf *)m, len);
-}
-
-inline u8 *fnp_mbuf_data(MBUF_TYPE m)
-{
-  if (m == NULL)
-    return NULL;
-  return rte_pktmbuf_mtod((struct rte_mbuf *)m, u8 *);
-}
-/************* mbuf api end **************/
-
-static int register_to_fnp_backend()
-{
-  struct rte_mp_msg msg;
-  struct rte_mp_reply reply;
-  struct timespec ts = {.tv_sec = 5, .tv_nsec = 0}; // 5s
-
-  // 初始化消息请求
-  sprintf(msg.name, FNP_MSG_NAME_REGISTER);
-  msg.num_fds = 0;
-  msg.len_param = sizeof(register_req_t); // 参数长度
-  register_req_t *req = msg.param;
-  pid = getpid();
-  req->pid = pid;
-  FNP_INFO("register to fnp-backend, pid: %d\n", pid);
-
-  if (rte_mp_request_sync(&msg, &reply, &ts) == 0 &&
-      reply.nb_received == 1)
-  { // 等待fnp-daemon返回响应
-    struct rte_mp_msg *msg = &reply.msgs[0];
-    register_reply_t *r = (register_reply_t *)msg->param;
-    FNP_INFO("received reply from fnp-backend, msg: %s code: %d\n", msg->name, r->code);
-
-    return r->code;
-  }
-
-  return FNP_ERR_MSG_TIMEOUT;
-}
-
-static int handle_keepalive_req(const struct rte_mp_msg *msg, const void *peer)
-{
-  // FNP_INFO("received keepalive from fnp-backend\n");
-
-  struct rte_mp_msg resp;
-  sprintf(resp.name, FNP_MSG_NAME_KEEPALIVE_RESP);
-  resp.num_fds = 0;
-  resp.len_param = 4;
-  int *data = resp.param;
-  *data = pid;
-  rte_mp_sendmsg(&resp);
-  return 0;
-}
 
 int fnp_init()
 {
+  //初始化DPDK
   int argc = 6;
-  char *argv[20] = {
-      "fnp-api",
-      "-l", "2",
-      "--proc-type=secondary",
-      "--file-prefix=fnp",
-      "--no-pci"};
+  char* argv[20] = {
+    "fnp-api",
+    "-l", "2",
+    "--proc-type=secondary",
+    "--file-prefix=fnp",
+    "--no-pci"
+  };
 
   int ret = rte_eal_init(argc, argv);
-  CHECK_RET(ret);
-
-  // 向fnp-backend注册
-  FNP_INFO("FNP-FE register to FNP-BE\n");
-  ret = register_to_fnp_backend();
-  CHECK_RET(ret);
-
-  // 注册保活
-  ret = rte_mp_action_register(FNP_MSG_NAME_KEEPALIVE_REQ, handle_keepalive_req);
-  CHECK_RET(ret);
-
-  // 获取内存池
-  pool = rte_mempool_lookup(FNP_MBUF_MEMPOOL_NAME);
-  if (pool == NULL)
+  if (ret < 0)
   {
-    printf("Cannot get mbuf mempool: %s\n", FNP_MBUF_MEMPOOL_NAME);
+    printf("Error with EAL initialization\n");
     return -1;
   }
-  printf("get mbuf mempool: %s\n", pool->name);
 
-  printf("FNP-FE init successfully. main lcore: %d\n", rte_lcore_id());
-  return 0;
-}
+  // 初始化与fnp-backend的通信管道
+  init_fmsg_center();
 
-/******************** fnp socket api start *****************/
-SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt)
-{
-  fnp_socket_t *socket = NULL;
-  struct rte_mp_msg msg;
-  struct rte_mp_reply reply;
-  struct timespec ts = {.tv_sec = 5, .tv_nsec = 0}; // 5s
+  // 向fnp-backend注册
+  ret = register_frontend_to_daemon();
+  CHECK_RET(ret);
 
-  // 初始化消息请求
-  sprintf(msg.name, FNP_MSG_NAME_CREATE_SOCKET);
-  msg.num_fds = 0;
-  msg.len_param = sizeof(create_socket_req_t); // 参数长度
-  create_socket_req_t *req = msg.param;
-  set_fnp_sockaddr(&req->addr, proto, lip, 0, lport, 0);
-  req->opt = opt;
 
-  if (rte_mp_request_sync(&msg, &reply, &ts) == 0 &&
-      reply.nb_received == 1)
-  { // 等待fnp-daemon返回响应
-    struct rte_mp_msg *msg = &reply.msgs[0];
-    create_socket_reply_t *r = (create_socket_reply_t *)msg->param;
-    FNP_INFO("received reply from fnp-backend, msg: %s code: %d\n", msg->name, r->code);
-    if (r->code != FNP_OK)
-    {
-      return NULL;
-    }
+  // 获取内存池
+  // pool = rte_mempool_lookup(FNP_MBUF_MEMPOOL_NAME);
+  // if (pool == NULL)
+  // {
+  //   printf("Cannot get mbuf mempool: %s\n", FNP_MBUF_MEMPOOL_NAME);
+  //   return -1;
+  // }
 
-    return r->socket;
-  }
-
-  FNP_ERR("socket can't get reply from fnp-daemon\n");
-  return NULL;
-}
-
-static int tcp_connect(fnp_socket_t *socket)
-{
-  i32 state = 0;
-  tcp_sock_t *sock = (tcp_sock_t *)socket;
-  while ((state = tcp_get_state(sock)) != TCP_ESTABLISHED &&
-         state != TCP_CLOSED)
-    rte_delay_us_sleep(100000); // 100ms
-  if (state == TCP_CLOSED)
-    return FNP_ERR_GENERIC;
+  // printf("get mbuf mempool: %s\n", pool->name);
+  printf("fnp-frontend %d init successfully. main lcore: %d\n", frontend->pid, rte_lcore_id());
   return FNP_OK;
 }
 
-int fnp_connect(SOCKET_TYPE socketfd, u32 rip, u16 rport)
+
+/******************** fnp socket api start *****************/
+fsocket_t* fnp_create_socket(fnp_protocol_t proto, const fsockaddr_t* local, const fsockaddr_t* remote, void* conf)
 {
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
-  struct rte_mp_msg msg;
-  struct rte_mp_reply reply;
-  struct timespec ts = {.tv_sec = 5, .tv_nsec = 0}; // 5s
+  fnp_msg_t* msg = new_fmsg(frontend->pid, fmsg_type_create_socket);
+  create_socket_param_t* req = msg->data;
 
-  // 初始化消息请求
-  sprintf(msg.name, FNP_MSG_NAME_SOCKET_CONNECT);
-  msg.num_fds = 0;
-  msg.len_param = sizeof(socket_connect_req_t); // 参数长度
-  socket_connect_req_t *req = msg.param;
-  req->socket = socket;
-  req->rip = rip;
-  req->rport = rport;
+  req->proto = proto;
+  fsockaddr_copy(&req->local, local);
+  fsockaddr_copy(&req->remote, remote);
+  req->conf = conf;
 
-  for (int i = 0; i < 5; i++)
+  // wait for reply
+  int ret = send_fmsg_with_reply(fnp_master_id, msg);
+  if (ret != 0)
   {
-    if (rte_mp_request_sync(&msg, &reply, &ts) == 0 &&
-        reply.nb_received == 1)
-    { // 等待fnp-backend返回响应
-      struct rte_mp_msg *msg = &reply.msgs[0];
-      socket_connect_reply_t *r = (socket_connect_reply_t *)msg->param;
-      FNP_INFO("received reply from fnp-backend, msg: %s code: %d\n", msg->name, r->code);
-      if (r->code == FNP_ERR_NO_ARP_CACHE)
-      {
-        rte_delay_us_sleep(100000); // 100ms
-        continue;
-      }
-      CHECK_RET(r->code);
-
-      if (socket->proto == IPPROTO_TCP)
-        return tcp_connect(socket);
-      return FNP_OK;
-    }
+    printf("fail to create socket: %d\n", ret);
+    return NULL;
   }
 
-  return FNP_ERR_MSG_TIMEOUT;
+  fsocket_t* socket = msg->ptr;
+  if (socket == NULL)
+    return NULL;
+
+  frontend_add_socket(frontend, socket);
+
+  fnp_free(msg);
+  return socket;
 }
 
-SOCKET_TYPE fnp_accept(SOCKET_TYPE socketfd)
+int fnp_connect(fsocket_t* socket)
 {
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
-  fnp_socket_t *new = NULL;
+  socket->request_syn = 1; // 设置请求syn标志
 
-  while (rte_ring_dequeue(socket->rx, (void **)&new) != 0)
-    ; // 等待tcp连接
-
-  // 注意:此时new->can_free为false
-  // 在new入队前设置的,避免在队列中时, new被释放.
-
-  return new;
+  return FNP_OK;
 }
 
-void fnp_close(SOCKET_TYPE socketfd)
-{
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
 
-  socket->can_free = true; // 用户空间不使用了
-  set_socket_req(socket, FNP_CLOSE_REQ);
+fsocket_t* fnp_accept(fsocket_t* socket)
+{
+  fsocket_t* new_socket = NULL;
+
+  while (1)
+  {
+    while (!fnp_pring_dequeue(socket->rx, (void**)&new_socket)); // 等待tcp连接
+
+    tcp_sock_t* sock = new_socket;
+    if (tcp_get_state(sock) == TCP_CLOSED)
+    {
+      socket->frontend_id = 0;
+      continue;
+    }
+
+    frontend_add_socket(frontend, new_socket); //添加到frontend中
+    return new_socket;
+  }
 }
 
-int fnp_send(SOCKET_TYPE socket, MBUF_TYPE m)
+void fnp_close(fsocket_t* socket)
 {
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
+  frontend_remove_socket(frontend, socket);
+  socket->request_close = 1;
+}
 
+int fnp_send(fsocket_t* socket, fnp_mbuf_t m)
+{
   // 等待一段时间，避免发送过快，内存池不足
   rte_delay_us_block(200); // 200us
   // rte_delay_us_sleep(1); // 1us, sleep会让出cpu,导致实际时间会远超过1us
 
   // 判断发送窗口
-  while (rte_ring_enqueue(sk->tx, m) != 0)
+  while (fnp_pring_enqueue(socket->tx, m) != 0)
   {
     // 发送过快，导致发送队列满，等待一段时间
     rte_delay_us_sleep(2000); // 1000us
@@ -279,15 +142,12 @@ int fnp_send(SOCKET_TYPE socket, MBUF_TYPE m)
   return 0;
 }
 
-int fnp_sendto(SOCKET_TYPE socket, MBUF_TYPE m, fnp_addr_t *remote)
+int fnp_sendto(fsocket_t* socket, fnp_mbuf_t m, fsockaddr_t* raddr)
 {
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
+  fmbuf_info_t* info = get_fmbuf_info(m);
+  fsockaddr_copy(&info->remote, raddr);
 
-  fnp_mbufinfo_t *info = fnp_mbufinfo(m);
-  info->addr.ip = remote->ip;
-  info->addr.port = remote->port;
-
-  if (rte_ring_enqueue(sk->tx, m) != 0)
+  if (!fnp_pring_enqueue(socket->tx, m))
   {
     FNP_ERR("enqueue mbuf failed");
     return -1;
@@ -296,35 +156,17 @@ int fnp_sendto(SOCKET_TYPE socket, MBUF_TYPE m, fnp_addr_t *remote)
   return 0;
 }
 
-MBUF_TYPE fnp_recv(SOCKET_TYPE socketfd)
+// 可以通过get_sockinfo获取到目的地址等mbufinfo
+fnp_mbuf_t fnp_recv(fsocket_t* socket)
 {
-  struct rte_mbuf *m = NULL;
-  fnp_socket_t *socket = (fnp_socket_t *)socketfd;
+  struct rte_mbuf* m = NULL;
 
   // 没有数据
-  while (rte_ring_dequeue(socket->rx, (void **)&m) != 0)
+  while (!socket->receive_fin)
   {
-    // 收到FIN了
-    if (!socket->can_recv)
-    {
-      if (rte_ring_count(socket->rx) == 0) // 必须再次确认没有数据
-        return NULL;
-    }
+    if (fnp_pring_dequeue(socket->rx, (void**)&m))
+      break;
   }
-
-  return m;
-}
-
-MBUF_TYPE fnp_recvfrom(SOCKET_TYPE socket, fnp_addr_t *remote)
-{
-  struct rte_mbuf *m = NULL;
-  fnp_socket_t *sk = (fnp_socket_t *)socket;
-  while (rte_ring_dequeue(sk->rx, (void **)&m) != 0)
-    ;
-
-  fnp_mbufinfo_t *info = fnp_mbufinfo(m);
-  remote->ip = info->addr.ip;
-  remote->port = info->addr.port;
 
   return m;
 }
@@ -342,7 +184,7 @@ static inline i64 get_timestamp_us()
   return timestamp;
 }
 
-void fnp_compute_rate(fnp_rate_measure_t *meas, i64 size)
+void fnp_compute_rate(fnp_rate_measure_t* meas, i64 size)
 {
   meas->total += size;
   i64 now = get_timestamp_us();

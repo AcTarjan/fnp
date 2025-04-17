@@ -9,37 +9,8 @@
 #include <rte_ip.h>
 #include <rte_tcp.h>
 
-static tcp_recv_func tcp_recv[TCP_STATE_END];
-static tcp_send_func tcp_send[TCP_STATE_END];
 
-void init_tcp_layer()
-{
-    tcp_recv[TCP_CLOSED] = tcp_closed_recv;
-    tcp_recv[TCP_LISTEN] = tcp_listen_recv;
-    tcp_recv[TCP_SYN_SENT] = tcp_synsent_recv;
-    tcp_recv[TCP_SYN_RECV] = tcp_synrecv_recv;
-    tcp_recv[TCP_ESTABLISHED] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSE_WAIT] = tcp_estab_recv;
-    tcp_recv[TCP_LAST_ACK] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_1] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_2] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSING] = tcp_estab_recv;
-    tcp_recv[TCP_TIME_WAIT] = tcp_estab_recv;
-
-    tcp_send[TCP_CLOSED] = tcp_closed_send;
-    tcp_send[TCP_LISTEN] = tcp_listen_send;
-    tcp_send[TCP_SYN_SENT] = tcp_syn_send;
-    tcp_send[TCP_SYN_RECV] = tcp_syn_send;
-    tcp_send[TCP_ESTABLISHED] = tcp_data_send;
-    tcp_send[TCP_CLOSE_WAIT] = tcp_data_send;
-    tcp_send[TCP_LAST_ACK] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_1] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_2] = tcp_data_send;
-    tcp_send[TCP_CLOSING] = tcp_data_send;
-    tcp_send[TCP_TIME_WAIT] = tcp_data_send;
-}
-
-static inline void tcp_decode_option(tcp_option *opt, u8 *bytes, u8 len)
+static inline void tcp_decode_option(tcp_option* opt, u8* bytes, u8 len)
 {
     opt->mss = 0;
     opt->wnd_scale = 255; //  不能为0, 用来区分没有窗口扩展和窗口扩展为0
@@ -53,43 +24,46 @@ static inline void tcp_decode_option(tcp_option *opt, u8 *bytes, u8 len)
         case 0: // EOL
             return;
         case 1:
-        { // NOP
-            index++;
-            break;
-        }
+            {
+                // NOP
+                index++;
+                break;
+            }
         case 2:
-        { // MSS
-            u16 *mss = bytes + index + 2;
-            opt->mss = fnp_swap16(*mss);
-            index += 4;
-            break;
-        }
+            {
+                // MSS
+                u16* mss = bytes + index + 2;
+                opt->mss = fnp_swap16(*mss);
+                index += 4;
+                break;
+            }
         case 3:
-        { // Window Scale
-            opt->wnd_scale = bytes[index + 2];
-            index += 3;
-            break;
-        }
+            {
+                // Window Scale
+                opt->wnd_scale = bytes[index + 2];
+                index += 3;
+                break;
+            }
         case 4:
-        {
-            opt->permit_sack = true;
-            index += 2;
-            break;
-        }
+            {
+                opt->permit_sack = true;
+                index += 2;
+                break;
+            }
         default:
-        {
-            u8 olen = bytes[index + 1];
-            index += olen;
-        }
+            {
+                u8 olen = bytes[index + 1];
+                index += olen;
+            }
         }
     }
 }
 
-static inline void tcp_seg_init(struct rte_mbuf *m, tcp_segment *seg)
+static inline void tcp_seg_init(struct rte_mbuf* m, tcp_segment* seg)
 {
-    struct rte_ipv4_hdr *ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
     u8 ipv4_hdr_len = rte_ipv4_hdr_len(ipv4Hdr);
-    struct rte_tcp_hdr *tcpHdr = (struct rte_tcp_hdr *)rte_pktmbuf_adj(m, ipv4_hdr_len);
+    struct rte_tcp_hdr* tcpHdr = (struct rte_tcp_hdr*)rte_pktmbuf_adj(m, ipv4_hdr_len);
 
     seg->iface_id = m->port;
     seg->proto = IPPROTO_TCP;
@@ -106,7 +80,7 @@ static inline void tcp_seg_init(struct rte_mbuf *m, tcp_segment *seg)
 
     if (seg_has_opt(seg))
     {
-        u8 *opt_bytes = rte_pktmbuf_mtod_offset(m, u8 *, TCP_HDR_MIN_LEN);
+        u8* opt_bytes = rte_pktmbuf_mtod_offset(m, u8 *, TCP_HDR_MIN_LEN);
         tcp_decode_option(&seg->opt, opt_bytes, seg->hdr_len - TCP_HDR_MIN_LEN);
     }
 
@@ -122,16 +96,16 @@ static inline void tcp_seg_init(struct rte_mbuf *m, tcp_segment *seg)
 }
 
 // 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
-void tcp_recv_mbuf(struct rte_mbuf *m)
+void tcp_recv_mbuf(struct rte_mbuf* m)
 {
-    struct rte_ipv4_hdr *ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
     tcp_segment seg;
     tcp_seg_init(m, &seg);
     i32 state = TCP_CLOSED;
-    tcp_sock_t *sock = NULL;
+    tcp_sock_t* sock = NULL;
 
-    fnp_socket_t *socket = get_socket_from_hash(ipv4Hdr);
+    fsocket_t* socket = lookup_socket_table_by_ipv4(ipv4Hdr);
     if (likely(socket != NULL))
     {
         sock = socket;
@@ -139,54 +113,5 @@ void tcp_recv_mbuf(struct rte_mbuf *m)
     }
 
     // mbuf在tcp_recv中释放, 释放mbuf不影响seg
-    tcp_recv[state](sock, &seg);
-}
-
-static inline void tcp_handle_user_req(fnp_socket_t *socket)
-{
-    tcp_sock_t *sock = socket;
-
-    switch (socket->user_req)
-    {
-    case FNP_CONNECT_REQ:
-    {
-        socket->user_req = 0;
-        tcp_set_state(sock, TCP_SYN_SENT);
-        break;
-    }
-    case FNP_CLOSE_REQ:
-    {
-        socket->user_req = 0;
-        if (tcp_get_state(sock) == TCP_CLOSE_WAIT)
-            tcp_set_state(sock, TCP_LAST_ACK);
-        else
-            tcp_set_state(sock, TCP_FIN_WAIT_1);
-        break;
-    }
-    }
-}
-
-void tcp_recv_from_app(fnp_socket_t *socket)
-{
-    struct rte_mbuf *mbufs[64];
-    tcp_sock_t *sock = socket;
-    // 从应用层接收数据，放到缓存中
-    if (tcp_get_state(sock) != TCP_LISTEN)
-    {
-        i32 avail = FNP_MIN(fnp_pring_avail(sock->txbuf), 64);
-        u32 num = rte_ring_dequeue_burst(socket->tx, mbufs, avail, NULL);
-        if (num > 0)
-        {
-            // mbuf融合，送进发送队列
-            // printf("recv %d mbufs from app\n", num);
-            fnp_pring_enqueue_bulk(sock->txbuf, mbufs, num);
-        }
-    }
-
-    // 处理用户请求
-    tcp_handle_user_req(socket);
-
-    // 发送缓存中的TCP数据
-    i32 state = tcp_get_state(sock);
-    tcp_send[state](sock);
+    // tcp_recv[state](sock, &seg);
 }

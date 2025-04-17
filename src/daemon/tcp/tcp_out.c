@@ -1,10 +1,10 @@
-#include "fnp_context.h"
+#include "fnp_worker.h"
 #include "tcp_out.h"
 #include "tcp_sock.h"
 #include "tcp_comm.h"
 #include "tcp_timer.h"
 #include "ipv4.h"
-#include "fnp_pring.h"
+#include "../../common/fnp_pring.h"
 
 #include <rte_tcp.h>
 
@@ -20,17 +20,18 @@ static u8 tcp_outflags[TCP_STATE_END] = {
     RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
     RTE_TCP_ACK_FLAG,
     RTE_TCP_ACK_FLAG,
+    RTE_TCP_RST_FLAG | RTE_TCP_ACK_FLAG,
 };
 
-void tcp_write_syn_options(tcp_sock_t *sock, struct rte_tcp_hdr *hdr)
+void tcp_write_syn_options(tcp_sock_t* sock, struct rte_tcp_hdr* hdr)
 {
-    u8 *optStart = (u8 *)(hdr + 1);
+    u8* optStart = (u8*)(hdr + 1);
     u8 i = 0;
 
     // Maximum Segment Size Option
     optStart[i] = 2;
     optStart[i + 1] = 4;
-    u16 *mss = optStart + i + 2;
+    u16* mss = optStart + i + 2;
     *mss = fnp_swap16(sock->mss);
     i += 4;
 
@@ -57,17 +58,17 @@ void tcp_write_syn_options(tcp_sock_t *sock, struct rte_tcp_hdr *hdr)
     }
 }
 
-void tcp_send_syn_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
+void tcp_send_syn_mbuf(tcp_sock_t* sock, struct rte_mbuf* m, u8 flags)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t* socket = fsocket(sock);
     sock->rcv_wnd = rte_ring_free_count(socket->rx) * sock->mss;
     sock->snd_nxt = sock->iss;
 
     u8 hdr_len = TCP_HDR_MIN_LEN + 8;
 
-    struct rte_tcp_hdr *hdr = (struct rte_tcp_hdr *)rte_pktmbuf_prepend(m, hdr_len);
-    hdr->src_port = socket->addr.lport;
-    hdr->dst_port = socket->addr.rport;
+    struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*)rte_pktmbuf_prepend(m, hdr_len);
+    hdr->src_port = socket->local.port;
+    hdr->dst_port = socket->remote.port;
     hdr->sent_seq = fnp_swap32(sock->snd_nxt);
     hdr->recv_ack = fnp_swap32(sock->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -83,16 +84,16 @@ void tcp_send_syn_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
     ipv4_fast_send_mbuf(socket, m);
 }
 
-void tcp_send_data_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
+void tcp_send_data_mbuf(tcp_sock_t* sock, struct rte_mbuf* m, u8 flags)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
+    fsocket_t* socket = fsocket(sock);
     sock->rcv_wnd = rte_ring_free_count(socket->rx) * sock->mss;
     u8 hdr_len = TCP_HDR_MIN_LEN;
 
-    struct rte_tcp_hdr *hdr = (struct rte_tcp_hdr *)rte_pktmbuf_prepend(m, hdr_len);
+    struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*)rte_pktmbuf_prepend(m, hdr_len);
 
-    hdr->src_port = socket->addr.lport;
-    hdr->dst_port = socket->addr.rport;
+    hdr->src_port = socket->local.port;
+    hdr->dst_port = socket->remote.port;
     hdr->sent_seq = fnp_swap32(sock->snd_nxt);
     hdr->recv_ack = fnp_swap32(sock->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -106,11 +107,11 @@ void tcp_send_data_mbuf(tcp_sock_t *sock, struct rte_mbuf *m, u8 flags)
     ipv4_fast_send_mbuf(socket, m);
 }
 
-void tcp_send_rst(tcp_segment *seg)
+void tcp_send_rst(tcp_segment* seg)
 {
-    struct rte_mbuf *m = alloc_mbuf();
+    struct rte_mbuf* m = alloc_mbuf();
 
-    struct rte_tcp_hdr *hdr = (struct rte_tcp_hdr *)rte_pktmbuf_prepend(m, TCP_HDR_MIN_LEN);
+    struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*)rte_pktmbuf_prepend(m, TCP_HDR_MIN_LEN);
     hdr->src_port = seg->lport;
     hdr->dst_port = seg->rport;
     hdr->tcp_flags = RTE_TCP_RST_FLAG;
@@ -137,7 +138,7 @@ void tcp_send_rst(tcp_segment *seg)
     ipv4_send_mbuf(m, IPPROTO_TCP, seg->rip);
 }
 
-void tcp_send_ack(tcp_sock_t *sk, bool delay)
+void tcp_send_ack(tcp_sock_t* sk, bool delay)
 {
     static i64 count_ack = 0;
     if (likely(delay))
@@ -148,7 +149,7 @@ void tcp_send_ack(tcp_sock_t *sk, bool delay)
     }
     else
     {
-        struct rte_mbuf *m = alloc_mbuf();
+        struct rte_mbuf* m = alloc_mbuf();
         if (m == NULL)
         {
             printf("tcp_send_ack can't alloc mbuf!!!\n");
@@ -159,11 +160,12 @@ void tcp_send_ack(tcp_sock_t *sk, bool delay)
 }
 
 // send SYN or SYN|ACK
-void tcp_syn_send(tcp_sock_t *sk)
+void tcp_syn_send(tcp_sock_t* sk)
 {
     if (sk->snd_nxt == sk->snd_una)
-    { // 还未发送过SYN
-        struct rte_mbuf *m = alloc_mbuf();
+    {
+        // 还未发送过SYN
+        struct rte_mbuf* m = alloc_mbuf();
         if (m == NULL)
         {
             printf("tcp_syn_send fail to alloc mbuf\n");
@@ -179,13 +181,8 @@ void tcp_syn_send(tcp_sock_t *sk)
     }
 }
 
-// send FIN|ACK
-void tcp_fin_send(tcp_sock_t *sock)
-{
-}
-
 // send tcp segment
-void tcp_data_send(tcp_sock_t *sk)
+void tcp_data_send(tcp_sock_t* sk)
 {
     // sk->snd_wnd = FNP_MIN(sk->adv_wnd << sk->snd_wnd_scale, sk->cwnd);
     sk->snd_wnd = sk->adv_wnd << sk->snd_wnd_scale; // 先不进行拥塞控制
@@ -201,10 +198,10 @@ void tcp_data_send(tcp_sock_t *sk)
         }
 
         u8 flags = tcp_outflags[tcp_get_state(sk)];
-        struct rte_mbuf *m = fnp_pring_top(sk->txbuf, sk->tx_offset);
-        struct rte_mbuf *m2 = NULL; // 实际发送的mbuf
-        i32 data_len = 0;           // 实际发送的数据长度
-        if (unlikely(m != NULL))    // 有应用层数据要发送
+        struct rte_mbuf* m = fnp_pring_top(sk->txbuf, sk->tx_offset);
+        struct rte_mbuf* m2 = NULL; // 实际发送的mbuf
+        i32 data_len = 0; // 实际发送的数据长度
+        if (unlikely(m != NULL)) // 有应用层数据要发送
         {
             data_len = rte_pktmbuf_data_len(m);
 
@@ -219,7 +216,7 @@ void tcp_data_send(tcp_sock_t *sk)
 
             if (flags & RTE_TCP_FIN_FLAG)
             {
-                struct rte_mbuf *next = fnp_pring_top(sk->txbuf, sk->tx_offset);
+                struct rte_mbuf* next = fnp_pring_top(sk->txbuf, sk->tx_offset);
                 if (next != NULL) // 如果不是最后一个包，不能携带FIN
                     flags &= ~RTE_TCP_FIN_FLAG;
             }
@@ -266,11 +263,13 @@ void tcp_data_send(tcp_sock_t *sk)
     }
 }
 
-void tcp_listen_send(tcp_sock_t *sock) {}
-
-void tcp_closed_send(tcp_sock_t *sock)
+void tcp_empty_send(tcp_sock_t* sock)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
-    if (socket->can_free)
+}
+
+void tcp_closed_send(tcp_sock_t* sock)
+{
+    fsocket_t* socket = fsocket(sock);
+    if (socket->frontend_id == 0)
         free_socket(socket);
 }

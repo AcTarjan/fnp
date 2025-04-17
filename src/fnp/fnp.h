@@ -2,18 +2,12 @@
 #define FNP_H
 
 #include "fnp_sockaddr.h"
+#include "fnp_quic_common.h"
+#include "fnp_socket.h"
 
-typedef void *SOCKET_TYPE;
-typedef void *MBUF_TYPE;
+typedef void* fnp_mbuf_t;
+typedef void* fnp_quic_cnx_t;
 
-typedef struct fnp_rate_measure
-{
-    i64 total;    // 字节数
-    i64 last;     // 上次时间
-    i64 interval; // 时间间隔
-} fnp_rate_measure_t;
-
-void fnp_compute_rate(fnp_rate_measure_t *meas, i64 size);
 
 /*
  * fnp_init
@@ -21,20 +15,21 @@ void fnp_compute_rate(fnp_rate_measure_t *meas, i64 size);
  */
 int fnp_init();
 
-u32 fnp_ipv4_ston(const char *ip);
+#define fnp_ipv4_ston(ip) ipv4_ston((ip));
+#define fnp_ipv4_ntos(ip) ipv4_ntos((ip));
 
-char *fnp_ipv4_ntos(uint32_t ip);
+/* fnp_mbuf相关API接口 */
+fnp_mbuf_t fnp_alloc_mbuf(fsocket_t* socketfd);
 
-/* mbuf相关*/
-MBUF_TYPE fnp_alloc_mbuf();
+void fnp_free_mbuf(fnp_mbuf_t m);
 
-void fnp_free_mbuf(MBUF_TYPE m);
+i32 fnp_get_mbuf_len(fnp_mbuf_t m);
 
-i32 fnp_get_mbuf_len(MBUF_TYPE m);
+u8* fnp_mbuf_data(fnp_mbuf_t m);
 
-u8 *fnp_mbuf_data(MBUF_TYPE m);
+void fnp_set_mbuf_len(fnp_mbuf_t m, i32 len);
 
-void fnp_set_mbuf_len(MBUF_TYPE m, i32 len);
+int fsockaddr_init(fsockaddr_t* addr, int family, const char* ip, int port);
 
 /*
  创建一个socket，全部为网络序
@@ -45,15 +40,12 @@ void fnp_set_mbuf_len(MBUF_TYPE m, i32 len);
  对于tcp client: 本地ip和端口号可以为0, 目标ip和端口号必须指定
  对于udp client: 本地ip和端口号可以为0, 目标ip和端口号也可以为0，调用sendto函数确定目标ip和端口号，处理过程会慢一些，最好指定目标ip和端口号
  */
-SOCKET_TYPE fnp_create_socket(u8 proto, u32 lip, u16 lport, i32 opt);
+fsocket_t* fnp_create_socket(fnp_protocol_t proto, const fsockaddr_t* local, const fsockaddr_t* remote, void* conf);
 
-/*
- * fnp_accept
- * 接收一个tcp连接
- * socketfd: a listen socket
- * 返回值: a new connection socket
- */
-SOCKET_TYPE fnp_accept(SOCKET_TYPE socketfd);
+
+// 关闭socket
+void fnp_close(fsocket_t* socket);
+
 
 /*
  * fnp_connect
@@ -61,18 +53,50 @@ SOCKET_TYPE fnp_accept(SOCKET_TYPE socketfd);
  * socketfd: a tcp client socket
  * 返回值: 0表示成功, -1表示失败
  */
-int fnp_connect(SOCKET_TYPE socketfd, u32 rip, u16 rport);
+int fnp_connect(fsocket_t* socket);
 
-void fnp_close(SOCKET_TYPE socketfd);
+/*
+ * fnp_accept
+ * 接收一个tcp连接
+ * socketfd: a listen socket
+ * 返回值: a new connection socket
+ */
+fsocket_t* fnp_accept(fsocket_t* socket);
+
 
 // 用于已经确定目标ip和端口号的socket
-int fnp_send(SOCKET_TYPE socketfd, MBUF_TYPE m);
+int fnp_send(fsocket_t* socket, fnp_mbuf_t m);
 
 // 用于未确定目标ip和端口号的socket
-int fnp_sendto(SOCKET_TYPE socketfd, MBUF_TYPE m, fnp_addr_t *raddr);
+int fnp_sendto(fsocket_t* socket, fnp_mbuf_t m, fsockaddr_t* raddr);
 
-MBUF_TYPE fnp_recv(SOCKET_TYPE socketfd);
+// 可以通过fmbuf_info获取数据包的信息
+fnp_mbuf_t fnp_recv(fsocket_t* socket);
 
-MBUF_TYPE fnp_recvfrom(SOCKET_TYPE socketfd, fnp_addr_t *remote);
+
+/* fnp_quic相关API接口 */
+fnp_quic_config_t* fnp_get_quic_config();
+
+fnp_quic_cnx_t fnp_quic_create_cnx(fsocket_t* quic, fsockaddr_t* remote);
+
+fnp_quic_stream_t* fnp_quic_create_stream(fnp_quic_cnx_t cnx, bool is_unidir, int priority);
+
+fnp_quic_cnx_t fnp_quic_accept_cnx(fsocket_t* quic);
+
+fnp_quic_stream_t* fnp_quic_accept_stream(fnp_quic_cnx_t cnx);
+
+int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t m, bool fin);
+
+fnp_mbuf_t fnp_quic_recv_stream_data(fnp_quic_stream_t* stream);
+
+
+typedef struct fnp_rate_measure
+{
+    i64 total; // 字节数
+    i64 last; // 上次时间
+    i64 interval; // 时间间隔
+} fnp_rate_measure_t;
+
+void fnp_compute_rate(fnp_rate_measure_t* meas, i64 size);
 
 #endif // FNP_H

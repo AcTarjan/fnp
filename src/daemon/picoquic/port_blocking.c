@@ -1,32 +1,7 @@
-/*
-* Author: Christian Huitema
-* Copyright (c) 2022, Private Octopus, Inc.
-* All rights reserved.
-*
-* Permission to use, copy, modify, and distribute this software for any
-* purpose with or without fee is hereby granted, provided that the above
-* copyright notice and this permission notice appear in all copies.
-*
-* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-* ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-* DISCLAIMED. IN NO EVENT SHALL Private Octopus, Inc. BE LIABLE FOR ANY
-* DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-* SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-* 
-* The blocked port list used in this document is copied from the msquic
-* implementation by Microsoft and from the list published by Cloudflare.
-*/
-
 #include "picoquic_internal.h"
 #include "picoquic_unified_log.h"
-#include "tls_api.h"
 #include <stdlib.h>
-#include <string.h>
+#include "fnp_sockaddr.h"
 
 /* Picoquic servers running over UDP can be both victims and enablers
  * of reflection attacks.
@@ -106,57 +81,57 @@
  * 
  */
 
-const uint16_t picoquic_blocked_port_list[] = {
-        27015,  /* SRCDS */
-        20800,  /* Call Of Duty */
-        11211,  /* memcache */
-        5353,   /* mDNS */
-        1900,   /* SSDP */
-        520,    /* RIP */
-        500,    /* IKE */
-        389,    /* CLDAP */
-        161,    /* SNMP */
-        138,    /* NETBIOS Datagram Service */
-        137,    /* NETBIOS Name Service */
-        123,    /* NTP */
-        111,    /* Portmap -- used by SUN RPC */
-        53,     /* DNS */
-        19,     /* Chargen */
-        17,     /* Quote of the Day */
-        0,      /* Unusable */
+const u16 picoquic_blocked_port_list[] = {
+    27015, /* SRCDS */
+    20800, /* Call Of Duty */
+    11211, /* memcache */
+    5353, /* mDNS */
+    1900, /* SSDP */
+    520, /* RIP */
+    500, /* IKE */
+    389, /* CLDAP */
+    161, /* SNMP */
+    138, /* NETBIOS Datagram Service */
+    137, /* NETBIOS Name Service */
+    123, /* NTP */
+    111, /* Portmap -- used by SUN RPC */
+    53, /* DNS */
+    19, /* Chargen */
+    17, /* Quote of the Day */
+    7, /* Echo */
+    0, /* Unusable */
 };
 
-const size_t nb_picoquic_blocked_port_list = sizeof(picoquic_blocked_port_list) / sizeof(uint16_t);
+const int nb_picoquic_blocked_port_list = sizeof(picoquic_blocked_port_list) / sizeof(uint16_t);
 
-int picoquic_check_port_blocked(uint16_t port)
+bool quic_check_port_blocked(u16 port)
 {
-    int ret = 0;
-
-    for (size_t i = 0; i < nb_picoquic_blocked_port_list && port <= picoquic_blocked_port_list[i]; i++) {
-        if (port == picoquic_blocked_port_list[i]){
-            ret = 1;
-            break;
+    for (size_t i = 0; i < nb_picoquic_blocked_port_list && port <= picoquic_blocked_port_list[i]; i++)
+    {
+        if (port == picoquic_blocked_port_list[i])
+        {
+            return true;
         }
     }
 
-    return ret;
+    return false;
 }
 
-int picoquic_check_addr_blocked(const struct sockaddr* addr_from)
+bool quic_check_addr_blocked(const fsockaddr_t* remote)
 {
+    /* The sockaddr is always in network order. We must translate to
+     * host order before performaing the check */
     uint16_t port = UINT16_MAX;
 
-    if (addr_from->sa_family == AF_INET) {
-        port = ((struct sockaddr_in*)addr_from)->sin_port;
+    if (remote->family == FSOCKADDR_IPV4)
+    {
+        port = ntohs(remote->port);
     }
-    else if (addr_from->sa_family == AF_INET6) {
-        /* configure an IPv6 sockaddr */
-        port = ((struct sockaddr_in6*)addr_from)->sin6_port;
-    }
-    return picoquic_check_port_blocked(ntohs(port));
+
+    return quic_check_port_blocked(port);
 }
 
-void picoquic_disable_port_blocking(picoquic_quic_t * quic, int is_port_blocking_disabled)
+void quic_disable_port_blocking(quic_context_t* quic, int is_port_blocking_disabled)
 {
     quic->is_port_blocking_disabled = is_port_blocking_disabled;
 }

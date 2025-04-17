@@ -9,7 +9,7 @@ void tcp_send_ack(tcp_sock_t *sock, bool delay);
 
 void tcp_send_rst(tcp_segment *seg);
 
-void tcp_listen_send(tcp_sock_t *sock);
+void tcp_empty_send(tcp_sock_t *sock);
 
 void tcp_data_send(tcp_sock_t *sock);
 

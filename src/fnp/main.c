@@ -1,10 +1,13 @@
+#include <unistd.h>
+
 #include "fnp.h"
 
+/*
 void recv_udp_loop()
 {
     uint32_t ip = fnp_ipv4_ston("192.168.11.222");
     uint16_t port = fnp_swap16(18888);
-    SOCKET_TYPE socket = fnp_create_socket(IPPROTO_UDP, ip, port, 0);
+    fsocket_fd_t socket = fnp_create_socket(IPPROTO_UDP, ip, port, 0);
     if (socket == NULL)
     {
         printf("bind udp failed\n");
@@ -24,7 +27,7 @@ void recv_udp_loop()
     }
 }
 
-void handle_tcp_conn(SOCKET_TYPE socket)
+void handle_tcp_conn(fsocket_fd_t socket)
 {
     printf("accept a new tcp conn\n");
     FILE *fp = fopen("./data/recv_tcp.data", "wb");
@@ -61,7 +64,7 @@ void recv_tcp_loop()
 {
     u32 ip = fnp_ipv4_ston("192.168.11.222");
     u16 port = fnp_swap16(18888);
-    SOCKET_TYPE socket = fnp_create_socket(IPPROTO_TCP, ip, port, 0);
+    fsocket_fd_t socket = fnp_create_socket(IPPROTO_TCP, ip, port, 0);
     if (socket == NULL)
     {
         printf("create socket failed!!!\n");
@@ -70,7 +73,7 @@ void recv_tcp_loop()
 
     while (1)
     {
-        SOCKET_TYPE conn = fnp_accept(socket);
+        fsocket_fd_t conn = fnp_accept(socket);
         handle_tcp_conn(conn);
     }
 }
@@ -79,7 +82,7 @@ void send_tcp_loop()
 {
     u32 lip = fnp_ipv4_ston("192.168.11.222");
     u16 lport = fnp_swap16(8888);
-    SOCKET_TYPE socket = fnp_create_socket(IPPROTO_TCP, lip, lport, 0);
+    fsocket_fd_t socket = fnp_create_socket(IPPROTO_TCP, lip, lport, 0);
     if (socket == NULL)
     {
         printf("create socket failed!!!\n");
@@ -129,7 +132,7 @@ void send_udp_loop()
     u32 lip = fnp_ipv4_ston("192.168.11.222");
     u16 lport = fnp_swap16(8888);
 
-    SOCKET_TYPE socket = fnp_create_socket(IPPROTO_UDP, lip, lport, 0);
+    fsocket_fd_t socket = fnp_create_socket(IPPROTO_UDP, lip, lport, 0);
     if (socket == NULL)
     {
         printf("create socket failed!!!\n");
@@ -179,9 +182,15 @@ void send_udp_loop()
     fnp_close(socket);
     while (1)
     {
-        /* code */
+
     }
 }
+
+*/
+
+extern void start_quic_client();
+extern void start_quic_server();
+
 
 int main()
 {
@@ -191,8 +200,15 @@ int main()
         return -1;
     }
 
+
+    // start_quic_client();
+    start_quic_server();
+
     // recv_tcp_loop();
-    send_tcp_loop();
+    // send_tcp_loop();
     // recv_udp_loop();
     // send_udp_loop();
+    // u32 lip = fnp_ipv4_ston("192.168.11.222");
+    // u16 lport = fnp_swap16(8888);
+    // picoquic_sample_client(lip, lport, "192.168.11.88", 16666);
 }

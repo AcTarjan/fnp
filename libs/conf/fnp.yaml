@@ -10,17 +10,25 @@ dpdk:
 #    - "-n 4"                                # 内存通道数
 #    - "--no-huge"                           # 不使用hugepage
 #    - "--no-pci"                            # 不使用pci
-worker1: 3       #for rx and tx
-worker2: 4       #协议栈处理
 ports:
-  - ip: "192.168.11.222"
-    ip_mask: "255.255.255.0"
-    gateway: "192.168.11.2"
+  - networks:
+      - name: "eth0" #网卡名称
+        ip: "192.168.11.222"
+        ip_mask: "255.255.255.0"
+        gateway: "192.168.11.2"
+      - name: "eth1" #网卡名称
+        ip: "192.168.11.230"
+        ip_mask: "255.255.255.0"
+        gateway: "192.168.11.2"
     promiscuous: true
-    nb_rx_queue: 1            #网卡的接收队列数
     nb_rx_desc: 2048          #接收描述符数
-    nb_tx_queue: 1            #网卡的发送队列数
     nb_tx_desc: 2048          #发送描述符数
-    rx_ring_size: 10240       #接收环形队列大小
     tx_ring_size: 10240       #发送环形队列大小
-    rx_mbuf_pool_size: 8191   #网卡的接收mbuf池大小
+worker: #每个worker对应一个queue, 对应一个lcore
+  mbuf_pool_size: 4096
+  clone_pool_size: 4096
+  rx_pool_size: 4096
+  lcores: # 每个worker使用的lcore, 几个lcore就有几个worker, 就有几个rx_queue/tx_queue
+    - 2
+    - 3
+

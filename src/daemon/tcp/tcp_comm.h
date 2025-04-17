@@ -38,9 +38,9 @@
 #define SEQ_GT(seq0, seq1) ((int)((seq0) - (seq1)) > 0)
 #define SEQ_GE(seq0, seq1) ((int)((seq0) - (seq1)) >= 0)
 
-enum tcp_state
+typedef enum tcp_state
 {
-    TCP_CLOSED,
+    TCP_NEW, //刚创建
     TCP_LISTEN,
     TCP_SYN_SENT,
     TCP_SYN_RECV,
@@ -51,8 +51,9 @@ enum tcp_state
     TCP_FIN_WAIT_2,
     TCP_CLOSING,
     TCP_TIME_WAIT,
+    TCP_CLOSED,
     TCP_STATE_END
-};
+} tcp_state_t;
 
 #define TCP_RXBUF_SIZE 10240
 #define TCP_TXBUF_SIZE 10240
@@ -80,8 +81,11 @@ typedef struct tcp_segment
             u16 rport;
             u16 lport;
         };
-        fnp_sockaddr_t addr;
+
+        fsockaddr_t local;
+        fsockaddr_t remote;
     };
+
     u32 seq;
     u32 ack;
     u32 rx_win;
@@ -90,7 +94,7 @@ typedef struct tcp_segment
     u8 flags;
     u16 iface_id;
     tcp_option opt;
-    struct rte_mbuf *data;
+    struct rte_mbuf* data;
 } tcp_segment;
 
 #endif // FNP_TCP_COMM_H

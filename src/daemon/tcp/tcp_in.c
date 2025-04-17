@@ -1,4 +1,4 @@
-#include "fnp_context.h"
+#include "fnp_worker.h"
 #include "tcp_sock.h"
 #include "tcp_ofo.h"
 #include "tcp_in.h"
@@ -8,20 +8,24 @@
 #include <unistd.h>
 #include <rte_tcp.h>
 
-static inline void tcp_handle_syn_option(tcp_sock_t *sk, tcp_segment *seg)
+#include "../../common/fnp_msg.h"
+
+static inline void tcp_handle_syn_option(tcp_sock_t* sk, tcp_segment* seg)
 {
     if (seg_has_opt(seg))
     {
         if (unlikely(seg_set_syn(seg)))
         {
             if (seg->opt.mss != 0)
-            { // 支持MSS选项
+            {
+                // 支持MSS选项
                 sk->mss = FNP_MIN(sk->mss, seg->opt.mss);
             }
 
             // 支持
             if (seg->opt.wnd_scale != 255)
-            { // 支持窗口扩展
+            {
+                // 支持窗口扩展
                 sk->snd_wnd_scale = seg->opt.wnd_scale;
             }
             else
@@ -36,7 +40,7 @@ static inline void tcp_handle_syn_option(tcp_sock_t *sk, tcp_segment *seg)
 }
 
 // 所有字节都必须在接收窗口内, rcv_nxt <= seq < rcv_nxt + rcv_wnd
-static inline bool acceptable_seq(tcp_sock_t *sk, tcp_segment *seg)
+static inline bool acceptable_seq(tcp_sock_t* sk, tcp_segment* seg)
 {
     if (unlikely(seg->data_len == 0))
         return SEQ_LE(sk->rcv_nxt, seg->seq) && SEQ_LT(seg->seq, sk->rcv_nxt + sk->rcv_wnd);
@@ -45,44 +49,45 @@ static inline bool acceptable_seq(tcp_sock_t *sk, tcp_segment *seg)
     return SEQ_LE(sk->rcv_nxt, seg->seq) && SEQ_LT(end_seq, sk->rcv_nxt + sk->rcv_wnd);
 }
 
-static inline void tcp_handle_fin(tcp_sock_t *sock)
+static inline void tcp_handle_fin(tcp_sock_t* sock)
 {
-    fnp_socket_t *socket = fnp_socket(sock);
-    u16 port = fnp_swap16(socket->rport);
+    fsocket_t* socket = fsocket(sock);
+    u16 port = fnp_swap16(socket->remote.port);
     sock->rcv_nxt++; // FIN占用一个序列号
     printf("#####%d recv FIN!!!!! %u\n", port, sock->rcv_nxt - sock->irs);
     tcp_send_ack(sock, false);
 
     // 给应用层通知，不能接收了
-    socket->can_recv = false;
+    sock->receive_fin = true;
 
     // 状态处理
     switch (sock->state)
     {
     case TCP_SYN_RECV:
     case TCP_ESTABLISHED:
-    { //
-        tcp_set_state(sock, TCP_CLOSE_WAIT);
-        break;
-    }
+        {
+            //
+            tcp_set_state(sock, TCP_CLOSE_WAIT);
+            break;
+        }
     case TCP_FIN_WAIT_1:
-    {
-        tcp_set_state(sock, TCP_CLOSING);
-        break;
-    }
+        {
+            tcp_set_state(sock, TCP_CLOSING);
+            break;
+        }
     case TCP_FIN_WAIT_2:
-    {
-        tcp_set_state(sock, TCP_TIME_WAIT);
-        tcp_timer_start(sock, TCPT_2MSL);
-        break;
-    }
+        {
+            tcp_set_state(sock, TCP_TIME_WAIT);
+            tcp_timer_start(sock, TCPT_2MSL);
+            break;
+        }
     }
 }
 
-static inline void tcp_handle_in_order_data(tcp_sock_t *sock, tcp_segment *seg)
+static inline void tcp_handle_in_order_data(tcp_sock_t* sock, tcp_segment* seg)
 {
-    fnp_socket_t *socket = &sock->socket;
-    if (rte_ring_enqueue(socket->rx, seg->data) != 0)
+    fsocket_t* socket = &sock->socket;
+    if (fnp_pring_enqueue(socket->rx, seg->data) != 0)
     {
         FNP_WARN("can't enqueue tcp data!!!!!!\n");
         free_mbuf(seg->data);
@@ -98,18 +103,17 @@ static inline void tcp_handle_in_order_data(tcp_sock_t *sock, tcp_segment *seg)
 }
 
 // 删除重传队列中的数据
-static void ack_tcp_tx_buf(tcp_sock_t *sock, u32 ack)
+static void ack_tcp_tx_buf(tcp_sock_t* sock, u32 ack)
 {
     i32 ack_len = (i32)(ack - sock->snd_una);
     while (ack_len > 0)
     {
-        struct rte_mbuf *m = fnp_pring_top(sock->txbuf, 0);
+        struct rte_mbuf* m = fnp_pring_top(sock->txbuf, 0);
         if (m == NULL) // 注意：txbuf中不包括SYN和FIN，但是SYN和FIN占用1个seq，此时队列为空, 也pop不出来
             break;
         i32 data_len = rte_pktmbuf_data_len(m);
         if (data_len > ack_len)
         {
-
             rte_pktmbuf_adj(m, ack_len); // 去掉前ack_len
             break;
         }
@@ -117,11 +121,11 @@ static void ack_tcp_tx_buf(tcp_sock_t *sock, u32 ack)
         ack_len -= data_len;
         sock->tx_offset--;
         fnp_pring_dequeue(sock->txbuf, &m); // 从重传队列去掉
-        rte_pktmbuf_free(m);                // 释放
+        rte_pktmbuf_free(m); // 释放
     }
 }
 
-static inline void tcp_handle_ack(tcp_sock_t *sk, tcp_segment *seg)
+static inline void tcp_handle_ack(tcp_sock_t* sk, tcp_segment* seg)
 {
     // RFC5961: snd_una - max_snd_wnd =< ack =< snd_max
     //  ack值必须满足上述要求
@@ -185,46 +189,46 @@ static inline void tcp_handle_ack(tcp_sock_t *sk, tcp_segment *seg)
     switch (tcp_get_state(sk))
     {
     case TCP_FIN_WAIT_1:
-    {
-        // 如果ack了自己发送的FIN, local->remote单向关闭已完成
-        if (sk->snd_una == sk->snd_max)
         {
-            tcp_set_state(sk, TCP_FIN_WAIT_2);
-            // TODO: 向user调用返回ok
+            // 如果ack了自己发送的FIN, local->remote单向关闭已完成
+            if (sk->snd_una == sk->snd_max)
+            {
+                tcp_set_state(sk, TCP_FIN_WAIT_2);
+                // TODO: 向user调用返回ok
+            }
+            break;
         }
-        break;
-    }
     case TCP_CLOSING:
-    {
-        // 自己已发送FIN，也收到了对端的FIN（回ACK了），现在又收到了对端对FIN的ACK
-        if (sk->snd_una == sk->snd_max)
         {
-            tcp_set_state(sk, TCP_TIME_WAIT);
-            tcp_timer_start(sk, TCPT_2MSL);
+            // 自己已发送FIN，也收到了对端的FIN（回ACK了），现在又收到了对端对FIN的ACK
+            if (sk->snd_una == sk->snd_max)
+            {
+                tcp_set_state(sk, TCP_TIME_WAIT);
+                tcp_timer_start(sk, TCPT_2MSL);
+            }
+            break;
         }
-        break;
-    }
     case TCP_LAST_ACK:
-    {
-        // 已收到FIN，并且自己也发送了FIN，这个ACK是对自己发送FIN的确认
-        if (sk->snd_una == sk->snd_max)
         {
-            tcp_set_state(sk, TCP_CLOSED);
+            // 已收到FIN，并且自己也发送了FIN，这个ACK是对自己发送FIN的确认
+            if (sk->snd_una == sk->snd_max)
+            {
+                tcp_set_state(sk, TCP_CLOSED);
+            }
+            break;
         }
-        break;
-    }
     case TCP_TIME_WAIT:
-    {
-        // 之前发送的对FIN的ACK丢失
-        tcp_send_ack(sk, false);
-        tcp_timer_start(sk, TCPT_2MSL);
-        break;
-    }
+        {
+            // 之前发送的对FIN的ACK丢失
+            tcp_send_ack(sk, false);
+            tcp_timer_start(sk, TCPT_2MSL);
+            break;
+        }
     }
 }
 
 // 返回0继续处理FIN, 返回1表示收到乱序的数据包，稍后处理FIN
-static inline void tcp_handle_data(tcp_sock_t *sk, tcp_segment *seg)
+static inline void tcp_handle_data(tcp_sock_t* sk, tcp_segment* seg)
 {
     // 收到顺序的包
     if (likely(sk->rcv_nxt == seg->seq))
@@ -234,20 +238,19 @@ static inline void tcp_handle_data(tcp_sock_t *sk, tcp_segment *seg)
     }
 
     // 乱序的数据包，先不处理FIN
-    tcp_ofo_seg *ofo_seg = tcp_ofo_malloc(seg);
+    tcp_ofo_seg* ofo_seg = tcp_ofo_malloc(seg);
     seg->flags = 0; // 去掉FIN标记
     tcp_ofo_enqueue(&sk->ofo_root, ofo_seg);
     tcp_send_ack(sk, false); // 收到乱序的数据，立即回ACK
-    return;
 }
 
-static void tcp_accept_conn(tcp_sock_t *sock)
+static void tcp_accept_conn(tcp_sock_t* sock)
 {
     if (sock->parent != NULL)
     {
-        tcp_sock_t *parent = sock->parent;
-        fnp_socket_t *socket = &sock->socket;
-        socket->can_free = false; // 不能释放, 会被用户空间接收
+        tcp_sock_t* parent = sock->parent;
+        fsocket_t* socket = &sock->socket;
+        socket->frontend_id = parent->socket.frontend_id; // 不能被释放, 如果释放, 出队列的socket会内存错误.
         if (rte_ring_enqueue(parent->socket.rx, socket) != 0)
         {
             FNP_WARN("can't enqueue socket!!!\n");
@@ -260,7 +263,7 @@ static void tcp_accept_conn(tcp_sock_t *sock)
 // 收到SYN|ACK
 // 收到ACK
 // 收到数据包（可能乱序），对方已经是ESTABLISHED状态
-void tcp_synrecv_recv(tcp_sock_t *sk, tcp_segment *seg)
+void tcp_synrecv_recv(tcp_sock_t* sk, tcp_segment* seg)
 {
     if (!acceptable_seq(sk, seg) && seg->seq != sk->irs)
     {
@@ -279,7 +282,8 @@ void tcp_synrecv_recv(tcp_sock_t *sk, tcp_segment *seg)
             tcp_set_state(sk, TCP_CLOSED);
         }
         else
-        { // rcv_nxt <  seq <= rcv_nxt + rcv_wnd
+        {
+            // rcv_nxt <  seq <= rcv_nxt + rcv_wnd
             tcp_send_ack(sk, false);
         }
         return;
@@ -292,7 +296,8 @@ void tcp_synrecv_recv(tcp_sock_t *sk, tcp_segment *seg)
         if (seg->seq == sk->irs)
         {
             if (seg_set_ack(seg))
-            { // recv SYN|ACK for our SYN, 适用于同时发送SYN
+            {
+                // recv SYN|ACK for our SYN, 适用于同时发送SYN
                 if (seg->ack == sk->snd_max)
                 {
                     sk->snd_una = seg->ack;
@@ -312,23 +317,27 @@ void tcp_synrecv_recv(tcp_sock_t *sk, tcp_segment *seg)
                 }
             }
             else
-            { // recv retransmission syn
+            {
+                // recv retransmission syn
                 tcp_handle_syn_option(sk, seg);
                 tcp_timer_stop(sk, TCPT_REXMT);
                 sk->snd_nxt = sk->snd_una; // 立即重传
             }
         }
         else
-        { // recv a new syn again
+        {
+            // recv a new syn again
             tcp_set_state(sk, TCP_CLOSED);
         }
         return;
     }
 
     if (seg_set_ack(seg))
-    { // check ACK
+    {
+        // check ACK
         if (seg->ack == sk->snd_max)
-        { // reach here only set ACK
+        {
+            // reach here only set ACK
             sk->snd_una = seg->ack;
             sk->adv_wnd = seg->rx_win;
             sk->snd_wl1 = seg->seq;
@@ -347,7 +356,7 @@ void tcp_synrecv_recv(tcp_sock_t *sk, tcp_segment *seg)
     }
 }
 
-void tcp_listen_recv(tcp_sock_t *sk, tcp_segment *seg)
+void tcp_listen_recv(tcp_sock_t* sk, tcp_segment* seg)
 {
     // 直接释放
     free_mbuf(seg->data);
@@ -368,7 +377,7 @@ void tcp_listen_recv(tcp_sock_t *sk, tcp_segment *seg)
     // 检查SYN
     if (seg_set_syn(seg))
     {
-        fnp_socket_t *new_socket = create_socket(&seg->addr, FNP_SO_REUSEADDR);
+        fsocket_t* new_socket = create_socket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL, fnp_worker_id);
         if (new_socket == NULL)
         {
             tcp_send_rst(seg);
@@ -376,10 +385,8 @@ void tcp_listen_recv(tcp_sock_t *sk, tcp_segment *seg)
             return;
         }
 
-        tcp_sock_t *new_sock = new_socket;
-
+        tcp_sock_t* new_sock = new_socket;
         new_sock->parent = sk;
-
         new_sock->irs = seg->seq;
         new_sock->adv_wnd = seg->rx_win;
         new_sock->rcv_nxt = seg->seq + 1;
@@ -387,12 +394,13 @@ void tcp_listen_recv(tcp_sock_t *sk, tcp_segment *seg)
         tcp_handle_syn_option(new_sock, seg);
 
         tcp_set_state(new_sock, TCP_SYN_RECV);
-        new_socket->can_free = true; // 在建立完成前是可以释放的
+
+        //TODO: 通知controller
     }
 }
 
 // can recv SYN or SYN|ACK
-void tcp_synsent_recv(tcp_sock_t *sk, tcp_segment *seg)
+void tcp_synsent_recv(tcp_sock_t* sk, tcp_segment* seg)
 {
     // 直接释放
     free_mbuf(seg->data);
@@ -413,7 +421,8 @@ void tcp_synsent_recv(tcp_sock_t *sk, tcp_segment *seg)
     if (unlikely(seg_set_rst(seg)))
     {
         if (seg_set_ack(seg))
-        { // ack is acceptable here
+        {
+            // ack is acceptable here
             // TODO: signal to the user "error:connection reset"
             tcp_set_state(sk, TCP_CLOSED);
         }
@@ -429,7 +438,8 @@ void tcp_synsent_recv(tcp_sock_t *sk, tcp_segment *seg)
         sk->rcv_nxt = seg->seq + 1;
 
         if (seg_set_ack(seg))
-        { // recv SYN|ACK, 正常流程
+        {
+            // recv SYN|ACK, 正常流程
             sk->snd_una = seg->ack;
             sk->adv_wnd = seg->rx_win; // 更新发送窗口
             sk->snd_wl1 = seg->seq;
@@ -452,7 +462,7 @@ void tcp_synsent_recv(tcp_sock_t *sk, tcp_segment *seg)
     }
 }
 
-void tcp_estab_recv(tcp_sock_t *sk, tcp_segment *seg)
+void tcp_estab_recv(tcp_sock_t* sk, tcp_segment* seg)
 {
     // 检查seq
     if (!acceptable_seq(sk, seg))
@@ -472,7 +482,8 @@ void tcp_estab_recv(tcp_sock_t *sk, tcp_segment *seg)
             tcp_set_state(sk, TCP_CLOSED);
         }
         else
-        { // rcv_nxt <  seq <= rcv_nxt + rcv_wnd
+        {
+            // rcv_nxt <  seq <= rcv_nxt + rcv_wnd
             tcp_send_ack(sk, false);
         }
         return;
@@ -509,7 +520,7 @@ void tcp_estab_recv(tcp_sock_t *sk, tcp_segment *seg)
         tcp_handle_fin(sk);
 }
 
-void tcp_closed_recv(tcp_sock_t *sk, tcp_segment *seg)
+void tcp_closed_recv(tcp_sock_t* sk, tcp_segment* seg)
 {
     // 直接释放
     free_mbuf(seg->data);

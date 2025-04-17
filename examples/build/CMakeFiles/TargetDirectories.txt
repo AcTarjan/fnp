@@ -1,0 +1,4 @@
+/root/fnp/examples/build/CMakeFiles/server.dir
+/root/fnp/examples/build/CMakeFiles/client.dir
+/root/fnp/examples/build/CMakeFiles/edit_cache.dir
+/root/fnp/examples/build/CMakeFiles/rebuild_cache.dir
