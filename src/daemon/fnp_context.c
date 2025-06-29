@@ -2,8 +2,7 @@
 
 #include "fnp_error.h"
 
-#include "../common/fnp_msg.h"
-#include "../common/fnp_frontend.h"
+#include "fnp_msg.h"
 #include "arp.h"
 #include "ipv4.h"
 #include "tcp.h"

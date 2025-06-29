@@ -3,7 +3,7 @@
 
 #include "fnp_common.h"
 #include "../../common/fnp_pring.h"
-#include "libfnp-conf.h"
+#include "../../../deps/conf/libfnp-conf.h"
 
 #include <rte_ether.h>
 
