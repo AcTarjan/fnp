@@ -10,6 +10,7 @@
 #include "picoquic_utils.h"
 #include "fnp_socket.h"
 #include "fnp_quic_common.h"
+#include "fnp_pring.h"
 
 
 #ifndef PICOQUIC_MAX_PACKET_SIZE

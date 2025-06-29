@@ -4,6 +4,7 @@
 #include "fnp_sockaddr.h"
 #include "fnp_iface.h"
 #include "fnp_list.h"
+#include "fnp_pring.h"
 
 #include <rte_ip.h>
 

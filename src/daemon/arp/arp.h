@@ -2,6 +2,7 @@
 #define FNP_ARP_H
 
 #include "fnp_common.h"
+#include "fnp_pring.h"
 #include "fnp_iface.h"
 #include <rte_ether.h>
 

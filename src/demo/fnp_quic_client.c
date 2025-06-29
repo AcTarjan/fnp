@@ -1,11 +1,11 @@
 #include <unistd.h>
 
-#include "../fnp/fnp.h"
+#include "fnp.h"
 
 
 void quic_client_handle_stream(void* arg)
 {
-    fnp_quic_stream_t stream = arg;
+    fnp_quic_stream_t* stream = arg;
     printf("start to recv data from quic strean\n");
 
     while (1)
@@ -29,7 +29,7 @@ void quic_client_send_data(fnp_quic_cnx_t cnx)
 {
     // 创建流, 发送数据
     printf("start to create quic stream and send data\n");
-    fnp_quic_stream_t stream = fnp_quic_create_stream(cnx, false, 0);
+    fnp_quic_stream_t* stream = fnp_quic_create_stream(cnx, false, 0);
     if (stream == NULL)
     {
         printf("Failed to create quic stream\n");
@@ -82,7 +82,7 @@ void start_quic_client()
     conf->ticket_filename = "sample_ticket_store.bin";
     conf->token_store_filename = "sample_token_store.bin";
 
-    fnp_quic_context_t quic = fnp_create_socket(fnp_protocol_quic, &local, NULL, conf);
+    fsocket_t* quic = fnp_create_socket(fnp_protocol_quic, &local, NULL, conf);
     if (quic == NULL)
     {
         printf("Failed to create quic socket\n");
@@ -105,7 +105,7 @@ void start_quic_client()
 
     while (1)
     {
-        fnp_quic_stream_t stream = fnp_quic_accept_stream(cnx);
+        fnp_quic_stream_t* stream = fnp_quic_accept_stream(cnx);
         pthread_t tid;
         pthread_create(&tid, NULL, quic_client_handle_stream, stream);
     }

@@ -4,14 +4,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mssse3")
 
 # dpdk
-set(DPDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/dpdk")
+set(DPDK_DIR "/opt/dpdk")
 message(STATUS "DPDK_DIR: ${DPDK_DIR}")
 include_directories(${DPDK_DIR}/include)
 link_directories(${DPDK_DIR}/lib64)
 set(DPDK_LIBRARIES "rte_pdump;rte_timer;rte_hash;rte_cmdline;rte_pci;rte_ethdev;rte_mbuf;rte_mempool;rte_rcu;rte_ring;rte_eal")
 
 # picotls
-set(PICOTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/picotls")
+set(PICOTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep_libs/picotls")
 message(STATUS "PICOTLS_DIR: ${PICOTLS_DIR}")
 include_directories(${PICOTLS_DIR}/include)
 link_directories(${PICOTLS_DIR}/lib)
@@ -19,10 +19,11 @@ link_directories(${PICOTLS_DIR}/lib)
 set(PICOTLS_LIBRARIES "picotls-core;picotls-openssl;picotls-fusion;picotls-minicrypto")
 #    list(APPEND PICOQUIC_COMPILE_DEFINITIONS PTLS_WITHOUT_FUSION)
 #    list(APPEND PICOQUIC_COMPILE_DEFINITIONS PTLS_WITHOUT_OPENSSL)
+set(OPENSSL_LIBRARIES "ssl;crypto")
 
 # conf
-include_directories(deps/conf)
-link_directories(deps/conf)
+include_directories(dep_libs/conf)
+link_directories(dep_libs/conf)
 
 set(FNP_CC_ALGO_FILES
         src/daemon/cc/cc_internal.c
@@ -142,8 +143,7 @@ add_executable(fnp_quic_server
         src/demo/fnp_quic_server.c)
 
 target_link_libraries(fnp_quic_server
-        fnp-api
-        pthread m dl numa pcap
+        fnp-api pthread m dl numa pcap
         ${DPDK_LIBRARIES}
 )
 

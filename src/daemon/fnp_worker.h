@@ -11,7 +11,7 @@
 #include "fnp_list.h"
 #include "fnp_msg.h"
 #include "fnp_socket.h"
-#include "../../deps/conf/libfnp-conf.h"
+#include "libfnp-conf.h"
 
 #define FNP_MAX_PORTS 8
 #define FNP_MAX_WORKER_NUM 8

@@ -3,7 +3,7 @@
 
 #include "fnp_common.h"
 #include "hash.h"
-#include "../../deps/conf/libfnp-conf.h"
+#include "libfnp-conf.h"
 
 
 typedef struct fnp_context
