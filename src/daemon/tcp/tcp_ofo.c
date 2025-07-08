@@ -145,7 +145,10 @@ u8 tcp_ofo_dequeue(tcp_sock_t* sock)
 
             u32 cross_seq = rcv_nxt - seg->seq; // 检查是否有重复数据
             rte_pktmbuf_adj(seg->data, cross_seq);
-            if (fnp_pring_enqueue(socket->rx, seg->data) != 0) // 传递给应用层
+            fmbuf_info_t* info = get_fmbuf_info(seg->data);
+            // info->receive_fin = (seg->flags & TCP_FI) ? 1 : 0;
+
+            if (!fnp_socket_enqueue_for_app(socket, seg->data)) // 传递给应用层
             {
                 fnp_free(seg);
                 FNP_ERR("enqueue ofo data error!!!\n");

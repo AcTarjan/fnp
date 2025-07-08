@@ -1,8 +1,8 @@
 #ifndef FNP_TCP_SOCK_H
 #define FNP_TCP_SOCK_H
 
-#include "../../common/fnp_pring.h"
-#include "fnp_socket.h"
+#include "fnp_pring.h"
+#include "fsocket.h"
 #include "tcp_comm.h"
 #include "rbtree.h"
 

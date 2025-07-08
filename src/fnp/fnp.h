@@ -4,30 +4,24 @@
 #include "fnp_sockaddr.h"
 #include "fnp_quic_common.h"
 #include "fnp_socket.h"
+#include "fnp_mbuf.h"
 
-typedef void* fnp_mbuf_t;
 typedef void* fnp_quic_cnx_t;
 
 
 /*
  * fnp_init
  * 初始化fnp环境, 必须在启动fnp-daemon之后使用
+ * main_lcore: 主线程的lcore id, 一般设置为0
+ * lcore_mask: lcore掩码, 用于指定哪些lcore可以处理用户任务, 可用设置为0
  */
-int fnp_init();
+int fnp_init(int main_lcore, int lcores[], int num_lcores);
 
 #define fnp_ipv4_ston(ip) ipv4_ston((ip));
 #define fnp_ipv4_ntos(ip) ipv4_ntos((ip));
 
 /* fnp_mbuf相关API接口 */
-fnp_mbuf_t fnp_alloc_mbuf(fsocket_t* socketfd);
 
-void fnp_free_mbuf(fnp_mbuf_t m);
-
-i32 fnp_get_mbuf_len(fnp_mbuf_t m);
-
-u8* fnp_mbuf_data(fnp_mbuf_t m);
-
-void fnp_set_mbuf_len(fnp_mbuf_t m, i32 len);
 
 int fsockaddr_init(fsockaddr_t* addr, int family, const char* ip, int port);
 
@@ -65,13 +59,13 @@ fsocket_t* fnp_accept(fsocket_t* socket);
 
 
 // 用于已经确定目标ip和端口号的socket
-int fnp_send(fsocket_t* socket, fnp_mbuf_t m);
+int fnp_send(fsocket_t* socket, fnp_mbuf_t* m);
 
 // 用于未确定目标ip和端口号的socket
-int fnp_sendto(fsocket_t* socket, fnp_mbuf_t m, fsockaddr_t* raddr);
+int fnp_sendto(fsocket_t* socket, fnp_mbuf_t* m, fsockaddr_t* raddr);
 
 // 可以通过fmbuf_info获取数据包的信息
-fnp_mbuf_t fnp_recv(fsocket_t* socket);
+fnp_mbuf_t* fnp_recv(fsocket_t* socket);
 
 
 /* fnp_quic相关API接口 */
@@ -85,18 +79,25 @@ fnp_quic_cnx_t fnp_quic_accept_cnx(fsocket_t* quic);
 
 fnp_quic_stream_t* fnp_quic_accept_stream(fnp_quic_cnx_t cnx);
 
-int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t m, bool fin);
+int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin);
 
-fnp_mbuf_t fnp_quic_recv_stream_data(fnp_quic_stream_t* stream);
+fnp_mbuf_t* fnp_quic_recv_stream_data(fnp_quic_stream_t* stream);
 
 
 typedef struct fnp_rate_measure
 {
-    i64 total; // 字节数
-    i64 last; // 上次时间
-    i64 interval; // 时间间隔
+    u64 hz;
+    u64 interval_count; // 间隔计数
+    u64 packet_count; //数据包计数
+    u64 byte_count; //字节计数
+    u64 first_tsc; // 第一个数据包的时间戳
+    u64 last_tsc; // 最后一个数据包的时间戳
 } fnp_rate_measure_t;
 
-void fnp_compute_rate(fnp_rate_measure_t* meas, i64 size);
+fnp_rate_measure_t* fnp_register_measure();
+
+void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len);
+
+void fnp_compute_rate(fnp_rate_measure_t* meas);
 
 #endif // FNP_H

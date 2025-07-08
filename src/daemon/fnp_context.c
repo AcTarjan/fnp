@@ -38,6 +38,7 @@ i32 init_dpdk(dpdk_config* conf)
     return FNP_OK;
 }
 
+extern int init_fnp_master();
 
 i32 init_fnp_daemon(char* path)
 {
@@ -68,8 +69,7 @@ i32 init_fnp_daemon(char* path)
 
     init_tcp_layer();
 
-
-    ret = init_master();
+    ret = init_fnp_master();
     CHECK_RET(ret);
 
 

@@ -3,7 +3,6 @@
 
 #include "fnp_common.h"
 #include "fnp_error.h"
-#include <arpa/inet.h>
 #include <netinet/in.h>
 
 typedef struct sockaddr sockaddr_t;
@@ -74,6 +73,7 @@ typedef struct fnp_mbuf_info
 {
     fsockaddr_t local;
     fsockaddr_t remote;
+    u32 receive_fin : 1; // 接收FIN标志
 } fmbuf_info_t;
 
 #define get_fmbuf_info(m) (fmbuf_info_t *)rte_mbuf_to_priv(m);

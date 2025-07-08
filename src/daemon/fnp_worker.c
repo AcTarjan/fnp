@@ -45,10 +45,11 @@ void remove_socket_from_worker(fsocket_t* socket)
 
 int dispatch_socket_to_worker(fsocket_t* socket, int worker_id)
 {
-    // tcp server socket不需要分配到worker
-    if (is_tcp_server_socket(socket))
+    // tcp server socket和本地通信socket不需要分配到worker
+    if (is_tcp_server_socket(socket) || socket->is_local_communication)
     {
         socket->worker_id = FNP_MAX_WORKER_NUM;
+        socket->pool = (get_fnp_worker(0))->pool;
         return FNP_OK;
     }
 

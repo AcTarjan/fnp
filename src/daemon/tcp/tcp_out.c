@@ -271,5 +271,5 @@ void tcp_closed_send(tcp_sock_t* sock)
 {
     fsocket_t* socket = fsocket(sock);
     if (socket->frontend_id == 0)
-        free_socket(socket);
+        free_fsocket(socket);
 }

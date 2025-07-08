@@ -7,6 +7,7 @@ typedef struct fnp_pring
 {
     rte_spinlock_t enqueue_lock;
     rte_spinlock_t dequeue_lock;
+    rte_atomic32_t ref_count;
     i32 size; /* size of buf */
     i32 head;
     i32 tail;
@@ -17,9 +18,21 @@ typedef struct fnp_pring
 
 fnp_pring_t* fnp_pring_create(i32 size);
 
+static inline fnp_pring_t* fnp_pring_clone(fnp_pring_t* r)
+{
+    if (r == NULL)
+        return NULL;
+    rte_atomic32_add(&r->ref_count, 1);
+    return r;
+}
+
 static inline void fnp_pring_free(fnp_pring_t* r)
 {
-    fnp_free(r);
+    if (r == NULL)
+        return;
+    rte_atomic32_dec(&r->ref_count);
+    if (rte_atomic32_read(&r->ref_count) == 0)
+        fnp_free(r);
 }
 
 static inline i32 fnp_pring_len(fnp_pring_t* r)

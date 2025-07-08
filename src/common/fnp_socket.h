@@ -12,7 +12,6 @@
 #define SOCKET_TX_BURST_NUM 16
 
 typedef struct fnp_socket fsocket_t;
-
 typedef void (*socket_handler)(fsocket_t*);
 
 
@@ -35,16 +34,18 @@ typedef struct fnp_socket
         };
 
         fnp_pring_t* pending_cnxs; // QUIC/TCP服务端收到的暂存的TCP or QUIC cnx
-        fnp_pring_t* pending_streams; // QUIC cnx收到的暂存的TCP or QUIC Stream
+        fnp_pring_t* pending_streams; // QUIC cnx收到的暂存的QUIC Stream
     };
 
     int frontend_id; //frontend_id为0的socket是可以释放的, 因为frontend不会再使用了
     int worker_id; //服务端socket不需要记录worker_id, 因为服务端socket不需要发送数据; 接收数据时，新连接(不同的5元组)可能位于不同的worker.
     struct rte_mempool* pool;
+    u32 is_local_communication : 1; // 是否是本地通信, remote的IP地址是本地的IP地址
     u32 request_syn : 1; // 应用层请求建立连接
-    u32 is_connected : 1; // 连接已建立
+    u32 is_ready : 1; // 连接已建立
     u32 request_close : 1; // 应用层请求关闭socket
     u32 receive_fin : 1; // 收到对方的fin
+    void* sock[]; //指向协议实体
 } fsocket_t;
 
 #define fsocket(sock) ((fsocket_t *)sock)
@@ -56,6 +57,17 @@ typedef struct fnp_socket
 #define is_udp_server_socket(socket)   (is_udp_socket(socket) && is_server_socket(socket))
 #define is_quic_server_socket(socket)   (is_quic_socket(socket) && is_server_socket(socket))
 
+// 应用层收到一个mbuf
+static inline bool fnp_socket_enqueue_for_app(fsocket_t* socket, void* data)
+{
+    return fnp_pring_enqueue(socket->rx, data);
+}
+
+// 应用层发送一个mbuf
+static inline bool fnp_socket_enqueue_for_net(fsocket_t* socket, void* data)
+{
+    return fnp_pring_enqueue(socket->tx, data);
+}
 
 // quic stream与应用层交互的接口
 typedef struct fnp_quic_stream
@@ -79,21 +91,5 @@ typedef struct fnp_quic_stream
     u32 receive_reset : 1; //收到对方的请求发送
 } fnp_quic_stream_t;
 
-
-struct rte_hash* create_socket_table();
-
-fsocket_t* lookup_socket_table_by_ipv4(struct rte_ipv4_hdr* hdr);
-
-int fnp_socket_init(fsocket_t* socket, fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote);
-
-/*
- 协议栈worker线程调用，使用情况
- 1. 用户创建socket时调用
- 2. TCP创建新连接时调用
- 3. picoquic创建udp socket时调用
-*/
-fsocket_t* create_socket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote, void* conf, int worker_id);
-
-void free_socket(fsocket_t* socket);
 
 #endif // FNP_SOCKET_H

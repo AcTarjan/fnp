@@ -21,17 +21,31 @@
 #include <unistd.h>
 
 
-int fnp_init()
+int fnp_init(int main_lcore, int lcores[], int num_lcores)
 {
-  //初始化DPDK
-  int argc = 6;
+  //初始化lcores
+  char main_lcore_argv[16];
+  sprintf(main_lcore_argv, "--main-lcore=%d", main_lcore);
+
+  int argc = 5;
   char* argv[20] = {
     "fnp-api",
-    "-l", "2",
     "--proc-type=secondary",
     "--file-prefix=fnp",
-    "--no-pci"
+    "--no-pci",
+    main_lcore_argv,
   };
+
+  u32 lcore_mask = 0;
+  lcore_mask |= (1U << main_lcore); // 设置主lcore
+  for (int i = 0; i < num_lcores; i++)
+  {
+    lcore_mask |= (1U << lcores[i]);
+  }
+
+  char lcore_argv[16];
+  sprintf(lcore_argv, "-c %#x", lcore_mask);
+  argv[argc++] = lcore_argv;
 
   int ret = rte_eal_init(argc, argv);
   if (ret < 0)
@@ -125,78 +139,102 @@ void fnp_close(fsocket_t* socket)
   socket->request_close = 1;
 }
 
-int fnp_send(fsocket_t* socket, fnp_mbuf_t m)
-{
-  // 等待一段时间，避免发送过快，内存池不足
-  rte_delay_us_block(200); // 200us
-  // rte_delay_us_sleep(1); // 1us, sleep会让出cpu,导致实际时间会远超过1us
 
-  // 判断发送窗口
-  while (fnp_pring_enqueue(socket->tx, m) != 0)
-  {
-    // 发送过快，导致发送队列满，等待一段时间
-    rte_delay_us_sleep(2000); // 1000us
-    FNP_WARN("enqueue mbuf failed\n");
-  }
-
-  return 0;
-}
-
-int fnp_sendto(fsocket_t* socket, fnp_mbuf_t m, fsockaddr_t* raddr)
+int fnp_sendto(fsocket_t* socket, fnp_mbuf_t* m, fsockaddr_t* raddr)
 {
   fmbuf_info_t* info = get_fmbuf_info(m);
+  fsockaddr_copy(&info->local, &socket->local);
   fsockaddr_copy(&info->remote, raddr);
 
-  if (!fnp_pring_enqueue(socket->tx, m))
+  if (!fnp_socket_enqueue_for_net(socket, m))
   {
-    FNP_ERR("enqueue mbuf failed");
-    return -1;
+    return FNP_ERR_RING_FULL;
   }
 
   return 0;
 }
 
-// 可以通过get_sockinfo获取到目的地址等mbufinfo
-fnp_mbuf_t fnp_recv(fsocket_t* socket)
+int fnp_send(fsocket_t* socket, fnp_mbuf_t* m)
 {
-  struct rte_mbuf* m = NULL;
+  return fnp_sendto(socket, m, &socket->remote); // 默认发送到远程地址
+}
 
-  // 没有数据
-  while (!socket->receive_fin)
-  {
-    if (fnp_pring_dequeue(socket->rx, (void**)&m))
-      break;
-  }
+
+// 可以通过get_sockinfo获取到目的地址等mbufinfo
+fnp_mbuf_t* fnp_recv(fsocket_t* socket)
+{
+  if (socket->receive_fin)
+    return NULL;
+
+  struct rte_mbuf* m = NULL;
+  // 等待接收数据
+  while (!fnp_pring_dequeue(socket->rx, (void**)&m));
+
+  // 判断是否是最后一个数据包
+  fmbuf_info_t* info = get_fmbuf_info(m);
+  socket->receive_fin = info->receive_fin;
 
   return m;
 }
 
-// 速率计算相关
-static inline i64 get_timestamp_us()
-{
-  struct timeval tv;
-  if (gettimeofday(&tv, 0) == -1)
-  {
-    return -1;
-  }
 
-  i64 timestamp = (i64)tv.tv_sec * 1000000LL + (i64)tv.tv_usec;
-  return timestamp;
+static void show_measure_rate(fnp_rate_measure_t* meas)
+{
+  while (1)
+  {
+    fnp_sleep(5000 * 1000); // 每5秒计算一次速率
+    fnp_compute_rate(meas);
+  }
 }
 
-void fnp_compute_rate(fnp_rate_measure_t* meas, i64 size)
+fnp_rate_measure_t* fnp_register_measure()
 {
-  meas->total += size;
-  i64 now = get_timestamp_us();
-  i64 diff_time = now - meas->last;
-
-  // 每50ms计算一次
-  if (diff_time > 50000)
+  fnp_rate_measure_t* meas = fnp_zmalloc(sizeof(fnp_rate_measure_t));
+  pthread_t ctrl_thread;
+  int ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_measure_task", NULL,
+                                   show_measure_rate, meas);
+  if (ret != 0)
   {
-    double bw = (double)meas->total / diff_time;
-    if (meas->last != 0)
-      FNP_INFO("bandwidth: %.4lf MBps\n", bw);
-    meas->last = now;
-    meas->total = 0;
+    RTE_LOG(ERR, EAL, "Failed to create control thread\n");
+    return ret;
+  }
+  return meas;
+}
+
+void fnp_compute_rate(fnp_rate_measure_t* meas)
+{
+  if (meas->packet_count == 0)
+  {
+    printf("No packets received yet.\n");
+    return;
+  }
+
+  double delay = (double)(meas->last_tsc - meas->first_tsc) / (double)meas->hz;
+  printf("packet count is %llu, byte count is %llu, first tsc is %llu, last tsc is %llu, hz is %llu, delay is %.2lf\n",
+         meas->packet_count, meas->byte_count, meas->first_tsc, meas->last_tsc, meas->hz, delay);
+
+  double pps = (double)meas->packet_count / delay / 1000000.0;
+  double Bps = (double)meas->byte_count / delay / 1000000000.0;
+  printf("pps is %.2lfMpps, Bps is %.2lfGBps, bps is %.2lfGbps\n", pps, Bps, Bps * 8);
+}
+
+void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len)
+{
+  u64 tsc = fnp_get_tsc();
+  if (unlikely(meas->packet_count == 0))
+  {
+    meas->hz = fnp_get_tsc_hz();
+    meas->first_tsc = tsc;
+  }
+
+  meas->last_tsc = tsc;
+  meas->packet_count++;
+  meas->byte_count += data_len;
+
+  if (meas->packet_count == meas->interval_count)
+  {
+    fnp_compute_rate(meas);
+    meas->packet_count = 0;
+    meas->byte_count = 0;
   }
 }

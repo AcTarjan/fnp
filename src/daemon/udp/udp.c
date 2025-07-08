@@ -12,47 +12,89 @@
 #define FNP_UDP_HDR_LEN 8
 #define MAX_PORT_NUM 8
 
-void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
-{
-    struct rte_udp_hdr* hdr = (struct rte_udp_hdr*)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
-    fmbuf_info_t* info = get_fmbuf_info(m);
-    hdr->src_port = socket->local.port;
-    hdr->dst_port = info->remote.port;
-    hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
-    hdr->dgram_cksum = 0;
-
-    ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
-}
-
-void udp_fast_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
-{
-    struct rte_udp_hdr* hdr = (struct rte_udp_hdr*)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
-    hdr->src_port = socket->local.port;
-    hdr->dst_port = socket->remote.port;
-    hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
-    hdr->dgram_cksum = 0;
-
-    ipv4_fast_send_mbuf(socket, m);
-}
 
 static void udp_handler(fsocket_t* socket)
 {
     // 处理用户请求
     if (socket->request_close)
     {
-        free_socket(socket);
-        return;
+        // 把应用层待发送的数据发送完成
+        if (fnp_pring_len(socket->tx) == 0)
+        {
+            free_fsocket(socket);
+            return;
+        }
     }
 
     static struct rte_mbuf* mbufs[SOCKET_TX_BURST_NUM];
-    udp_sock_t* sock = (udp_sock_t*)socket;
 
     // 从应用层接收数据，发送出去。
     const u32 num = fnp_pring_dequeue_bulk(socket->tx, mbufs, SOCKET_TX_BURST_NUM);
     for (i32 i = 0; i < num; i++)
     {
-        sock->send_func(sock, mbufs[i]);
+        udp_send_mbuf(socket, mbufs[i]);
     }
+}
+
+udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote)
+{
+    udp_sock_t* sock = fnp_zmalloc(sizeof(udp_sock_t));
+    if (sock == NULL)
+    {
+        return NULL;
+    }
+
+    fsocket_t* socket = fsocket(sock);
+
+    socket->handler = udp_handler;
+
+    return sock;
+}
+
+
+void free_udp_sock(udp_sock_t* sock)
+{
+    fnp_free(sock);
+}
+
+
+void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
+{
+    fmbuf_info_t* info = get_fmbuf_info(m);
+
+    // 检查对方是否是本地Socket
+    if (lookup_iface(info->remote.ip) != NULL)
+    {
+        fsocket_t* rsocket = lookup_socket_table(socket->proto, &info->remote, &socket->local);
+        if (rsocket == NULL)
+        {
+            rsocket = lookup_socket_table(socket->proto, &info->remote, NULL);
+        }
+
+        if (rsocket != NULL)
+        {
+            if (!fnp_socket_enqueue_for_app(rsocket, m))
+            {
+                free_mbuf(m);
+            }
+        }
+        else
+        {
+            free_mbuf(m);
+        }
+
+        return;
+    }
+
+
+    // 目的地址不是本地的, 直接发送到网络上
+    struct rte_udp_hdr* hdr = (struct rte_udp_hdr*)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
+    hdr->src_port = socket->local.port;
+    hdr->dst_port = info->remote.port;
+    hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
+    hdr->dgram_cksum = 0;
+
+    ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
 }
 
 void udp_recv_from_net(struct rte_mbuf* m)
@@ -84,40 +126,9 @@ void udp_recv_from_net(struct rte_mbuf* m)
     info->local.port = udp_hdr->dst_port;
 
     // 交付给应用层/QUIC处理
-    if (!fnp_pring_enqueue(socket->rx, m))
+    if (!fnp_socket_enqueue_for_app(socket, m))
     {
         // 入队失败,释放mbuf
         free_mbuf(m);
     }
-}
-
-
-udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote)
-{
-    udp_sock_t* sock = fnp_zmalloc(sizeof(udp_sock_t));
-    if (sock == NULL)
-    {
-        return NULL;
-    }
-
-    fsocket_t* socket = fsocket(sock);
-
-    socket->handler = udp_handler;
-
-    if (remote == NULL)
-    {
-        sock->send_func = udp_send_mbuf;
-    }
-    else
-    {
-        sock->send_func = udp_send_mbuf;
-    }
-
-    return sock;
-}
-
-
-void free_udp_sock(udp_sock_t* sock)
-{
-    fnp_free(sock);
 }

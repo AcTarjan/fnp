@@ -7,11 +7,12 @@
 
 fnp_frontend_t* frontend = NULL; //该前端上下文
 
+
 static void keepalive_task()
 {
     while (1)
     {
-        rte_delay_us_sleep(5000 * 1000); // 5s
+        fnp_sleep(5000 * 1000); // 5s
         frontend->alive = 1; //共享内存，直接修改
     }
 }

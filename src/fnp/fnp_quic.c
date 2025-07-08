@@ -105,7 +105,7 @@ static quic_stream_data_t* quic_init_stream_data(struct rte_mbuf* m)
     return stream_data;
 }
 
-int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t m, bool fin)
+int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin)
 {
     quic_stream_data_t* stream_data = quic_init_stream_data(m);
     if (stream_data == NULL)
@@ -122,7 +122,7 @@ int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t m, bool fin)
     return FNP_OK;
 }
 
-fnp_mbuf_t fnp_quic_recv_stream_data(fnp_quic_stream_t* stream)
+fnp_mbuf_t* fnp_quic_recv_stream_data(fnp_quic_stream_t* stream)
 {
     quic_stream_data_t* stream_data;
     while (!stream->receive_fin && !stream->receive_reset)

@@ -73,7 +73,7 @@ static void check_frontend_alive()
                     fnp_list_node_t* next_socket_node = fnp_list_get_next(socket_node);
                     if (socket->worker_id == FNP_MAX_WORKER_NUM) //worker中不包含这种类型的socket, 直接释放
                     {
-                        free_socket(socket);
+                        free_fsocket(socket);
                     }
                     else
                     {
@@ -94,7 +94,7 @@ static void check_frontend_alive()
 static void handle_create_socket_fmsg(fnp_msg_t* msg)
 {
     create_socket_param_t* param = msg->data;
-    fsocket_t* socket = create_socket(param->proto, &param->local, &param->remote, param->conf, -1);
+    fsocket_t* socket = create_fsocket(param->proto, &param->local, &param->remote, param->conf, -1);
     if (socket == NULL)
     {
         msg->code = FNP_ERR_CREATE_SOCKET;
@@ -206,7 +206,7 @@ static void handle_master_fmsg_loop()
     }
 }
 
-int init_master()
+int init_fnp_master()
 {
     fnp_init_list(&frontend_list, compare_pid);
 

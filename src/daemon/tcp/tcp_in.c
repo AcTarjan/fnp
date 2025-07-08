@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include <rte_tcp.h>
 
-#include "../../common/fnp_msg.h"
 
 static inline void tcp_handle_syn_option(tcp_sock_t* sk, tcp_segment* seg)
 {
@@ -87,7 +86,7 @@ static inline void tcp_handle_fin(tcp_sock_t* sock)
 static inline void tcp_handle_in_order_data(tcp_sock_t* sock, tcp_segment* seg)
 {
     fsocket_t* socket = &sock->socket;
-    if (fnp_pring_enqueue(socket->rx, seg->data) != 0)
+    if (!fnp_socket_enqueue_for_app(socket, seg->data))
     {
         FNP_WARN("can't enqueue tcp data!!!!!!\n");
         free_mbuf(seg->data);
@@ -251,10 +250,10 @@ static void tcp_accept_conn(tcp_sock_t* sock)
         tcp_sock_t* parent = sock->parent;
         fsocket_t* socket = &sock->socket;
         socket->frontend_id = parent->socket.frontend_id; // 不能被释放, 如果释放, 出队列的socket会内存错误.
-        if (rte_ring_enqueue(parent->socket.rx, socket) != 0)
+        if (!fnp_socket_enqueue_for_app((fsocket_t*)parent, socket))
         {
             FNP_WARN("can't enqueue socket!!!\n");
-            free_socket(socket);
+            free_fsocket(socket);
         }
     }
 }
@@ -377,7 +376,7 @@ void tcp_listen_recv(tcp_sock_t* sk, tcp_segment* seg)
     // 检查SYN
     if (seg_set_syn(seg))
     {
-        fsocket_t* new_socket = create_socket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL, fnp_worker_id);
+        fsocket_t* new_socket = create_fsocket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL, fnp_worker_id);
         if (new_socket == NULL)
         {
             tcp_send_rst(seg);

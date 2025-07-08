@@ -5,6 +5,7 @@
 #define FNP_ERR_GENERIC -1
 #define FNP_ERR_CC_ALGO -2          //不支持的拥塞控制算法
 
+
 // socket相关
 #define FNP_ERR_CREATE_SOCKET -400     // 端口已被绑定
 #define FNP_ERR_PORT_BIND -401     // 端口已被绑定
@@ -19,6 +20,12 @@
 #define FNP_ERR_NO_SOCKET -410    // 未找到socket
 #define FNP_ERR_NO_SOCKET_FD -411    // 未找到可用的socket fd
 
+// RING相关
+#define FNP_ERR_CREATE_RING -501
+#define FNP_ERR_RING_FULL -502      // 环形队列已满
+#define FNP_ERR_RING_EMPTY -503     // 环形队列为空
+
+
 // DPDK相关
 #define FNP_ERR_RTE_EAL_INIT -100
 #define FNP_ERR_MALLOC -101
@@ -27,7 +34,6 @@
 #define FNP_ERR_MSG_TIMEOUT -104
 #define FNP_ERR_MSG_PARAM_LEN -105
 #define FNP_ERR_CREATE_HASH_TABLE -106
-#define FNP_ERR_CREATE_RING -107
 #define FNP_ERR_HASH_ADD -108
 
 // MSG相关

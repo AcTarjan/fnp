@@ -3,7 +3,7 @@
 #include "picoquic.h"
 #include "picoquic_internal.h"
 #include "fnp_common.h"
-#include "fnp_socket.h"
+#include "fsocket.h"
 #include "fnp_worker.h"
 
 // 实际发送：quic_prepare_stream_and_datagrams
@@ -66,7 +66,7 @@ static void quic_context_handler(quic_context_t* quic)
     fsocket_t* socket = fsocket(quic);
     if (socket->request_close)
     {
-        free_socket(socket);
+        free_fsocket(socket);
         return;
     }
 
@@ -100,7 +100,7 @@ quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
     }
 
     // 创建udp socket, 还是在master线程调用的
-    fsocket_t* udp_socket = create_socket(fnp_protocol_udp, local, NULL, NULL, -1);
+    fsocket_t* udp_socket = create_fsocket(fnp_protocol_udp, local, NULL, NULL, -1);
     if (udp_socket == NULL)
     {
         fnp_free(quic);

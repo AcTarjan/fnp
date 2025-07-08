@@ -76,4 +76,47 @@ static inline char* ipv4_ntos(uint32_t ip)
 #define FNP_MBUF_MEMPOOL_NAME "fnp_mbuf_pool"
 
 
+// 获取CPU时钟周期数
+static inline u64 fnp_get_tsc()
+{
+    return rte_rdtsc();
+}
+
+// 获取精确的CPU时钟周期数
+static inline u64 fnp_get_precise_tsc()
+{
+    return rte_rdtsc_precise();
+}
+
+// 获取CPU时钟频率
+static inline u64 fnp_get_tsc_hz()
+{
+    return rte_get_tsc_hz();
+}
+
+// 释放CPU
+static inline void fnp_sleep(u64 us)
+{
+    rte_delay_us_sleep(us);
+}
+
+// 阻塞CPU
+static inline void fnp_block(u64 us)
+{
+    rte_delay_us_block(us);
+}
+
+// 将线程在DPDK的指定lcore上运行
+typedef int (fnp_lcore_function_t)(void*);
+
+static inline int fnp_launch_on_lcore(fnp_lcore_function_t* f, void* arg, int lcore_id)
+{
+    if (lcore_id == -1)
+    {
+        lcore_id = rte_get_next_lcore(0, 1, 0);
+    }
+    return rte_eal_remote_launch(f, arg, lcore_id);
+}
+
+
 #endif // FNP_COMMON_H

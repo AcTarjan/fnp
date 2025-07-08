@@ -108,9 +108,9 @@ add_executable(fnp-daemon
         src/daemon/arp/arp.c
         src/daemon/ether/ether.c
         src/daemon/iface/fnp_iface.c
-        src/daemon/fnp_socket.c
+        src/daemon/iface/flow_table.c
+        src/daemon/fsocket.c
         src/daemon/fnp_worker.c
-        src/daemon/flow_table.c
         src/common/fnp_msg.c
         src/daemon/fnp_context.c
         src/daemon/fnp_master.c
@@ -134,7 +134,6 @@ add_library(fnp-api SHARED
         src/common/fnp_msg.c
         src/common/fnp_common.c
         src/fnp/fnp_frontend.c
-        src/fnp/fnp_mbuf.c
         src/fnp/fnp_quic.c
         src/fnp/fnp.c
 )
@@ -152,6 +151,22 @@ add_executable(fnp_quic_client
         src/demo/fnp_quic_client.c)
 
 target_link_libraries(fnp_quic_client
+        fnp-api
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
+
+add_executable(local_client
+        test/local/client.c)
+target_link_libraries(local_client
+        fnp-api
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
+
+add_executable(local_server
+        test/local/server.c)
+target_link_libraries(local_server
         fnp-api
         -pthread -lm -ldl -lnuma -lpcap
         ${DPDK_LIBRARIES}

@@ -89,20 +89,6 @@ u32 find_next_hop(fnp_iface_t* iface, u32 rip)
     return rip;
 }
 
-// u32 find_next_hop(u32 rip)
-// {
-//     for (i32 i = 0; i < fnp.iface_num; ++i)
-//     {
-//         fnp_iface_t *iface = &fnp.ifaces[i];
-//         if (iface->ip & iface->mask == rip & iface->mask)
-//         {
-//             return rip;
-//         }
-//     }
-
-//     return fnp.ifaces[0].ip;
-// }
-
 static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
 {
     for (int i = 0; i < conf->networks_count; i++)
@@ -111,7 +97,7 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         fnp_iface_t* iface = &ifaces[fnp_iface_count];
         iface->id = fnp_iface_count++;
         iface->port = port;
-        iface->name = strdup(network->name);
+        iface->name = fnp_string_duplicate(network->name);
         iface->ip = ipv4_ston(network->ip);
         iface->mask = ipv4_ston(network->ip_mask);
         iface->gateway = ipv4_ston(network->gateway);
@@ -121,7 +107,21 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
     printf("port %d mac is " RTE_ETHER_ADDR_PRT_FMT "\n", port, RTE_ETHER_ADDR_BYTES(&ports_mac[port]));
 
     // 获取网卡设备信息
-    u32 socket_id = rte_socket_id();
+    u32 socket_id = rte_eth_dev_socket_id(port);
+    struct rte_eth_conf port_conf = {
+        .txmode = {
+            .offloads =
+            // RTE_ETH_TX_OFFLOAD_VLAN_INSERT |
+            RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+            RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+            RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
+            // RTE_ETH_TX_OFFLOAD_SCTP_CKSUM |
+            // RTE_ETH_TX_OFFLOAD_TCP_TSO |
+            RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+        },
+        // 暂不配置rxmode
+    };
+
     struct rte_eth_dev_info dev_info;
     int ret = rte_eth_dev_info_get(port, &dev_info);
     if (ret != 0)
@@ -129,6 +129,7 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         printf("fail to get device(port %u) info: %s\n", port, strerror(-ret));
         return -1;
     }
+
     printf("port%d max_mtu: %u\n", port, dev_info.max_mtu);
     printf("port%d min_mtu: %u\n", port, dev_info.min_mtu);
     printf("port%d max_tx_queues: %u\n", port, dev_info.max_tx_queues);
@@ -145,9 +146,9 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
                  nb_queues, dev_info.max_tx_queues);
     }
 
+    // 设置网卡设备的txmode
+    port_conf.txmode.offloads &= dev_info.tx_offload_capa;
 
-    //配置网卡设备
-    struct rte_eth_conf port_conf = {0};
     /* Set RSS mode */
     if (0)
     {
@@ -175,64 +176,32 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
                    "requested:%#"PRIx64" configured:%#"PRIx64"\n",
                    port, default_rss_hf, port_conf.rx_adv_conf.rss_conf.rss_hf);
         }
-    }
 
-    // 发送mbuf后快速free
-    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
-    {
-        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
-    }
-
-    /* 剥离以太网帧尾部的CRC字段 */
-    port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
-
-    /* Set Rx checksum checking */
-    if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
-        (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
-        (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM))
-    {
-        printf("RX checksum offload supported\n");
-        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
-    }
-
-    // 开启tx cksum offload
-    {
-        if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM))
+        if (dev_info.reta_size)
         {
-            printf("TX ip checksum offload supported\n");
-            port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
-        }
+            /* reta size must be power of 2 */
+            assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
 
-        if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
-            (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM))
-        {
-            printf("TX TCP&UDP checksum offload supported\n");
-            port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
+            rss_reta_size[port] = dev_info.reta_size;
+            printf("port[%d]: rss table size: %d\n", port, dev_info.reta_size);
         }
     }
 
-
-    /*  启动TSO
-    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO)
+    // 配置网卡的rxmode
+    if (0)
     {
-        printf("TSO is supported\n");
-        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
-    }
-    else
-    {
-        printf("TSO is not supported\n");
-    }
-    */
+        /* 剥离以太网帧尾部的CRC字段 */
+        port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 
-
-    // if (dev_info.reta_size)
-    // {
-    //     /* reta size must be power of 2 */
-    //     assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
-    //
-    //     rss_reta_size[port] = dev_info.reta_size;
-    //     printf("port[%d]: rss table size: %d\n", port, dev_info.reta_size);
-    // }
+        /* Set Rx checksum checking */
+        if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
+            (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_UDP_CKSUM) &&
+            (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_CKSUM))
+        {
+            printf("RX checksum offload supported\n");
+            port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
+        }
+    }
 
     ret = rte_eth_dev_configure(port, nb_queues, nb_queues, &port_conf);
     if (ret != 0)
@@ -241,19 +210,24 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         return -1;
     }
 
-    static uint16_t nb_rxd = 512;
-    static uint16_t nb_txd = 512;
+    uint16_t nb_rxd = conf->nb_rx_desc;
+    uint16_t nb_txd = conf->nb_tx_desc;
+    // 根据硬件能力调整接收和发送描述符的数量
     ret = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
     if (ret < 0)
-        printf("Could not adjust number of descriptors for port%u (%d)\n", (unsigned)port, ret);
+        printf("Could not adjust number of descriptors for port%d: %d\n", port, ret);
 
     // 配置接收队列和发送队列
+    struct rte_eth_txconf txq_conf = {0};
+    txq_conf = dev_info.default_txconf;
+    txq_conf.offloads = port_conf.txmode.offloads;
+
+    struct rte_eth_rxconf rxq_conf = {0};
+    rxq_conf = dev_info.default_rxconf;
+    rxq_conf.offloads = port_conf.rxmode.offloads;
     for (int i = 0; i < nb_queues; i++)
     {
-        struct rte_eth_txconf txq_conf;
-        txq_conf = dev_info.default_txconf;
-        txq_conf.offloads = port_conf.txmode.offloads;
-        ret = rte_eth_tx_queue_setup(port, i, conf->nb_tx_desc, socket_id, &txq_conf);
+        ret = rte_eth_tx_queue_setup(port, i, nb_txd, socket_id, &txq_conf);
         if (ret < 0)
         {
             printf("fail to rte_eth_tx_queue_setup: %s\n", strerror(-ret));
@@ -261,10 +235,7 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         }
 
         fnp_worker_t* worker = get_fnp_worker(i);
-        struct rte_eth_rxconf rxq_conf;
-        rxq_conf = dev_info.default_rxconf;
-        rxq_conf.offloads = port_conf.rxmode.offloads;
-        ret = rte_eth_rx_queue_setup(port, i, conf->nb_rx_desc, socket_id, &rxq_conf, worker->rx_pool);
+        ret = rte_eth_rx_queue_setup(port, i, nb_rxd, socket_id, &rxq_conf, worker->rx_pool);
         if (ret < 0)
         {
             printf("fail to rte_eth_rx_queue_setup: %s\n", strerror(-ret));
@@ -286,6 +257,17 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         printf("set port to promiscuous mode: %d\n", ret);
     }
 
+    // 对于多个worker需要配置流表
+    if (nb_queues > 1)
+    {
+        ret = init_flow_table(port);
+        CHECK_RET(ret);
+    }
+    else
+    {
+        printf("fnp-worker number is %d, don't init flow table\n", nb_queues);
+    }
+
     return FNP_OK;
 }
 
@@ -305,8 +287,6 @@ i32 init_fnp_iface_layer(fnp_config* conf)
     {
         int ret = init_fnp_iface(id, &conf->ports[id], conf->worker.lcores_count);
         CHECK_RET(ret);
-
-        // create_base_flow_rules(id);
     }
 
     return FNP_OK;
