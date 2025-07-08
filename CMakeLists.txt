@@ -172,3 +172,19 @@ target_link_libraries(local_server
         ${DPDK_LIBRARIES}
 )
 
+
+add_executable(remote_udp_client
+        test/remote_udp/client.c)
+target_link_libraries(local_client
+        fnp-api
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
+
+add_executable(remote_udp_server
+        test/remote_udp/server.c)
+target_link_libraries(local_server
+        fnp-api
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
