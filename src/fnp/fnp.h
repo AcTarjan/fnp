@@ -83,21 +83,4 @@ int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin
 
 fnp_mbuf_t* fnp_quic_recv_stream_data(fnp_quic_stream_t* stream);
 
-
-typedef struct fnp_rate_measure
-{
-    u64 hz;
-    u64 interval_count; // 间隔计数
-    u64 packet_count; //数据包计数
-    u64 byte_count; //字节计数
-    u64 first_tsc; // 第一个数据包的时间戳
-    u64 last_tsc; // 最后一个数据包的时间戳
-} fnp_rate_measure_t;
-
-fnp_rate_measure_t* fnp_register_measure();
-
-void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len);
-
-void fnp_compute_rate(fnp_rate_measure_t* meas);
-
 #endif // FNP_H

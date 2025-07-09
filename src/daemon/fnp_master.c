@@ -1,6 +1,5 @@
 #include "fnp_frontend.h"
 
-#include <unistd.h>
 
 #include "fnp_common.h"
 #include "fnp_error.h"
@@ -9,10 +8,12 @@
 #include "fnp_worker.h"
 #include "hash.h"
 #include "quic.h"
-#include "udp.h"
 #include "tcp.h"
 
+#include <rte_ethdev.h>
 #include <sys/timerfd.h>
+#include <unistd.h>
+
 
 static fnp_list_t frontend_list;
 
@@ -160,6 +161,44 @@ int create_timerfd(int timeout, bool periodic)
     return timerfd;
 }
 
+static u64 prev_tsc = 0;
+
+static void check_daemon_info()
+{
+    show_mempool_info();
+
+    const int port_id = 0;
+
+    u64 tsc = fnp_get_tsc();
+    if (prev_tsc == 0)
+    {
+        prev_tsc = tsc;
+        rte_eth_stats_reset(port_id);
+        return;
+    }
+
+    struct rte_eth_stats stats;
+    rte_eth_stats_get(port_id, &stats);
+
+    printf("start to compute port pps and bps\n");
+    fnp_rate_measure_t recv_meas = {0};
+    recv_meas.first_tsc = prev_tsc;
+    recv_meas.last_tsc = tsc;
+    recv_meas.packet_count = stats.ipackets;
+    recv_meas.byte_count = stats.ibytes;
+    fnp_compute_rate(&recv_meas);
+
+    fnp_rate_measure_t send_meas;
+    send_meas.first_tsc = prev_tsc;
+    send_meas.last_tsc = tsc;
+    send_meas.packet_count = stats.opackets;
+    send_meas.byte_count = stats.obytes;
+    fnp_compute_rate(&send_meas);
+
+    prev_tsc = tsc;
+    rte_eth_stats_reset(port_id);
+}
+
 /*
  * master控制线程:
  * 1. 负责frontend注册
@@ -200,6 +239,7 @@ static void handle_master_fmsg_loop()
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); //清除定时器计数
                 check_frontend_alive();
+                check_daemon_info();
             }
         }
         fmsg_listener_wait(listener, handle_master_fmsg);

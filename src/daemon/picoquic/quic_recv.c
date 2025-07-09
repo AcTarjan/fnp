@@ -402,7 +402,7 @@ void quic_recv_incoming_udp_mbuf(quic_context_t* quic)
     fsocket_t* socket = quic->udp_socket;
     struct rte_mbuf* mbufs[16];
     u64 current_time = picoquic_current_time();
-    u32 num = fnp_pring_dequeue_bulk(socket->rx, mbufs, 16);
+    u32 num = fnp_pring_dequeue_burst(socket->rx, mbufs, 16);
     for (int i = 0; i < num; i++)
     {
         // 处理接收到的QUIC数据包

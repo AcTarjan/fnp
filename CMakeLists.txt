@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.17)
 project(fnp C)
 set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mssse3")
 
 # dpdk
@@ -123,7 +124,7 @@ target_link_libraries(fnp-daemon
         ${OPENSSL_LIBRARIES}
         PUBLIC
         ${PICOTLS_LIBRARIES}
-        -pthread -lm -ldl -lnuma -lpcap libfnp-conf.so
+        -pthread -lm -ldl -lnuma -lpcap -latomic libfnp-conf.so
         ${DPDK_LIBRARIES}
 )
 
@@ -186,5 +187,12 @@ add_executable(remote_udp_server
 target_link_libraries(local_server
         fnp-api
         -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
+
+add_executable(fnp_ring
+        test/fnp_ring/fnp_ring.c)
+target_link_libraries(fnp_ring
+        -pthread -lm -ldl -lnuma -latomic -lpcap
         ${DPDK_LIBRARIES}
 )

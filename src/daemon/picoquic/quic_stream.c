@@ -371,14 +371,14 @@ static int quic_init_stream_socket(fnp_quic_stream_t* socket, u64 stream_id, boo
     socket->is_local = IS_LOCAL_STREAM_ID(stream_id, client_mode);
     socket->priority = priority;
     socket->is_unidirectional = !IS_BIDIR_STREAM_ID(stream_id);
-    socket->tx = fnp_pring_create(64);
+    socket->tx = fnp_pring_create(64, false, false);
     if (socket->tx == NULL)
     {
         return FNP_ERR_CREATE_RING;
     }
 
 
-    socket->rx = fnp_pring_create(64);
+    socket->rx = fnp_pring_create(64, false, false);
     if (socket->rx == NULL)
     {
         return FNP_ERR_CREATE_RING;

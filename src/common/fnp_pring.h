@@ -3,20 +3,26 @@
 
 #include "fnp_common.h"
 
+#include <stdatomic.h>
+
 typedef struct fnp_pring
 {
-    rte_spinlock_t enqueue_lock;
-    rte_spinlock_t dequeue_lock;
     rte_atomic32_t ref_count;
-    i32 size; /* size of buf */
-    i32 head;
-    i32 tail;
+    u32 size; // size of buf
+    u32 mask; // size - 1, size must be power of 2
+    u32 is_mp : 1; //是否多生产者
+    u32 is_mc : 1; //是否多消费者
+    volatile atomic_uint prod_head;
+    volatile atomic_uint prod_tail; //实际的生产者指针
+    volatile atomic_uint cons_head;
+    volatile atomic_uint cons_tail; //实际的生产者指针
+
     /* 注意这里有4字节的padding, sizeof(fnp_pring) = 16 */
     void* buf[0]; // buf 8字节对齐
 } fnp_pring_t;
 
 
-fnp_pring_t* fnp_pring_create(i32 size);
+fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc);
 
 static inline fnp_pring_t* fnp_pring_clone(fnp_pring_t* r)
 {
@@ -35,23 +41,20 @@ static inline void fnp_pring_free(fnp_pring_t* r)
         fnp_free(r);
 }
 
-static inline i32 fnp_pring_len(fnp_pring_t* r)
+static inline i32 fnp_pring_empty(fnp_pring_t* r)
 {
-    return (r->tail - r->head + r->size) % r->size;
+    uint32_t prod_tail = r->prod_tail;
+    uint32_t cons_tail = r->cons_tail;
+    return cons_tail == prod_tail;
 }
 
-static inline i32 fnp_pring_avail(fnp_pring_t* r)
-{
-    return r->size - 1 - fnp_pring_len(r);
-}
+u32 fnp_pring_enqueue(fnp_pring_t* r, void* data);
 
-bool fnp_pring_enqueue(fnp_pring_t* r, void* data);
+u32 fnp_pring_enqueue_burst(fnp_pring_t* r, void* const * obj_table, u32 len);
 
-bool fnp_pring_dequeue(fnp_pring_t* r, void** data);
+u32 fnp_pring_dequeue(fnp_pring_t* r, void** data);
 
-i32 fnp_pring_enqueue_bulk(fnp_pring_t* r, void* data[], i32 len);
-
-i32 fnp_pring_dequeue_bulk(fnp_pring_t* r, void* data[], i32 len);
+u32 fnp_pring_dequeue_burst(fnp_pring_t* r, void** obj_table, u32 len);
 
 void* fnp_pring_top(fnp_pring_t* r, i32 offset);
 

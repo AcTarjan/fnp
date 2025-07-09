@@ -19,7 +19,7 @@ static void udp_handler(fsocket_t* socket)
     if (socket->request_close)
     {
         // 把应用层待发送的数据发送完成
-        if (fnp_pring_len(socket->tx) == 0)
+        if (fnp_pring_empty(socket->tx))
         {
             free_fsocket(socket);
             return;
@@ -29,7 +29,7 @@ static void udp_handler(fsocket_t* socket)
     static struct rte_mbuf* mbufs[SOCKET_TX_BURST_NUM];
 
     // 从应用层接收数据，发送出去。
-    const u32 num = fnp_pring_dequeue_bulk(socket->tx, mbufs, SOCKET_TX_BURST_NUM);
+    const u32 num = fnp_pring_dequeue_burst(socket->tx, mbufs, SOCKET_TX_BURST_NUM);
     for (i32 i = 0; i < num; i++)
     {
         udp_send_mbuf(socket, mbufs[i]);

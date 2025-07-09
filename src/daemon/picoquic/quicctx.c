@@ -1033,7 +1033,7 @@ int quic_init_context(quic_context_t* quic, fnp_quic_config_t* conf, u64 current
 
     picoquic_init_transport_parameters(&quic->default_tp, 0);
 
-    quic->pending_cnxs = fnp_pring_create(128);
+    quic->pending_cnxs = fnp_pring_create(128, false, false);
     if (quic->pending_cnxs == NULL)
     {
         return -1;

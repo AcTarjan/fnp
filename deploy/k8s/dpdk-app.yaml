@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  annotations: {}
+  annotations: { }
   labels:
     k8s.kuboard.cn/name: dpdk-slave-deployment
   name: dpdk-slave-deployment
@@ -29,7 +29,13 @@ spec:
         - image: 'dpdk-slave:v1'
           imagePullPolicy: IfNotPresent
           name: dpdk-slave
-          resources: {}
+          resources:
+            requests:
+              cpu: "2"    # 必须是整数
+              memory: "4Gi"
+            limits:
+              cpu: "2"    # 必须与 requests 相等
+              memory: "4Gi"
           securityContext:
             privileged: true
           terminationMessagePath: /dev/termination-log
@@ -47,7 +53,7 @@ spec:
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
-      securityContext: {}
+      securityContext: { }
       terminationGracePeriodSeconds: 30
       volumes:
         - hostPath:

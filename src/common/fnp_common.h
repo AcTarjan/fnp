@@ -119,4 +119,20 @@ static inline int fnp_launch_on_lcore(fnp_lcore_function_t* f, void* arg, int lc
 }
 
 
+typedef struct fnp_rate_measure
+{
+    FILE* file; // 文件指针，用于记录速率测量结果
+    u64 interval_count; // 间隔计数
+    u64 packet_count; //数据包计数
+    u64 byte_count; //字节计数
+    u64 first_tsc; // 第一个数据包的时间戳
+    u64 last_tsc; // 最后一个数据包的时间戳
+} fnp_rate_measure_t;
+
+fnp_rate_measure_t* fnp_register_measure();
+
+void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len);
+
+void fnp_compute_rate(fnp_rate_measure_t* meas);
+
 #endif // FNP_COMMON_H

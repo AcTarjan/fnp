@@ -1,5 +1,21 @@
-#include "fnp_pring.h"
 #include <stdatomic.h>
+#include "fnp_common.h"
+
+typedef struct fnp_pring
+{
+    rte_atomic32_t ref_count;
+    u32 size; // size of buf
+    u32 mask; // size - 1, size must be power of 2
+    u32 is_mp : 1; //是否多生产者
+    u32 is_mc : 1; //是否多消费者
+    volatile atomic_uint prod_head;
+    volatile atomic_uint prod_tail; //实际的生产者指针
+    volatile atomic_uint cons_head;
+    volatile atomic_uint cons_tail; //实际的生产者指针
+
+    /* 注意这里有4字节的padding, sizeof(fnp_pring) = 16 */
+    void* buf[0]; // buf 8字节对齐
+} fnp_pring_t;
 
 
 fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc)
@@ -18,11 +34,6 @@ fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc)
     r->mask = size - 1; // mask is size - 1 to allow bitwise operations
     r->is_mp = is_mp;
     r->is_mc = is_mc;
-
-    r->prod_head = 0;
-    r->prod_tail = 0;
-    r->cons_head = 0;
-    r->cons_tail = 0;
 
     return r;
 }
@@ -155,12 +166,12 @@ unsigned int __fnp_ring_do_enqueue_elem(fnp_pring_t* r, const void* obj_table, u
 
 
 // 多生产者并发安全的环形队列入队
-u32 fnp_pring_enqueue(fnp_pring_t* r, void* obj)
+u32 fnp_ring_enqueue(fnp_pring_t* r, void* obj)
 {
     return __fnp_ring_do_enqueue_elem(r, &obj, 1);
 }
 
-u32 fnp_pring_enqueue_burst(fnp_pring_t* r, void* const * obj_table, u32 len)
+u32 fnp_ring_enqueue_burst(fnp_pring_t* r, void* const * obj_table, u32 len)
 {
     return __fnp_ring_do_enqueue_elem(r, obj_table, len);
 }
@@ -277,19 +288,124 @@ static __rte_always_inline u32 __fnp_ring_do_dequeue_elem(fnp_pring_t* r, void* 
 }
 
 // 多生产者并发安全的环形队列入队
-u32 fnp_pring_dequeue(fnp_pring_t* r, void** obj_p)
+u32 fnp_ring_dequeue(fnp_pring_t* r, void** obj_p)
 {
     return __fnp_ring_do_dequeue_elem(r, obj_p, 1);
 }
 
-u32 fnp_pring_dequeue_burst(fnp_pring_t* r, void** obj_table, u32 len)
+u32 fnp_ring_dequeue_burst(fnp_pring_t* r, void** obj_table, u32 len)
 {
     return __fnp_ring_do_dequeue_elem(r, obj_table, len);
 }
 
-//only read data, don't amend r->head
-void* fnp_pring_top(fnp_pring_t* r, i32 offset)
+typedef struct
 {
-    u32 index = (r->cons_tail + offset) & r->mask;
-    return r->buf[index];
+    u64 id;
+    u64 seq;
+    u64 retry;
+} ring_test_t;
+
+u64 count_total = 5 * 10000;
+
+int recv_loop(void* arg)
+{
+    int id = rte_lcore_id();
+    printf("recv_loop start, %d\n", id);
+    fnp_pring_t* r = (fnp_pring_t*)arg;
+
+    u64 next[10] = {0};
+    while (1)
+    {
+        ring_test_t* t = NULL;
+        while (fnp_ring_dequeue(r, (void**)&t) == 0);
+
+        if (t->seq != next[t->id])
+        {
+            printf("id is %llu, seq is %llu, but next is %llu\n", t->id, t->seq, next[t->id]);
+        }
+        next[t->id]++;
+
+
+        if (next[t->id] == count_total)
+        {
+            printf("recv_loop %llu recv all\n", t->id);
+            if (r->cons_tail == r->prod_tail)
+                break;
+        }
+        rte_free(t);
+    }
+
+    printf("recv_loop %d recv all packets\n", id);
+}
+
+int send_loop(void* arg)
+{
+    int id = rte_lcore_id();
+    printf("recv_loop start, %d\n", id);
+    fnp_pring_t* r = (fnp_pring_t*)arg;
+
+    u64 seq = 0;
+    while (1)
+    {
+        ring_test_t* t = fnp_malloc(sizeof(ring_test_t));
+        t->id = id;
+        t->seq = seq++;
+        t->retry = 0;
+        while (fnp_ring_enqueue(r, (void*)t) == 0)
+        {
+            t->retry++;
+        }
+
+        if (seq == count_total)
+        {
+            printf("send_loop %d send %llu\n", id, count_total);
+            break;
+        }
+    }
+
+    return 0;
+}
+
+int main()
+{
+    int argc = 2;
+    char* argv[] = {"fnp_ring", "-l 0,4,5,6,7"};
+
+    int ret = rte_eal_init(argc, argv);
+    if (ret < 0)
+    {
+        printf("Fail to init EAL\n");
+        return -1;
+    }
+
+    fnp_pring_t* r = fnp_pring_create(2048, true, false);
+    ret = fnp_launch_on_lcore(recv_loop, r, 4);
+    if (ret < 0)
+    {
+        printf("fail to launch recv_loop on lcore 4\n");
+        return -1;
+    }
+
+    ret = fnp_launch_on_lcore(send_loop, r, 5);
+    if (ret < 0)
+    {
+        printf("fail to launch recv_loop on lcore 5\n");
+        return -1;
+    }
+
+    ret = fnp_launch_on_lcore(send_loop, r, 6);
+    if (ret < 0)
+    {
+        printf("fail to launch recv_loop on lcore 5\n");
+        return -1;
+    }
+    //
+    // ret = fnp_launch_on_lcore(send_loop, r, 7);
+    // if (ret < 0)
+    // {
+    //     printf("fail to launch recv_loop on lcore 5\n");
+    //     return -1;
+    // }
+
+    rte_eal_mp_wait_lcore();
 }

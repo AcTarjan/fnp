@@ -1,3 +1,5 @@
+#include <unistd.h>
+
 #include "fnp.h"
 
 struct test_info
@@ -18,13 +20,15 @@ int worker_loop_echo_func(void* arg)
         fnp_mbuf_t* mbuf = fnp_recv(socket);
         if (mbuf == NULL)
         {
+            printf("recv null mbuf, exit\n");
             break;
         }
 
         //直接发送回去
-        fnp_send(socket, mbuf);
-
-        // fnp_free_mbuf(mbuf);
+        if (fnp_send(socket, mbuf) != FNP_OK)
+        {
+            fnp_free_mbuf(mbuf);
+        }
     }
 }
 
@@ -34,8 +38,16 @@ int worker_recv_loop_func(void* arg)
 
     printf("start to recv packet from local\n");
 
+    fsocket_t* socket = arg;
     fnp_rate_measure_t meas = {0};
+    meas.file = fopen("fnp_local_throughput.txt", "w"); // 文件不存在会自动创建
+    if (meas.file == NULL)
+    {
+        printf("can't create fnp_local_throughput.txt\n");
+        return 1;
+    }
     meas.interval_count = 500000; //50w计算一次
+    u64 count = 0;
     while (1)
     {
         fnp_mbuf_t* mbuf = fnp_recv(socket);
@@ -44,9 +56,18 @@ int worker_recv_loop_func(void* arg)
             break;
         }
 
+        count++;
         fnp_update_rate_measure(&meas, fnp_get_mbuf_len(mbuf));
         fnp_free_mbuf(mbuf);
+        if (count == 1000 * 10000) // 1千万包
+        {
+            break;
+        }
     }
+
+    printf("finish to recv packet\n");
+    fsync(fileno(meas.file));
+    fclose(meas.file);
 }
 
 int main(int argc, char** argv)
@@ -70,7 +91,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    ret = fnp_launch_on_lcore(worker_loop_echo_func, socket, -1);
+    ret = fnp_launch_on_lcore(worker_recv_loop_func, socket, -1);
     if (ret != FNP_OK)
     {
         printf("Failed to launch worker loop: %d\n", ret);

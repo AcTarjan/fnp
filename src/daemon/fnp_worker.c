@@ -87,16 +87,10 @@ static void recv_data_from_net()
 {
     fnp_worker_t* worker = get_local_worker();
     struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
-    i64 count = 0;
     /*** recv from nic ***/
     i32 rxNum = rte_eth_rx_burst(PORT_ID, worker->queue_id, mbufs, MBUF_BURST_SIZE);
     for (i32 i = 0; i < rxNum; ++i)
     {
-        count++;
-        if (count % 100 == 0) // 人为丢包
-        {
-            printf("recv mbuf packet in %d: %lld\n", worker->id, count);
-        }
         ether_recv_mbuf(mbufs[i]);
     }
 }
@@ -108,13 +102,13 @@ static void send_data_to_net()
 
     while (1)
     {
-        i32 txNum = fnp_pring_dequeue_bulk(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
+        i32 txNum = fnp_pring_dequeue_burst(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
         if (txNum > 0)
         {
             i32 num = rte_eth_tx_burst(PORT_ID, worker->queue_id, mbufs, txNum);
             if (num < txNum)
             {
-                printf("txNum: %d, tx_burst: %d\n", txNum, num);
+                printf("rte_eth_tx_burst warning! txNum: %d, tx_burst: %d\n", txNum, num);
                 rte_pktmbuf_free_bulk(&mbufs[num], txNum - num);
             }
         }
@@ -206,12 +200,12 @@ int fnp_worker_loop(void* arg)
     i32 socket_id = rte_socket_id();
     i32 lcore_id = rte_lcore_id();
     printf("fnp_worker %d is running: lcore %d in socket %d\n", fnp_worker_id, lcore_id, socket_id);
-    u64 cur_tsc, mem_prev_tsc = 0, prev_tsc = 0;
-    u64 hz = rte_get_timer_hz(); // 10ms
+    u64 cur_tsc, prev_tsc = 0;
+    u64 hz = fnp_get_tsc_hz(); // 10ms
 
     while (1)
     {
-        cur_tsc = rte_rdtsc();
+        cur_tsc = fnp_get_tsc();
 
         // 收到网卡的数据，会改变TCP的状态
         recv_data_from_net();
@@ -223,17 +217,6 @@ int fnp_worker_loop(void* arg)
         {
             rte_timer_manage(); // 检查定时器，触发重传
             prev_tsc = cur_tsc;
-        }
-
-        // 检查mempool, 每5s检查一次
-        if (cur_tsc - mem_prev_tsc > hz * 5)
-        {
-            // show_mempool_info();
-            mem_prev_tsc = cur_tsc;
-            struct rte_eth_stats stats;
-            rte_eth_stats_get(0, &stats);
-            printf("recv %llu packets from worker %d\n",
-                   stats.q_ipackets[worker->id], worker->id);
         }
 
         // 处理收到的fmsg消息
@@ -310,7 +293,7 @@ int init_fnp_worker(worker_config* conf)
             return FNP_ERR_CREATE_MBUFPOOL;
         }
 
-        worker->tx_ring = fnp_pring_create(conf->tx_ring_size);
+        worker->tx_ring = fnp_pring_create(conf->tx_ring_size, false, false);
         if (worker->tx_ring == NULL)
         {
             printf("create tx_queue error!\n");

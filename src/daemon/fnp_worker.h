@@ -43,28 +43,31 @@ RTE_DECLARE_PER_LCORE(int, worker_id); /**< Per thread "lcore id". */
 
 static void show_mempool_info()
 {
-    fnp_worker_t* worker = get_local_worker();
-    struct rte_mempool* mp = worker->pool;
-    u32 count = rte_mempool_avail_count(mp);
-    printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
+    for (int i = 0; i < fnp_worker_count; i++)
+    {
+        fnp_worker_t* worker = get_fnp_worker(i);
+        struct rte_mempool* mp = worker->pool;
+        u32 count = rte_mempool_avail_count(mp);
+        printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
 
-    mp = worker->clone_pool;
-    count = rte_mempool_avail_count(mp);
-    printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
+        mp = worker->clone_pool;
+        count = rte_mempool_avail_count(mp);
+        printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
 
-    mp = worker->rx_pool;
-    count = rte_mempool_avail_count(mp);
-    printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
+        mp = worker->rx_pool;
+        count = rte_mempool_avail_count(mp);
+        printf("%s have %d, avail count is %u\n", mp->name, mp->size, count);
 
-    // struct rte_mempool_cache *cache;
-    // for (int i = 1; i < 6; i++)
-    // {
-    //     cache = rte_mempool_default_cache(mp, i);
-    //     if (cache != NULL)
-    //     {
-    //         FNP_INFO("lcore %u cache is %d\n", i, cache->len);
-    //     }
-    // }
+        // struct rte_mempool_cache *cache;
+        // for (int i = 1; i < 6; i++)
+        // {
+        //     cache = rte_mempool_default_cache(mp, i);
+        //     if (cache != NULL)
+        //     {
+        //         FNP_INFO("lcore %u cache is %d\n", i, cache->len);
+        //     }
+        // }
+    }
 }
 
 

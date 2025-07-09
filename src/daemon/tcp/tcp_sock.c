@@ -82,13 +82,12 @@ static void tcp_handler(tcp_sock_t* sock)
     // 从应用层接收数据，放到缓存中
     if (tcp_get_state(sock) != TCP_LISTEN)
     {
-        i32 avail = FNP_MIN(fnp_pring_avail(sock->txbuf), 32);
-        u32 num = fnp_pring_dequeue_bulk(socket->tx, mbufs, avail);
+        u32 num = fnp_pring_dequeue_burst(socket->tx, mbufs, 32);
         if (num > 0)
         {
             // mbuf融合，送进发送队列
             // printf("recv %d mbufs from app\n", num);
-            fnp_pring_enqueue_bulk(sock->txbuf, mbufs, num);
+            fnp_pring_dequeue_burst(sock->txbuf, mbufs, num);
         }
     }
 
@@ -112,7 +111,7 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
         return sock;
     }
 
-    sock->txbuf = fnp_pring_create(TCP_TXBUF_SIZE);
+    sock->txbuf = fnp_pring_create(TCP_TXBUF_SIZE, false, false);
     if (unlikely(sock->txbuf == NULL))
     {
         fnp_free(sock);

@@ -203,7 +203,7 @@ void arp_pend_mbuf(fnp_iface_t* iface, u32 next_ip, struct rte_mbuf* m)
         e->ip = next_ip;
         e->iface = iface;
         e->tsc = rte_rdtsc();
-        e->pending = fnp_pring_create(128);
+        e->pending = fnp_pring_create(128, false, false);
 
         hash_add(worker->arp_table, &next_ip, e);
     }
@@ -222,7 +222,7 @@ void arp_handle_local_pending()
     arp_pend_entry_t* pe = NULL;
     fnp_worker_t* worker = get_local_worker();
     u64 tsc = rte_rdtsc();
-    u64 hz = rte_get_timer_hz(); // 1s
+    u64 hz = rte_get_tsc_hz(); // 1s
     while (hash_iterate(worker->arp_table, &key, &pe, &next))
     {
         arp_entry_t* e = arp_lookup(pe->ip); //检查是否已经确定了arp项
@@ -239,7 +239,7 @@ void arp_handle_local_pending()
         while (1)
         {
             struct rte_mbuf* mbufs[16];
-            int n = fnp_pring_dequeue_bulk(pe->pending, mbufs, 16);
+            u32 n = fnp_pring_dequeue_burst(pe->pending, mbufs, 16);
             for (int i = 0; i < n; i++)
             {
                 ether_send_mbuf(mbufs[i], &e->mac, RTE_ETHER_TYPE_IPV4);
