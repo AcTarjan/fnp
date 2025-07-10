@@ -40,13 +40,10 @@ void init_ipv4_layer()
 
 void ipv4_recv_mbuf(struct rte_mbuf* m)
 {
-    fnp_worker_t* worker = get_local_worker();
     struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
-    if (worker->id != 0)
-        FNP_INFO("recv ipv4 packet in %d: proto: %d dst_ip: %d\n", worker->id, hdr->next_proto_id, hdr->dst_addr);
     fnp_iface_t* iface = lookup_iface(hdr->dst_addr);
-    if (iface == NULL) //不是本机ip
+    if (unlikely(iface == NULL)) //不是本机ip
     {
         free_mbuf(m);
         return;
@@ -100,7 +97,9 @@ void ipv4_send_mbuf(struct rte_mbuf* m, u8 proto, u32 rip)
     hdr->dst_addr = rip;
     hdr->hdr_checksum = 0; // 硬件计算
 
-    compute_cksum(hdr, m);
+    m->ol_flags |= (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4);
+    m->l3_len = IPV4_HDR_LEN;
+    // compute_cksum(hdr, m);
 
     u32 next_hop = find_next_hop(iface, rip);
 

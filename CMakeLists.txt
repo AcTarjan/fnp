@@ -196,3 +196,21 @@ target_link_libraries(fnp_ring
         -pthread -lm -ldl -lnuma -latomic -lpcap
         ${DPDK_LIBRARIES}
 )
+
+
+add_executable(linux_udp_server
+        test/linux/udp_server.c
+        src/common/fnp_common.c)
+target_link_libraries(linux_udp_server
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)
+
+
+add_executable(linux_udp_client
+        test/linux/udp_client.c
+        src/common/fnp_common.c)
+target_link_libraries(linux_udp_client
+        -pthread -lm -ldl -lnuma -lpcap
+        ${DPDK_LIBRARIES}
+)

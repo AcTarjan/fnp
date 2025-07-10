@@ -181,9 +181,16 @@ void tcp_syn_send(tcp_sock_t* sk)
     }
 }
 
+// 发送需要重传的数据包
+void retransmit_needed_packet(tcp_sock_t* sk)
+{
+}
+
 // send tcp segment
 void tcp_data_send(tcp_sock_t* sk)
 {
+    // 检查是否有需要重传的mbuf
+
     // sk->snd_wnd = FNP_MIN(sk->adv_wnd << sk->snd_wnd_scale, sk->cwnd);
     sk->snd_wnd = sk->adv_wnd << sk->snd_wnd_scale; // 先不进行拥塞控制
     while (1)

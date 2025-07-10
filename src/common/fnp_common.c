@@ -61,9 +61,9 @@ void fnp_compute_rate(fnp_rate_measure_t* meas)
 
     u64 hz = fnp_get_tsc_hz();
     double delay = (double)(meas->last_tsc - meas->first_tsc) / (double)hz;
-    printf(
-        "packet count is %llu, byte count is %llu, first tsc is %llu, last tsc is %llu, hz is %llu, delay is %.2lf\n",
-        meas->packet_count, meas->byte_count, meas->first_tsc, meas->last_tsc, hz, delay);
+    // printf(
+    //     "packet count is %llu, byte count is %llu, first tsc is %llu, last tsc is %llu, hz is %llu, delay is %.2lf\n",
+    //     meas->packet_count, meas->byte_count, meas->first_tsc, meas->last_tsc, hz, delay);
 
     double pps = (double)meas->packet_count / delay / 1000000.0;
     double Bps = (double)meas->byte_count / delay / 1000000000.0;

@@ -18,6 +18,7 @@ typedef int (*fnp_list_node_compare_func)(void*, void*); // 大于0继续比较,
 typedef struct fnp_list
 {
     fnp_list_node_t* head;
+    fnp_list_node_t* tail;
     fnp_list_node_compare_func compare;
 } fnp_list_t;
 

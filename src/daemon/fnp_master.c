@@ -163,7 +163,7 @@ int create_timerfd(int timeout, bool periodic)
 
 static u64 prev_tsc = 0;
 
-static void check_daemon_info()
+static void check_daemon_info(FILE* fp)
 {
     show_mempool_info();
 
@@ -180,15 +180,16 @@ static void check_daemon_info()
     struct rte_eth_stats stats;
     rte_eth_stats_get(port_id, &stats);
 
-    printf("start to compute port pps and bps\n");
     fnp_rate_measure_t recv_meas = {0};
+    recv_meas.file = fp;
     recv_meas.first_tsc = prev_tsc;
     recv_meas.last_tsc = tsc;
     recv_meas.packet_count = stats.ipackets;
     recv_meas.byte_count = stats.ibytes;
     fnp_compute_rate(&recv_meas);
 
-    fnp_rate_measure_t send_meas;
+    fnp_rate_measure_t send_meas = {0};
+    send_meas.file = fp;
     send_meas.first_tsc = prev_tsc;
     send_meas.last_tsc = tsc;
     send_meas.packet_count = stats.opackets;
@@ -204,9 +205,15 @@ static void check_daemon_info()
  * 1. 负责frontend注册
  * 2. 检查frontend的状态, 删除丢失心跳的frontend, 并释放其资源
  */
-static void handle_master_fmsg_loop()
+static void fnp_master_loop()
 {
     printf("start task to manage frontend\n");
+    FILE* fp = fopen("./fnp_master_stat.txt", "w");
+    if (fp == NULL)
+    {
+        perror("Failed to fnp_master_stat file");
+        return;
+    }
 
     fmsg_listener_t* listener = register_fmsg_listener(fnp_master_id);
     if (listener == NULL)
@@ -239,7 +246,7 @@ static void handle_master_fmsg_loop()
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); //清除定时器计数
                 check_frontend_alive();
-                check_daemon_info();
+                check_daemon_info(fp);
             }
         }
         fmsg_listener_wait(listener, handle_master_fmsg);
@@ -258,7 +265,7 @@ int init_fnp_master()
 
     pthread_t ctrl_thread;
     int ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_master_task", NULL,
-                                     handle_master_fmsg_loop, NULL);
+                                     fnp_master_loop, NULL);
     if (ret != 0)
     {
         RTE_LOG(ERR, EAL, "Failed to create control thread\n");

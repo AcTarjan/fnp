@@ -42,7 +42,7 @@ void ether_send_mbuf(struct rte_mbuf* m, struct rte_ether_addr* dmac, u16 type)
     m->l2_len = RTE_ETHER_HDR_LEN;
 
     fnp_worker_t* worker = get_local_worker();
-    if (!fnp_pring_enqueue(worker->tx_ring, m))
+    if (unlikely(fnp_pring_enqueue(worker->tx_ring, m) == 0))
     {
         FNP_WARN("ether_send_mbuf failed!\n");
         free_mbuf(m);

@@ -31,6 +31,7 @@ typedef struct tcp_sock
     u8 snd_wnd_scale; // 发送窗口的缩放因子, 即对方的接收窗口的缩放因子
     u8 fin_sent; // 是否发送过FIN，避免重复发送
     fnp_pring_t* txbuf; // 重传队列
+    fnp_list_t pending_list; // 待确认的队列
 
     // 接收相关
     u8 rcv_wnd_scale; // 接收窗口的缩放因子, 即自己的接收窗口的缩放因子

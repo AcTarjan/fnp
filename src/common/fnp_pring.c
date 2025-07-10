@@ -14,6 +14,7 @@ fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc)
     if (r == NULL)
         return NULL;
 
+    rte_atomic32_set(&r->ref_count, 1);
     r->size = size;
     r->mask = size - 1; // mask is size - 1 to allow bitwise operations
     r->is_mp = is_mp;

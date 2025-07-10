@@ -16,7 +16,7 @@
 static void udp_handler(fsocket_t* socket)
 {
     // 处理用户请求
-    if (socket->request_close)
+    if (unlikely(socket->request_close))
     {
         // 把应用层待发送的数据发送完成
         if (fnp_pring_empty(socket->tx))
@@ -63,7 +63,7 @@ void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     fmbuf_info_t* info = get_fmbuf_info(m);
 
     // 检查对方是否是本地Socket
-    if (lookup_iface(info->remote.ip) != NULL)
+    if (unlikely(lookup_iface(info->remote.ip) != NULL))
     {
         fsocket_t* rsocket = lookup_socket_table(socket->proto, &info->remote, &socket->local);
         if (rsocket == NULL)
@@ -94,6 +94,8 @@ void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
     hdr->dgram_cksum = 0;
 
+    m->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
+
     ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
 }
 
@@ -102,7 +104,7 @@ void udp_recv_from_net(struct rte_mbuf* m)
     struct rte_ipv4_hdr* ip_hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
     // 这个socket可能是udp_sock, 也可能是quic_sock
     fsocket_t* socket = lookup_socket_table_by_ipv4(ip_hdr);
-    if (socket == NULL)
+    if (unlikely(socket == NULL))
     {
         FNP_WARN("fail to find udp sock")
         free_mbuf(m);
@@ -126,7 +128,7 @@ void udp_recv_from_net(struct rte_mbuf* m)
     info->local.port = udp_hdr->dst_port;
 
     // 交付给应用层/QUIC处理
-    if (!fnp_socket_enqueue_for_app(socket, m))
+    if (unlikely(fnp_socket_enqueue_for_app(socket, m) == 0))
     {
         // 入队失败,释放mbuf
         free_mbuf(m);

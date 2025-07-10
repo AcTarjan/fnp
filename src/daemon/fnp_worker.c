@@ -34,7 +34,7 @@ void remove_socket_from_worker(fsocket_t* socket)
 {
     if (socket->worker_id == FNP_MAX_WORKER_NUM)
     {
-        // tcp server socket不需要从worker中删除
+        // tcp server socket 和 local udp socket不需要从worker中删除
         return;
     }
 
@@ -49,7 +49,7 @@ int dispatch_socket_to_worker(fsocket_t* socket, int worker_id)
     if (is_tcp_server_socket(socket) || socket->is_local_communication)
     {
         socket->worker_id = FNP_MAX_WORKER_NUM;
-        socket->pool = (get_fnp_worker(0))->pool;
+        socket->pool = (get_fnp_worker(0))->pool; //默认使用worker 0的mbuf pool
         return FNP_OK;
     }
 
@@ -102,7 +102,7 @@ static void send_data_to_net()
 
     while (1)
     {
-        i32 txNum = fnp_pring_dequeue_burst(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
+        u32 txNum = fnp_pring_dequeue_burst(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
         if (txNum > 0)
         {
             i32 num = rte_eth_tx_burst(PORT_ID, worker->queue_id, mbufs, txNum);
@@ -110,6 +110,7 @@ static void send_data_to_net()
             {
                 printf("rte_eth_tx_burst warning! txNum: %d, tx_burst: %d\n", txNum, num);
                 rte_pktmbuf_free_bulk(&mbufs[num], txNum - num);
+                break;
             }
         }
         if (txNum < MBUF_BURST_SIZE) // 说明没有数据了

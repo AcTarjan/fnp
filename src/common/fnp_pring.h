@@ -28,7 +28,7 @@ static inline fnp_pring_t* fnp_pring_clone(fnp_pring_t* r)
 {
     if (r == NULL)
         return NULL;
-    rte_atomic32_add(&r->ref_count, 1);
+    rte_atomic32_inc(&r->ref_count);
     return r;
 }
 

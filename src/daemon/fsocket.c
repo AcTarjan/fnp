@@ -328,8 +328,7 @@ void free_fsocket(fsocket_t* socket)
         FNP_ERR("fail to delete socket from table\n");
     }
 
-    if (!socket->is_local_communication)
-        remove_socket_from_worker(socket);
+    remove_socket_from_worker(socket);
 
     fnp_pring_free(socket->rx);
     fnp_pring_free(socket->tx);
