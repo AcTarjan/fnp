@@ -6,6 +6,8 @@
 #include <rte_ip.h>
 
 #define ICMP_HDR_LEN 8
+#define ICMP_PORT_UNREACH_TYPE 3
+#define ICMP_PORT_UNREACH_CODE 3
 
 static u16 checksum(u16* buf, int nbytes, u32 sum)
 {
@@ -21,11 +23,11 @@ static u16 checksum(u16* buf, int nbytes, u32 sum)
     return (u16)~sum;
 }
 
-static void icmp_echo_reply(struct rte_mbuf* req, u32 dip)
+static void icmp_echo_reply(struct rte_mbuf* orig_mbuf, u32 dip)
 {
-    struct rte_icmp_hdr* req_hdr = rte_pktmbuf_mtod(req, struct rte_icmp_hdr *);
-    u8* req_data = (u8*)rte_pktmbuf_adj(req, ICMP_HDR_LEN);
-    int data_len = rte_pktmbuf_data_len(req);
+    struct rte_icmp_hdr* req_hdr = rte_pktmbuf_mtod(orig_mbuf, struct rte_icmp_hdr *);
+    u8* req_data = (u8*)rte_pktmbuf_adj(orig_mbuf, ICMP_HDR_LEN);
+    int data_len = rte_pktmbuf_data_len(orig_mbuf);
 
     struct rte_mbuf* m = alloc_mbuf();
     if (m == NULL)
@@ -66,4 +68,39 @@ void icmp_recv_mbuf(struct rte_mbuf* m)
     }
 
     free_mbuf(m);
+}
+
+void icmp_send_port_unreachable(struct rte_mbuf* orig_mbuf)
+{
+    struct rte_mbuf* m = alloc_mbuf();
+    if (m == NULL)
+    {
+        printf("alloc icmp port unreachable failed\n");
+        return;
+    }
+
+    // ICMP 头
+    struct rte_icmp_hdr* hdr = (struct rte_icmp_hdr*)rte_pktmbuf_append(m, ICMP_HDR_LEN);
+    hdr->icmp_type = ICMP_PORT_UNREACH_TYPE;
+    hdr->icmp_code = ICMP_PORT_UNREACH_CODE;
+    hdr->icmp_ident = 0; // unused, must be zero
+    hdr->icmp_seq_nb = 0; // unused, must be zero
+    hdr->icmp_cksum = 0;
+
+    // 获取原始 IP 头和数据(至少前 8 字节)
+    struct rte_ipv4_hdr* orig_ipv4_hdr = rte_pktmbuf_mtod(orig_mbuf, struct rte_ipv4_hdr *);
+    int orig_ip_hdr_len = rte_ipv4_hdr_len(orig_ipv4_hdr);
+    int orig_data_len = rte_pktmbuf_data_len(orig_mbuf);
+    // 计算ICMP负载数据长度，需要包含原始 IP 头 + 原始数据的前 8 字节
+    // 如果原始数据长度不足8字节，则包含全部数据
+    int copy_len = orig_data_len > (orig_ip_hdr_len + 8) ? (orig_ip_hdr_len + 8) : orig_data_len;
+
+    u8* payload = (u8*)rte_pktmbuf_append(m, copy_len);
+    rte_memcpy(payload, orig_ipv4_hdr, copy_len);
+
+    // 计算校验和
+    hdr->icmp_cksum = checksum((u16*)hdr, ICMP_HDR_LEN + copy_len, 0);
+
+    u32 dst_ip = orig_ipv4_hdr->src_addr;
+    ipv4_send_mbuf(m, IPPROTO_ICMP, dst_ip);
 }

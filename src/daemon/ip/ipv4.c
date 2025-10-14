@@ -23,6 +23,7 @@ static inline void ipv4_register(int proto, ipv4_recv_handler h)
 // 收到TCP/UDP报文，查找对应的Socket，放入net_rx队列
 static void ipv4_recv_tcp_udp(struct rte_mbuf* m)
 {
+    // 本函数中没有移除ipv4 hdr
     struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
     // 查找匹配的Socket
@@ -31,7 +32,8 @@ static void ipv4_recv_tcp_udp(struct rte_mbuf* m)
     {
         if (hdr->next_proto_id == fnp_protocol_udp)
         {
-            // TODO: 回复ICMP端口不可达
+            // 回复ICMP端口不可达
+            icmp_send_port_unreachable(m);
         }
         else if (hdr->next_proto_id == fnp_protocol_tcp)
         {
