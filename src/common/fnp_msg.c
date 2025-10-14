@@ -1,48 +1,50 @@
 #include "fnp_msg.h"
 
 #include <unistd.h>
-#include <sys/eventfd.h>
 
 #include "hash.h"
 #include "fnp_error.h"
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
+
+#include "fnp_ring.h"
 
 #define MAX_LISTENERS 8
+//
+// // 数组长度为10
+// static fmsg_listener_t** listeners = NULL;
+// // id 对于worker_id
+//
+// #define FMSG_CENTER_TABLE_NAME "fmsg_center"
+//
+// int init_fmsg_center()
+// {
+//     if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+//     {
+//         const struct rte_memzone* mz = rte_memzone_reserve(
+//             FMSG_CENTER_TABLE_NAME, // 唯一标识符，其他进程通过此名称查找
+//             sizeof(fmsg_listener_t*) * MAX_LISTENERS, // 数组大小
+//             SOCKET_ID_ANY, // NUMA节点（任意）
+//             RTE_MEMZONE_IOVA_CONTIG // 确保物理地址连续（可选）
+//         );
+//         if (mz == NULL)
+//             rte_exit(EXIT_FAILURE, "Failed to reserve memzone\n");
+//         listeners = mz->addr;
+//     }
+//     else
+//     {
+//         const struct rte_memzone* mz = rte_memzone_lookup(FMSG_CENTER_TABLE_NAME);
+//         if (mz == NULL)
+//             rte_exit(EXIT_FAILURE, "Shared array not found\n");
+//         listeners = mz->addr;
+//     }
+//
+//     return FNP_OK;
+// }
 
-// 数组长度为10
-static fmsg_listener_t** listeners = NULL;
-// id 对于worker_id
-
-#define FMSG_CENTER_TABLE_NAME "fmsg_center"
-
-int init_fmsg_center()
-{
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-    {
-        const struct rte_memzone* mz = rte_memzone_reserve(
-            FMSG_CENTER_TABLE_NAME, // 唯一标识符，其他进程通过此名称查找
-            sizeof(fmsg_listener_t*) * MAX_LISTENERS, // 数组大小
-            SOCKET_ID_ANY, // NUMA节点（任意）
-            RTE_MEMZONE_IOVA_CONTIG // 确保物理地址连续（可选）
-        );
-        if (mz == NULL)
-            rte_exit(EXIT_FAILURE, "Failed to reserve memzone\n");
-        listeners = mz->addr;
-    }
-    else
-    {
-        const struct rte_memzone* mz = rte_memzone_lookup(FMSG_CENTER_TABLE_NAME);
-        if (mz == NULL)
-            rte_exit(EXIT_FAILURE, "Shared array not found\n");
-        listeners = mz->addr;
-    }
-
-    return FNP_OK;
-}
-
-fnp_msg_t* new_fmsg(i32 src_id, fmsg_type_t type)
+fnp_msg_t* fmsg_new(fmsg_type_t type)
 {
     fnp_msg_t* msg = fnp_malloc(sizeof(fnp_msg_t));
     if (msg == NULL)
@@ -50,50 +52,88 @@ fnp_msg_t* new_fmsg(i32 src_id, fmsg_type_t type)
         return NULL;
     }
 
-    msg->src_id = src_id;
     msg->type = type;
     msg->is_reply = false;
     return msg;
 }
 
-fmsg_listener_t* register_fmsg_listener(i32 id)
+bool fchannel_enqueue(fchannel_t* chan, void* data)
 {
-    fmsg_listener_t* p = fnp_malloc(sizeof(fmsg_listener_t));
+    if (fnp_ring_enqueue(chan->ring, data) == 0)
+    {
+        return;
+    }
 
-    p->id = id;
-    p->epfd = epoll_create1(0);
-    p->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    char ring_name[32];
-    sprintf(ring_name, "fmsg_listener_%d", id);
-    p->ring = rte_ring_create(ring_name, 64,
-                              rte_socket_id(), RING_F_MP_HTS_ENQ | RING_F_SC_DEQ);
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = p->efd;
-    ev.data.ptr = p;
-    epoll_ctl(p->epfd, EPOLL_CTL_ADD, p->efd, &ev);
-
-    listeners[id] = p;
-
-    return p;
+    eventfd_write(chan->event_fd, 1); // 通知工作线程有数据到来
 }
 
-int send_fmsg(int dst_id, fnp_msg_t* msg)
+
+void fchannel_free(fchannel_t* chan)
 {
-    fmsg_listener_t* p = listeners[dst_id];
+    close(chan->event_fd);
+    fnp_ring_free(chan->ring);
+    fnp_free(chan);
+}
 
-    rte_ring_mp_enqueue(p->ring, msg);
+void fchannel_init(fchannel_t* chan, int efd, fnp_ring_t* ring)
+{
+    chan->event_fd = efd;
+    chan->ring = ring;
+}
 
+fchannel_t* fchannel_create(i32 size)
+{
+    fchannel_t* chan = fnp_malloc(sizeof(fchannel_t));
+    if (chan == NULL)
+    {
+        return NULL;
+    }
 
+    chan->event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (chan->event_fd < 0)
+    {
+        fnp_free(chan);
+        return NULL;
+    }
+
+    chan->ring = fnp_ring_create(size, true, false);
+    if (chan->ring == NULL)
+    {
+        close(chan->event_fd);
+        fnp_free(chan);
+        return NULL;
+    }
+
+    return chan;
+}
+
+void fchannel_handle(fchannel_t* chan, fmsg_handler_func handler)
+{
+    eventfd_t value;
+    eventfd_read(chan->event_fd, &value); //清除事件fd计数
+
+    fnp_msg_t* msg = NULL;
+    while (fnp_ring_dequeue(chan->ring, (void**)&msg) != 0)
+    {
+        handler(msg);
+        // fnp_free(msg);
+    }
+}
+
+int fmsg_send(fchannel_t* chan, fnp_msg_t* msg)
+{
+    if (fnp_ring_enqueue(chan->ring, msg) == 0)
+    {
+        return FNP_ERR_RING_FULL;
+    }
+
+    eventfd_write(chan->event_fd, 1); // 通知事件发生
     return FNP_OK;
 }
 
-int send_fmsg_with_reply(int dst_id, fnp_msg_t* msg)
+int fmsg_send_with_reply(fchannel_t* chan, fnp_msg_t* msg)
 {
-    fmsg_listener_t* listener = listeners[dst_id];
-
-    rte_ring_mp_enqueue(listener->ring, msg);
+    fmsg_send(chan, msg);
 
     //TODO: 设置超时
     while (!msg->is_reply);
@@ -107,88 +147,40 @@ int send_fmsg_with_reply(int dst_id, fnp_msg_t* msg)
 }
 
 
-void send_fmsg_reply(fnp_msg_t* msg)
+void fmsg_send_reply(fnp_msg_t* msg)
 {
     msg->is_reply = true;
 }
 
-void fmsg_listener_wait(fmsg_listener_t* listener, fmsg_handler_func handler)
+int fnp_create_timerfd(int timeout, bool periodic)
 {
-    fnp_msg_t* msg = NULL;
-    while (rte_ring_sc_dequeue(listener->ring, (void**)&msg) == 0)
+    int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timerfd == -1)
     {
-        handler(msg);
-    }
-}
-
-
-int fmsg_listener_add_event(fmsg_listener_t* listener, int fd)
-{
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = fd;
-
-    epoll_ctl(listener->epfd, EPOLL_CTL_ADD, fd, &ev);
-
-    return FNP_OK;
-}
-
-
-void fmsg_listener_del_event(fmsg_listener_t* listener, int fd)
-{
-    epoll_ctl(listener->epfd, EPOLL_CTL_DEL, fd, NULL);
-    close(fd);
-}
-
-
-static int wait_event(int efd, u64* counter, int timeout)
-{
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(efd, &readfds); // 将 eventfd 加入监听集合
-
-    struct timeval val;
-    val.tv_sec = timeout / 1000000;
-    val.tv_usec = timeout % 1000000;
-
-    int ret = select(efd + 1, &readfds, NULL, NULL, &val);
-    if (ret > 0)
-    {
-        if (FD_ISSET(efd, &readfds))
-        {
-            eventfd_read(efd, (eventfd_t*)counter); // 读取计数器值并重置为0
-        }
+        perror("timerfd_create");
+        return -1;
     }
 
-    return ret;
-}
+    struct itimerspec new_value = {0};
+    struct itimerspec old_value; // 可选，用于获取旧的定时器设置
 
-/*
-int fmsg_listener_wait(fmsg_listener_t* listener, int timeout, fmsg_handler_func handler)
-{
-#define MAX_EVENTS 4
-    struct epoll_event evs[MAX_EVENTS];
-    int n = epoll_wait(listener->epfd, evs, MAX_EVENTS, timeout);
-    for (int i = 0; i < n; i++)
+    // 设置首次超时时间 (例如：5秒后)
+    new_value.it_value.tv_sec = timeout;
+    new_value.it_value.tv_nsec = 0;
+
+    // 设置周期性超时时间 (例如：之后每1秒超时一次)
+    // 如果设置为0，则为一次性定时器
+    if (periodic)
     {
-        printf("recv event %d\n");
-        struct epoll_event* ev = &evs[i];
-        uint64_t u;
-        eventfd_read(ev->data.fd, &u); //清除事件通知
-
-        if (ev->data.fd == listener->efd)
-        {
-            fmsg_t* msg = NULL;
-            while (rte_ring_sc_dequeue(listener->ring, (void**)&msg) == 0)
-            {
-                handler(msg);
-                fnp_free(msg);
-            }
-        }
+        new_value.it_interval.tv_sec = timeout;
+        new_value.it_interval.tv_nsec = 0;
     }
 
-    return n;
+    if (timerfd_settime(timerfd, 0, &new_value, &old_value) == -1)
+    {
+        perror("timerfd_settime");
+        // 错误处理
+    }
+
+    return timerfd;
 }
-*/
-
-

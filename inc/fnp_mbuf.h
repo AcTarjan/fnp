@@ -1,15 +1,12 @@
 #ifndef FNP_MBUF_H
 #define FNP_MBUF_H
 
-#include "fnp_socket.h"
-#include "fnp_mbuf.h"
+#include <rte_mbuf.h>
 
 typedef struct rte_mbuf fnp_mbuf_t;
 
-static inline fnp_mbuf_t* fnp_alloc_mbuf(const fsocket_t* socket)
-{
-    return rte_pktmbuf_alloc(socket->pool);
-}
+fnp_mbuf_t* fnp_alloc_mbuf();
+
 
 static inline void fnp_free_mbuf(fnp_mbuf_t* m)
 {

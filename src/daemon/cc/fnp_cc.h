@@ -2,15 +2,8 @@
 #define FNP_CC_H
 
 #include "fnp_common.h"
+#include "fnp_config.h"
 #include "cubic.h"
-
-
-typedef enum congestion_algorithm_id
-{
-    congestion_algo_cubic = 0,
-    congestion_algo_new_reno,
-    congestion_algo_fast,
-} congestion_algorithm_id_t;
 
 typedef enum
 {

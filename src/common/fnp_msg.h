@@ -1,7 +1,13 @@
 #ifndef FNP_MSG_H
 #define FNP_MSG_H
 
+#include <rte_epoll.h>
+#include <unistd.h>
+
 #include "fnp_sockaddr.h"
+#include "fnp_ring.h"
+
+#include <sys/epoll.h>
 
 typedef enum fnp_msg_role
 {
@@ -14,20 +20,12 @@ typedef enum fnp_msg_role
 typedef enum fnp_msg_type
 {
     fmsg_type_unknown = 0,
-    fmsg_type_register_frontend, //注册前端, frontend -> master
-    fmsg_type_create_socket, //创建socket, frontend -> master
-    fmsg_type_add_socket, //向worker中添加socket, master -> worker
+    fmsg_type_connect_fsocket, // master -> worker, 建立tcp连接
+    fmsg_type_close_fsocket, // master -> worker, 关闭tcp连接
+    fmsg_type_free_socket, //worker -> master, 释放socket
     fmsg_type_create_cnx, //创建quic cnx, frontend -> worker
     fmsg_type_create_stream, //创建quic stream, frontend -> worker
 } fmsg_type_t;
-
-typedef struct create_socket_param
-{
-    fnp_protocol_t proto;
-    fsockaddr_t local;
-    fsockaddr_t remote;
-    void* conf;
-} create_socket_param_t;
 
 typedef struct create_quic_cnx_param
 {
@@ -43,15 +41,19 @@ typedef struct create_stream_param
 } create_stream_param_t;
 
 
-typedef struct fmsg_listener
+typedef struct fnp_channel
 {
-    int id;
-    int epfd; // epoll fd
-    int efd; // event fd
-    struct rte_ring* ring; //多进程写,单进程写
-} fmsg_listener_t;
+    fnp_ring_t* ring; //多进程写,单进程读
+    int event_fd; // event fd
+} fchannel_t;
 
-#define fnp_master_id 8
+void fchannel_init(fchannel_t* chan, int efd, fnp_ring_t* ring);
+
+fchannel_t* fchannel_create(i32 size);
+
+bool fchannel_enqueue(fchannel_t* chan, void* data);
+
+void fchannel_free(fchannel_t* chan);
 
 typedef struct fnp_msg
 {
@@ -63,20 +65,42 @@ typedef struct fnp_msg
     u8 data[128];
 } fnp_msg_t;
 
+// fnp epoll
+static inline int fnp_epoll_create()
+{
+    return epoll_create1(0);
+};
+
+static inline int fnp_epoll_add(int epfd, int fd)
+{
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = fd;
+
+    return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+static inline void fnp_epoll_del(int epfd, int op, int fd)
+{
+    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+}
+
+static inline void fnp_epoll_close(int epfd)
+{
+    close(epfd);
+}
+
 typedef void (*fmsg_handler_func)(fnp_msg_t*);
+void fchannel_handle(fchannel_t* chan, fmsg_handler_func handler);
 
-int init_fmsg_center();
+fnp_msg_t* fmsg_new(fmsg_type_t type);
 
-fnp_msg_t* new_fmsg(i32 src_id, fmsg_type_t type);
+int fmsg_send(fchannel_t* chan, fnp_msg_t* msg);
 
-fmsg_listener_t* register_fmsg_listener(i32 id);
+int fmsg_send_with_reply(fchannel_t* chan, fnp_msg_t* msg);
 
-int send_fmsg(int dst_id, fnp_msg_t* msg);
+void fmsg_send_reply(fnp_msg_t* msg);
 
-int send_fmsg_with_reply(int dst_id, fnp_msg_t* msg);
-
-void send_fmsg_reply(fnp_msg_t* msg);
-
-void fmsg_listener_wait(fmsg_listener_t* listener, fmsg_handler_func handler);
+int fnp_create_timerfd(int timeout, bool periodic);
 
 #endif //FNP_MSG_H

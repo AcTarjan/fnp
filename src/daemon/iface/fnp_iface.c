@@ -70,7 +70,7 @@ fnp_iface_t* find_iface_for_outlet(u32 rip)
     for (i32 i = 0; i < fnp_iface_count; ++i)
     {
         fnp_iface_t* iface = &ifaces[i];
-        if (iface->ip & iface->mask == rip & iface->mask)
+        if ((iface->ip & iface->mask) == (rip & iface->mask))
         {
             return &ifaces[i];
         }
@@ -98,9 +98,9 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
         iface->id = fnp_iface_count++;
         iface->port = port;
         iface->name = fnp_string_duplicate(network->name);
-        iface->ip = ipv4_ston(network->ip);
-        iface->mask = ipv4_ston(network->ip_mask);
-        iface->gateway = ipv4_ston(network->gateway);
+        iface->ip = fnp_ipv4_ston(network->ip);
+        iface->mask = fnp_ipv4_ston(network->ip_mask);
+        iface->gateway = fnp_ipv4_ston(network->gateway);
     }
 
     rte_eth_macaddr_get(port, &ports_mac[port]); //填充mac地址
@@ -148,6 +148,18 @@ static i32 init_fnp_iface(int port, port_config* conf, int nb_queues)
 
     // 设置网卡设备的txmode
     port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) == 0)
+    {
+        printf("Unsupported RTE_ETH_TX_OFFLOAD_IPV4_CKSUM\n");
+    }
+    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) == 0)
+    {
+        printf("Unsupported RTE_ETH_TX_OFFLOAD_UDP_CKSUM\n");
+    }
+    if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM) == 0)
+    {
+        printf("Unsupported RTE_ETH_TX_OFFLOAD_TCP_CKSUM\n");
+    }
 
     /* Set RSS mode */
     if (0)

@@ -34,12 +34,11 @@ set(FNP_CC_ALGO_FILES
 
 set(FNP_TCP_FILES_DIR "src/daemon/tcp")
 set(FNP_TCP_FILES
-        ${FNP_TCP_FILES_DIR}/tcp_timer.c
         ${FNP_TCP_FILES_DIR}/tcp_sock.c
         ${FNP_TCP_FILES_DIR}/tcp_in.c
         ${FNP_TCP_FILES_DIR}/tcp_out.c
         ${FNP_TCP_FILES_DIR}/tcp_ofo.c
-        ${FNP_TCP_FILES_DIR}/tcp.c
+        ${FNP_TCP_FILES_DIR}/tcp_timer.c
 )
 
 set(FNP_QUIC_FILES_DIR "src/daemon/picoquic")
@@ -73,31 +72,12 @@ set(FNP_QUIC_FILES
         ${FNP_QUIC_FILES_DIR}/quic.c
 )
 
-#
-include_directories(src/common)
-include_directories(src/fnp)
-include_directories(src/daemon)
-include_directories(src/daemon/cc)
-include_directories(src/daemon/iface)
-include_directories(${FNP_TCP_FILES_DIR})
-include_directories(${FNP_QUIC_FILES_DIR})
-include_directories(src/daemon/udp)
-include_directories(src/daemon/ip)
-include_directories(src/daemon/icmp)
-include_directories(src/daemon/ether)
-include_directories(src/daemon/arp)
-include_directories(src/daemon/common)
-
-
-# fnp-daemon是一个守护进程，提供一个高性能的网络协议栈，
-# 通过fnp-api库提供的接口，供用户程序调用
+# fnp-daemon是一个守护进程，提供一个高性能的网络协议栈
 add_executable(fnp-daemon
         src/common/fnp_splay.c
-        src/common/fnp_common.c
-        src/common/fnp_pring.c
         src/common/fnp_list.c
+        src/common/fnp_ring.c
         src/daemon/common/rbtree.c
-        src/daemon/common/fnp_ring.c
         src/daemon/common/hash.c
         ${FNP_CC_ALGO_FILES}
         ${FNP_QUIC_FILES}
@@ -116,7 +96,22 @@ add_executable(fnp-daemon
         src/daemon/fnp_context.c
         src/daemon/fnp_master.c
         src/daemon/main.c
+        src/daemon/fapi.c
 )
+
+target_include_directories(fnp-daemon PRIVATE inc)
+target_include_directories(fnp-daemon PRIVATE src/common)
+target_include_directories(fnp-daemon PRIVATE src/daemon)
+target_include_directories(fnp-daemon PRIVATE src/daemon/common)
+target_include_directories(fnp-daemon PRIVATE src/daemon/cc)
+target_include_directories(fnp-daemon PRIVATE src/daemon/iface)
+target_include_directories(fnp-daemon PRIVATE ${FNP_TCP_FILES_DIR})
+target_include_directories(fnp-daemon PRIVATE ${FNP_QUIC_FILES_DIR})
+target_include_directories(fnp-daemon PRIVATE src/daemon/udp)
+target_include_directories(fnp-daemon PRIVATE src/daemon/ip)
+target_include_directories(fnp-daemon PRIVATE src/daemon/icmp)
+target_include_directories(fnp-daemon PRIVATE src/daemon/ether)
+target_include_directories(fnp-daemon PRIVATE src/daemon/arp)
 #target_compile_definitions(fnp-daemon PRIVATE USE_DPDK)
 
 target_link_libraries(fnp-daemon
@@ -130,87 +125,32 @@ target_link_libraries(fnp-daemon
 
 # fnp的接口库，通过此接口库可以调用fnp的功能
 add_library(fnp-api SHARED
-        src/common/fnp_pring.c
+        src/common/fnp_ring.c
         src/common/fnp_list.c
-        src/common/fnp_msg.c
-        src/common/fnp_common.c
-        src/fnp/fnp_frontend.c
-        src/fnp/fnp_quic.c
-        src/fnp/fnp.c
+        src/api/fnp_frontend.c
+        #        src/api/fnp_quic.c
+        src/api/fsocket.c
 )
+target_include_directories(fnp-api PRIVATE src/common)
+target_include_directories(fnp-api PRIVATE src/api)
+target_include_directories(fnp-api PRIVATE inc)
 
-add_executable(fnp_quic_server
-        src/demo/fnp_quic_server.c)
-
-target_link_libraries(fnp_quic_server
-        fnp-api pthread m dl numa pcap
-        ${DPDK_LIBRARIES}
+add_executable(fnp_udp_client
+        ./test/fnp/fnp_udp_client.c
 )
-
-
-add_executable(fnp_quic_client
-        src/demo/fnp_quic_client.c)
-
-target_link_libraries(fnp_quic_client
+target_include_directories(fnp_udp_client PRIVATE inc)
+target_link_libraries(fnp_udp_client
         fnp-api
         -pthread -lm -ldl -lnuma -lpcap
         ${DPDK_LIBRARIES}
 )
 
-add_executable(local_client
-        test/local/client.c)
-target_link_libraries(local_client
+add_executable(fnp_udp_server
+        ./test/fnp/fnp_udp_server.c
+)
+target_include_directories(fnp_udp_server PRIVATE inc)
+target_link_libraries(fnp_udp_server
         fnp-api
-        -pthread -lm -ldl -lnuma -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-add_executable(local_server
-        test/local/server.c)
-target_link_libraries(local_server
-        fnp-api
-        -pthread -lm -ldl -lnuma -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-
-add_executable(remote_udp_client
-        test/remote_udp/client.c)
-target_link_libraries(local_client
-        fnp-api
-        -pthread -lm -ldl -lnuma -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-add_executable(remote_udp_server
-        test/remote_udp/server.c)
-target_link_libraries(local_server
-        fnp-api
-        -pthread -lm -ldl -lnuma -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-add_executable(fnp_ring
-        test/fnp_ring/fnp_ring.c)
-target_link_libraries(fnp_ring
-        -pthread -lm -ldl -lnuma -latomic -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-
-add_executable(linux_udp_server
-        test/linux/udp_server.c
-        src/common/fnp_common.c)
-target_link_libraries(linux_udp_server
-        -pthread -lm -ldl -lnuma -lpcap
-        ${DPDK_LIBRARIES}
-)
-
-
-add_executable(linux_udp_client
-        test/linux/udp_client.c
-        src/common/fnp_common.c)
-target_link_libraries(linux_udp_client
         -pthread -lm -ldl -lnuma -lpcap
         ${DPDK_LIBRARIES}
 )

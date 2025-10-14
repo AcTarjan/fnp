@@ -1101,7 +1101,7 @@ bool quic_stream_check_incoming_data(quic_stream_t* stream, quic_stream_data_t* 
             stream_data->enqueue_app = 1; // 标记入队
 
             // 入队失败
-            if (!fnp_pring_enqueue(stream->socket.rx, stream_data))
+            if (!fnp_ring_enqueue(stream->socket.rx, stream_data))
             {
                 printf("fail to enqueue stream data, stream_id=%" PRIu64 ", offset=%" PRIu64 ", length=%d\n",
                        stream->stream_id, stream_data->offset, stream_data->length);

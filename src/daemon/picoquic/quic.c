@@ -11,7 +11,7 @@ static void quic_stream_handle_socket(quic_stream_t* stream)
 {
     quic_stream_data_t* data;
     quic_cnx_t* cnx = stream->cnx;
-    while (fnp_pring_dequeue(stream->socket.tx, (void**)&data))
+    while (fnp_ring_dequeue(stream->socket.tx, (void**)&data))
     {
         data->offset = stream->sent_offset;
         stream->sent_offset += data->length;
@@ -61,15 +61,15 @@ void quic_context_handle_socket(quic_context_t* quic)
 extern void quic_recv_incoming_udp_mbuf(quic_context_t* quic);
 extern void quic_send_udp_mbuf(quic_context_t* quic);
 
-static void quic_context_handler(quic_context_t* quic)
+void quic_handle_context_event(fsocket_t* socket, u64 event)
 {
-    fsocket_t* socket = fsocket(quic);
-    if (socket->request_close)
+    if (socket->close_requested)
     {
         free_fsocket(socket);
         return;
     }
 
+    quic_context_t* quic = (quic_context_t*)socket;
     //处理应用层的数据
     quic_context_handle_socket(quic);
 
@@ -87,7 +87,9 @@ quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
         return NULL;
 
     fsocket_t* socket = fsocket(quic);
-    socket->handler = quic_context_handler;
+    // 添加到quic列表
+    fnp_worker_t* worker = get_local_worker();
+    fnp_list_insert_head(&worker->quic_list, &quic->quic_list_node, quic);
 
     uint64_t current_time = picoquic_current_time();
 

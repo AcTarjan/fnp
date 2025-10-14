@@ -1,17 +1,16 @@
 #include "fnp_context.h"
-
 #include "fnp_error.h"
+#include "../common/fnp_socket.h"
+#include "fnp_master.h"
+#include "fnp_worker.h"
 
-#include "fnp_msg.h"
 #include "arp.h"
 #include "ipv4.h"
 #include "tcp.h"
 #include "quic.h"
-#include "fnp_socket.h"
 
 #include <rte_pdump.h>
 
-#include "fnp_worker.h"
 
 fnp_context_t fnp;
 
@@ -38,8 +37,6 @@ i32 init_dpdk(dpdk_config* conf)
     return FNP_OK;
 }
 
-extern int init_fnp_master();
-
 i32 init_fnp_daemon(char* path)
 {
     fnp_config* conf = &fnp.conf;
@@ -52,8 +49,6 @@ i32 init_fnp_daemon(char* path)
 
     ret = init_dpdk(&conf->dpdk);
     CHECK_RET(ret);
-
-    init_fmsg_center();
 
     /* 初始化fnp_worker, 在这里调用主要是为了初始化mbufpool */
     ret = init_fnp_worker(&conf->worker);

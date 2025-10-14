@@ -2,18 +2,20 @@
 #include "fnp_msg.h"
 #include "ether.h"
 #include "fnp_context.h"
-#include "fnp_socket.h"
-#include "fnp_pring.h"
+#include "fnp_ring.h"
 
 #include "tcp_sock.h"
 #include <rte_ethdev.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 #include <rte_per_lcore.h>
 #include <unistd.h>
 
+#include "udp.h"
 #include "arp.h"
 #include "quic.h"
+#include "tcp.h"
 
 // 每个lcore线程会拥有一个id实例
 RTE_DEFINE_PER_LCORE(int, worker_id);
@@ -25,65 +27,10 @@ RTE_DEFINE_PER_LCORE(int, worker_id);
 int fnp_worker_count = 0; // worker的数量
 fnp_worker_t workers[FNP_MAX_WORKER_NUM];
 
-static void worker_add_socket(fnp_worker_t* worker, fsocket_t* socket)
-{
-    fnp_list_insert(&worker->socket_list, &socket->worker_node, socket);
-}
+// 目前最大的协议值 + 1
+static fsocket_event_handler_func fsocket_handlers[fnp_protocol_udp + 1];
 
-void remove_socket_from_worker(fsocket_t* socket)
-{
-    if (socket->worker_id == FNP_MAX_WORKER_NUM)
-    {
-        // tcp server socket 和 local udp socket不需要从worker中删除
-        return;
-    }
-
-    fnp_worker_t* worker = get_fnp_worker(socket->worker_id);
-
-    fnp_list_delete(&worker->socket_list, &socket->worker_node);
-}
-
-int dispatch_socket_to_worker(fsocket_t* socket, int worker_id)
-{
-    // tcp server socket和本地通信socket不需要分配到worker
-    if (is_tcp_server_socket(socket) || socket->is_local_communication)
-    {
-        socket->worker_id = FNP_MAX_WORKER_NUM;
-        socket->pool = (get_fnp_worker(0))->pool; //默认使用worker 0的mbuf pool
-        return FNP_OK;
-    }
-
-    fnp_worker_t* worker = NULL;
-    // master创建的socket
-    if (worker_id < 0)
-    {
-        // TODO: 负载均衡
-        worker_id = 0;
-        worker = get_fnp_worker(worker_id);
-
-        fnp_msg_t* msg = new_fmsg(fnp_master_id, fmsg_type_add_socket);
-        if (msg == NULL)
-        {
-            return FNP_ERR_MALLOC;
-        }
-
-        msg->ptr = socket;
-        send_fmsg(worker_id, msg);
-    }
-    else
-    {
-        worker = get_fnp_worker(worker_id);
-        worker_add_socket(worker, socket);
-    }
-
-
-    socket->worker_id = worker_id;
-    socket->pool = worker->pool;
-
-    return FNP_OK;
-}
-
-static void recv_data_from_net()
+static void recv_data_from_nic()
 {
     fnp_worker_t* worker = get_local_worker();
     struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
@@ -102,7 +49,7 @@ static void send_data_to_net()
 
     while (1)
     {
-        u32 txNum = fnp_pring_dequeue_burst(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
+        u32 txNum = fnp_ring_dequeue_burst(worker->tx_ring, mbufs, MBUF_BURST_SIZE);
         if (txNum > 0)
         {
             i32 num = rte_eth_tx_burst(PORT_ID, worker->queue_id, mbufs, txNum);
@@ -118,80 +65,45 @@ static void send_data_to_net()
     }
 }
 
-
-static void handle_create_stream_fmsg(fnp_msg_t* msg)
+static inline void fnp_epoll_wait_fsocket(int epoll_fd)
 {
-    create_stream_param_t* param = msg->data;
-    quic_stream_t* stream = quic_create_local_stream(param->cnx, param->is_unidir, param->priority);
-    if (stream == NULL)
-    {
-        msg->code = FNP_ERR_CREATE_SOCKET;
-    }
-    else
-    {
-        msg->code = FNP_OK;
-        msg->ptr = stream;
-    }
+#define MAX_EVENTS 32
+    static struct epoll_event evs[MAX_EVENTS];
 
-    send_fmsg_reply(msg);
+    // 不能阻塞，因为需要轮询网卡
+    int n = epoll_wait(epoll_fd, evs, MAX_EVENTS, 0);
+    for (int i = 0; i < n; i++)
+    {
+        eventfd_t value;
+        struct epoll_event* ev = &evs[i];
+        fsocket_t* socket = (fsocket_t*)ev->data.ptr;
+        int fd = socket->tx_efd_in_backend;
+        // eventfd_read(fd, &value);   //即使不清零，每次eventfd_wirite也会触发
+        fsocket_handlers[socket->proto](socket, value);
+    }
 }
 
-static void handle_create_cnx_fmsg(fnp_msg_t* msg)
+static inline void handle_worker_fmsg(fnp_worker_t* worker)
 {
-    create_quic_cnx_param_t* param = msg->data;
-    quic_cnx_t* cnx = quic_create_client_cnx(param->quic, &param->remote);
-    if (cnx == NULL)
+    fnp_msg_t* msg;
+    // 遍历来自master的消息，少量
+    while (fnp_ring_dequeue(worker->fmsg_ring, (void**)&msg) != 0)
     {
-        msg->code = FNP_ERR_CREATE_SOCKET;
-    }
-    else
-    {
-        msg->code = FNP_OK;
-        msg->ptr = cnx;
-    }
-
-    send_fmsg_reply(msg);
-}
-
-static void handle_worker_fmsg(fnp_msg_t* msg)
-{
-    fnp_worker_t* worker = get_local_worker();
-    switch (msg->type)
-    {
-    case fmsg_type_add_socket:
+        if (msg->type == fmsg_type_connect_fsocket)
         {
-            worker_add_socket(worker, (fsocket_t*)msg->ptr);
-            fnp_free(msg);
-            break;
+            // tcp_connect(msg->ptr);
         }
-    case fmsg_type_create_cnx:
+        else if (msg->type == fmsg_type_close_fsocket)
         {
-            handle_create_cnx_fmsg(msg);
-            break;
+            // tcp_close(msg->ptr);
         }
-    case fmsg_type_create_stream:
-        {
-            handle_create_stream_fmsg(msg);
-            break;
-        }
+
+        fnp_free(msg);
     }
 }
 
-static void worker_handle_local_socket()
-{
-    fnp_worker_t* worker = get_local_worker();
-
-    fnp_list_node_t* node = fnp_list_first(&worker->socket_list);
-    while (node != NULL)
-    {
-        fsocket_t* socket = node->value;
-        // 可能会删除当前socket, 提前保存下一个socket
-        fnp_list_node_t* next_node = fnp_list_get_next(node);
-        socket->handler(socket);
-        node = next_node;
-    }
-}
-
+// 尽量避免遍历，选择epoll来处理事件通知
+// 尽量不要将mbuf保存在ofo队列或者pending队列内部，避免mbuf池耗尽
 int fnp_worker_loop(void* arg)
 {
     int id = *(int*)arg;
@@ -203,31 +115,29 @@ int fnp_worker_loop(void* arg)
     printf("fnp_worker %d is running: lcore %d in socket %d\n", fnp_worker_id, lcore_id, socket_id);
     u64 cur_tsc, prev_tsc = 0;
     u64 hz = fnp_get_tsc_hz(); // 10ms
-
+    u64 timer_timeout = hz / 1000; // 1ms
     while (1)
     {
         cur_tsc = fnp_get_tsc();
 
         // 收到网卡的数据，会改变TCP的状态
-        recv_data_from_net();
+        recv_data_from_nic();
 
-        arp_handle_local_pending();
-
-        // 每1ms检查定时器状态
-        if (cur_tsc - prev_tsc > hz / 1000)
+        //  每1ms检查定时器状态
+        if (unlikely(cur_tsc - prev_tsc > timer_timeout))
         {
             rte_timer_manage(); // 检查定时器，触发重传
             prev_tsc = cur_tsc;
         }
 
-        // 处理收到的fmsg消息
-        fmsg_listener_wait(worker->listener, handle_worker_fmsg);
-
-        // 放在重传定时器后面，snd_nxt变小后，在该函数下执行重传动作。
-        worker_handle_local_socket();
+        // 处理fsocket的应用层/网络层数据
+        fnp_epoll_wait_fsocket(worker->epoll_fd);
 
         // 从网卡向网络发送数据
         send_data_to_net();
+
+        // 处理来自master的消息
+        handle_worker_fmsg(worker);
     }
 }
 
@@ -244,7 +154,7 @@ int init_fnp_worker(worker_config* conf)
         i32 socket_id = (i32)rte_lcore_to_socket_id(worker->lcore_id);
 
         // 初始化socket表
-        fnp_init_list(&worker->socket_list, NULL);
+        fnp_init_list(&worker->quic_list, NULL);
 
         //初始化arp pending table
         char arp_name[32] = {0};
@@ -255,19 +165,23 @@ int init_fnp_worker(worker_config* conf)
             return FNP_ERR_CREATE_HASH_TABLE;
         }
 
+        worker->epoll_fd = fnp_epoll_create();
+        if (worker->epoll_fd < 0)
+        {
+            printf("create epoll fd failed!\n");
+            return FNP_ERR_CREATE_EPOLL;
+        }
 
-        worker->listener = register_fmsg_listener(id);
-        if (worker->listener == NULL)
+        worker->fmsg_ring = fnp_ring_create(64, true, false);
+        if (worker->fmsg_ring == NULL)
         {
             return FNP_ERR_GENERIC;
         }
 
         char pool_name[32] = {0};
         sprintf(pool_name, "worker%d_mbuf_pool", id);
-
-#define MBUFPOOL_PRIV_SIZE 256
         worker->pool = rte_pktmbuf_pool_create(pool_name, conf->mbuf_pool_size, 0,
-                                               MBUFPOOL_PRIV_SIZE, RTE_MBUF_DEFAULT_BUF_SIZE, socket_id);
+                                               FNP_MBUFPOOL_PRIV_SIZE, RTE_MBUF_DEFAULT_BUF_SIZE, socket_id);
         if (worker->pool == NULL)
         {
             printf("%d create gDirectPool failed!\n", id);
@@ -277,7 +191,7 @@ int init_fnp_worker(worker_config* conf)
         char rx_pool_name[32] = {0};
         sprintf(rx_pool_name, "worker%d_rx_pool", id);
         worker->rx_pool = rte_pktmbuf_pool_create(rx_pool_name, conf->rx_pool_size, 0,
-                                                  0, RTE_MBUF_DEFAULT_BUF_SIZE, socket_id);
+                                                  FNP_MBUFPOOL_PRIV_SIZE, RTE_MBUF_DEFAULT_BUF_SIZE, socket_id);
         if (worker->rx_pool == NULL)
         {
             printf("create rx pool failed!\n");
@@ -287,18 +201,18 @@ int init_fnp_worker(worker_config* conf)
         char clone_pool_name[32] = {0};
         sprintf(clone_pool_name, "worker%d_clone_pool", id);
         worker->clone_pool = rte_pktmbuf_pool_create(clone_pool_name, conf->clone_pool_size, 0,
-                                                     MBUFPOOL_PRIV_SIZE, 0, socket_id);
+                                                     FNP_MBUFPOOL_PRIV_SIZE, 0, socket_id);
         if (worker->clone_pool == NULL)
         {
             printf("create clone pool failed!\n");
             return FNP_ERR_CREATE_MBUFPOOL;
         }
 
-        worker->tx_ring = fnp_pring_create(conf->tx_ring_size, false, false);
+        worker->tx_ring = fnp_ring_create(conf->tx_ring_size, false, false);
         if (worker->tx_ring == NULL)
         {
             printf("create tx_queue error!\n");
-            return -1;
+            return FNP_ERR_CREATE_RING;
         }
     }
 
@@ -308,6 +222,8 @@ int init_fnp_worker(worker_config* conf)
 
 int start_fnp_worker()
 {
+    fsocket_handlers[fnp_protocol_tcp] = tcp_handle_fsocket_event;
+    fsocket_handlers[fnp_protocol_udp] = udp_handle_fsocket_event;
     for (int id = 0; id < fnp_worker_count; id++)
     {
         fnp_worker_t* worker = get_fnp_worker(id);

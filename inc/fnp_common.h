@@ -28,11 +28,38 @@ typedef long long int i64;
 #define fnp_swap32(x) rte_cpu_to_be_32((x))
 #define fnp_swap16(x) rte_cpu_to_be_16((x))
 
-char* fnp_string_duplicate(const char* original);
+#define FNP_MBUFPOOL_PRIV_SIZE 256
 
-void fnp_string_free(char* str);
+#define FNP_MAX_WORKER_NUM 4
 
-static inline uint32_t ipv4_ston(const char* ip)
+static inline char* fnp_string_duplicate(const char* original)
+{
+    if (original == NULL)
+    {
+        return NULL;
+    }
+    size_t len = strlen(original);
+
+    int allocated = len + 1;
+    char* str = (char*)fnp_malloc(allocated);
+    if (str != NULL)
+    {
+        fnp_memcpy(str, original, len);
+        str[allocated - 1] = 0;
+    }
+
+    return str;
+}
+
+static inline void fnp_string_free(char* str)
+{
+    if (str != NULL)
+    {
+        fnp_free(str);
+    }
+}
+
+static inline u32 fnp_ipv4_ston(const char* ip)
 {
     if (ip == NULL)
         return 0;
@@ -42,7 +69,7 @@ static inline uint32_t ipv4_ston(const char* ip)
     return addr.s_addr;
 }
 
-static inline char* ipv4_ntos(uint32_t ip)
+static inline char* fnp_ipv4_ntos(uint32_t ip)
 {
     struct in_addr addr;
     addr.s_addr = ip;
@@ -70,11 +97,6 @@ static inline char* ipv4_ntos(uint32_t ip)
         typeof(b) _b = (b); \
         _a > _b ? _a : _b;  \
     })
-
-// #define likely(a) __glibc_likely((a))
-
-#define FNP_MBUF_MEMPOOL_NAME "fnp_mbuf_pool"
-
 
 // 获取CPU时钟周期数
 static inline u64 fnp_get_tsc()
@@ -118,7 +140,7 @@ static inline int fnp_launch_on_lcore(fnp_lcore_function_t* f, void* arg, int lc
     return rte_eal_remote_launch(f, arg, lcore_id);
 }
 
-
+// 测试速率
 typedef struct fnp_rate_measure
 {
     FILE* file; // 文件指针，用于记录速率测量结果
@@ -129,10 +151,48 @@ typedef struct fnp_rate_measure
     u64 last_tsc; // 最后一个数据包的时间戳
 } fnp_rate_measure_t;
 
-fnp_rate_measure_t* fnp_register_measure();
+static inline void fnp_compute_rate(fnp_rate_measure_t* meas)
+{
+    if (meas->packet_count == 0)
+    {
+        printf("No packets received yet.\n");
+        return;
+    }
 
-void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len);
+    u64 hz = fnp_get_tsc_hz();
+    double delay = (double)(meas->last_tsc - meas->first_tsc) / (double)hz;
+    double pps = (double)meas->packet_count / delay / 10000.0;
+    double Bps = (double)meas->byte_count / delay / 1000000000.0;
+    // printf(
+    //     "packet count is %llu, byte count is %llu, first tsc is %llu, last tsc is %llu, hz is %llu, delay is %.2lf\n",
+    //     meas->packet_count, meas->byte_count, meas->first_tsc, meas->last_tsc, hz, delay);
+    printf("pps is %.4lfWpps, Bps is %.4lfGBps, bps is %.4lfGbps\n", pps, Bps, Bps * 8);
+    if (meas->file != NULL)
+    {
+        fprintf(meas->file, "%.4lf %.4lf", pps, Bps);
+    }
+}
 
-void fnp_compute_rate(fnp_rate_measure_t* meas);
+
+static inline void fnp_update_rate_measure(fnp_rate_measure_t* meas, i32 data_len)
+{
+    u64 tsc = fnp_get_tsc();
+    if (unlikely(meas->packet_count == 0))
+    {
+        meas->first_tsc = tsc;
+    }
+
+    meas->last_tsc = tsc;
+    meas->packet_count++;
+    meas->byte_count += data_len;
+
+    if (meas->packet_count == meas->interval_count)
+    {
+        fnp_compute_rate(meas);
+        meas->packet_count = 0;
+        meas->byte_count = 0;
+    }
+}
+
 
 #endif // FNP_COMMON_H

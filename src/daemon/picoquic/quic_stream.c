@@ -371,14 +371,14 @@ static int quic_init_stream_socket(fnp_quic_stream_t* socket, u64 stream_id, boo
     socket->is_local = IS_LOCAL_STREAM_ID(stream_id, client_mode);
     socket->priority = priority;
     socket->is_unidirectional = !IS_BIDIR_STREAM_ID(stream_id);
-    socket->tx = fnp_pring_create(64, false, false);
+    socket->tx = fnp_ring_create(64, false, false);
     if (socket->tx == NULL)
     {
         return FNP_ERR_CREATE_RING;
     }
 
 
-    socket->rx = fnp_pring_create(64, false, false);
+    socket->rx = fnp_ring_create(64, false, false);
     if (socket->rx == NULL)
     {
         return FNP_ERR_CREATE_RING;
@@ -528,7 +528,7 @@ quic_stream_t* quic_create_remote_stream(quic_cnx_t* cnx, uint64_t stream_id)
 
     // 接收到对端的一个新的stream
     fsocket_t* socket = &cnx->socket;
-    if (!fnp_pring_enqueue(socket->pending_streams, stream))
+    if (!fnp_ring_enqueue(socket->pending_streams, stream))
     {
         printf("fail to enqueue stream %lld to pending streams\n", stream_id);
         return NULL;

@@ -1,8 +1,7 @@
-#include "fnp.h"
+#include "../../inc/fnp.h"
 #include "fnp_internal.h"
-#include "fnp_common.h"
+#include "fnp_config.h"
 #include "fnp_msg.h"
-#include "quic.h"
 
 fnp_quic_config_t* fnp_get_quic_config()
 {
@@ -19,46 +18,65 @@ fnp_quic_config_t* fnp_get_quic_config()
 }
 
 // 创建QUIC连接上下文
-fnp_quic_cnx_t fnp_quic_create_cnx(fsocket_t* quic, fsockaddr_t* remote)
+fsocket_t* fnp_quic_create_cnx(fsocket_t* quic, fsockaddr_t* remote)
 {
-    fsocket_t* socket = (fsocket_t*)quic;
-    fnp_msg_t* msg = new_fmsg(socket->frontend_id, fmsg_type_create_cnx);
+    fnp_msg_t* msg = fmsg_new(fmsg_type_create_cnx);
     create_quic_cnx_param_t* req = msg->data;
 
     req->quic = quic;
     fsockaddr_copy(&req->remote, remote);
 
     // wait for reply
-    int ret = send_fmsg_with_reply(socket->worker_id, msg);
+    int ret = fmsg_send_with_reply(&frontend->master_chan, msg);
     if (ret != 0)
     {
         printf("fail to create socket: %d\n", ret);
         return NULL;
     }
 
-    fnp_quic_cnx_t* cnx = msg->ptr;
+    fsocket_t* cnx = msg->ptr;
     fnp_free(msg);
 
-    socket = (fsocket_t*)cnx;
+    u64 us = 100 * 1000; // 100ms
+    for (int i = 0; i < 5; i++)
+    {
+        fnp_sleep(us);
+        if (cnx->is_ready)
+        {
+            return cnx; // 连接成功
+        }
+        else if (cnx->is_closed)
+        {
+            break;
+        }
 
-    //TODO: 等待连接建立
-    // while (!socket->is_connected);
+        us <<= 1;
+    }
+
+    fnp_close(cnx);
+    return NULL;
+}
+
+fsocket_t* fnp_quic_accept_cnx(fsocket_t* quic)
+{
+    fsocket_t* socket = quic;
+    fsocket_t* cnx = NULL;
+    while (!fnp_ring_dequeue(socket->pending_cnxs, (void**)&cnx));
 
     return cnx;
 }
 
-fnp_quic_stream_t* fnp_quic_create_stream(fnp_quic_cnx_t cnx, bool is_unidir, int priority)
+fnp_quic_stream_t* fnp_quic_create_stream(fsocket_t* cnx, bool is_unidir, int priority)
 {
-    fsocket_t* socket = (fsocket_t*)cnx;
-    fnp_msg_t* msg = new_fmsg(socket->frontend_id, fmsg_type_create_stream);
+    fnp_msg_t* msg = fmsg_new(fmsg_type_create_stream);
     create_stream_param_t* req = msg->data;
 
-    req->cnx = socket;
+    req->cnx = cnx;
     req->is_unidir = is_unidir;
     req->priority = priority;
 
     // wait for reply
-    int ret = send_fmsg_with_reply(socket->worker_id, msg);
+    int ret = fmsg_send_with_reply(&frontend->master_chan, msg);
     if (ret != 0)
     {
         printf("fail to create socket: %d\n", ret);
@@ -72,22 +90,10 @@ fnp_quic_stream_t* fnp_quic_create_stream(fnp_quic_cnx_t cnx, bool is_unidir, in
 }
 
 
-fnp_quic_cnx_t fnp_quic_accept_cnx(fsocket_t* quic)
+fnp_quic_stream_t* fnp_quic_accept_stream(fsocket_t* cnx)
 {
-    fsocket_t* socket = (fsocket_t*)quic;
-
-    fnp_quic_cnx_t cnx;
-    while (!fnp_pring_dequeue(socket->pending_cnxs, (void**)&cnx));
-
-    return cnx;
-}
-
-fnp_quic_stream_t* fnp_quic_accept_stream(fnp_quic_cnx_t cnx)
-{
-    fsocket_t* socket = (fsocket_t*)cnx;
-
     fnp_quic_stream_t* stream;
-    while (!fnp_pring_dequeue(socket->pending_streams, (void**)&stream));
+    while (!fnp_ring_dequeue(cnx->pending_streams, (void**)&stream));
 
     return stream;
 }
@@ -105,7 +111,7 @@ static quic_stream_data_t* quic_init_stream_data(struct rte_mbuf* m)
     return stream_data;
 }
 
-int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin)
+int fnp_quic_stream_send(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin)
 {
     quic_stream_data_t* stream_data = quic_init_stream_data(m);
     if (stream_data == NULL)
@@ -114,7 +120,7 @@ int fnp_quic_send_stream_data(fnp_quic_stream_t* stream, fnp_mbuf_t* m, bool fin
     }
 
     stream_data->fin = fin;
-    if (!fnp_pring_enqueue(stream->tx, (void*)stream_data))
+    if (!fnp_ring_enqueue(stream->tx, (void*)stream_data))
     {
         return -1;
     }
@@ -128,7 +134,7 @@ fnp_mbuf_t* fnp_quic_recv_stream_data(fnp_quic_stream_t* stream)
     while (!stream->receive_fin && !stream->receive_reset)
     {
         // 收到数据
-        if (fnp_pring_dequeue(stream->rx, (void**)&stream_data))
+        if (fnp_ring_dequeue(stream->rx, (void**)&stream_data))
         {
             if (stream_data->fin)
             {
@@ -181,7 +187,7 @@ void fnp_quic_close_stream(fnp_quic_stream_t* stream)
     stream->request_close = 1;
 }
 
-void fnp_quic_close_cnx(fnp_quic_cnx_t* cnx, u64 error)
+void fnp_quic_cnx_close(fsocket_t* cnx, u64 error)
 {
     // 本端将立即中止发送数据
     // cnx->local_error = error;

@@ -1,8 +1,8 @@
-#include "fnp_pring.h"
+#include "fnp_ring.h"
 #include <stdatomic.h>
 
 
-fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc)
+fnp_ring_t* fnp_ring_create(i32 size, bool is_mp, bool is_mc)
 {
     // size must be power of 2
     if (size < 2 || (size & (size - 1)) != 0)
@@ -10,7 +10,7 @@ fnp_pring_t* fnp_pring_create(i32 size, bool is_mp, bool is_mc)
         return NULL; // size must be a power of 2 and at least 2
     }
 
-    fnp_pring_t* r = fnp_malloc(sizeof(fnp_pring_t) + size * sizeof(void*));
+    fnp_ring_t* r = fnp_malloc(sizeof(fnp_ring_t) + size * sizeof(void*));
     if (r == NULL)
         return NULL;
 
@@ -45,7 +45,7 @@ __fnp_ring_update_tail(u32* tail, uint32_t old_val,
 }
 
 
-static __rte_always_inline u32 __fnp_ring_move_prod_head(fnp_pring_t* r, u32 n, u32* old_head, u32* new_head)
+static __rte_always_inline u32 __fnp_ring_move_prod_head(fnp_ring_t* r, u32 n, u32* old_head, u32* new_head)
 {
     const u32 capacity = r->mask;
     u32 free_entries;
@@ -101,7 +101,7 @@ static __rte_always_inline u32 __fnp_ring_move_prod_head(fnp_pring_t* r, u32 n, 
 }
 
 static __rte_always_inline void
-__fnp_ring_enqueue_elems(fnp_pring_t* r, u32 prod_head,
+__fnp_ring_enqueue_elems(fnp_ring_t* r, u32 prod_head,
                          const void* obj_table, uint32_t n)
 {
     u32 i;
@@ -139,7 +139,7 @@ __fnp_ring_enqueue_elems(fnp_pring_t* r, u32 prod_head,
 }
 
 static __rte_always_inline
-unsigned int __fnp_ring_do_enqueue_elem(fnp_pring_t* r, const void* obj_table, u32 n)
+unsigned int __fnp_ring_do_enqueue_elem(fnp_ring_t* r, const void* obj_table, u32 n)
 {
     u32 prod_head, prod_next;
 
@@ -156,19 +156,19 @@ unsigned int __fnp_ring_do_enqueue_elem(fnp_pring_t* r, const void* obj_table, u
 
 
 // 多生产者并发安全的环形队列入队
-u32 fnp_pring_enqueue(fnp_pring_t* r, void* obj)
+u32 fnp_ring_enqueue(fnp_ring_t* r, void* obj)
 {
     return __fnp_ring_do_enqueue_elem(r, &obj, 1);
 }
 
-u32 fnp_pring_enqueue_burst(fnp_pring_t* r, void* const * obj_table, u32 len)
+u32 fnp_ring_enqueue_burst(fnp_ring_t* r, void* const * obj_table, u32 len)
 {
     return __fnp_ring_do_enqueue_elem(r, obj_table, len);
 }
 
 
 static __rte_always_inline u32
-__fnp_ring_move_cons_head(fnp_pring_t* r, u32 n, u32* old_head, u32* new_head)
+__fnp_ring_move_cons_head(fnp_ring_t* r, u32 n, u32* old_head, u32* new_head)
 {
     unsigned int max = n;
     uint32_t prod_tail;
@@ -225,7 +225,7 @@ __fnp_ring_move_cons_head(fnp_pring_t* r, u32 n, u32* old_head, u32* new_head)
 }
 
 static __rte_always_inline void
-__fnp_ring_dequeue_elems(fnp_pring_t* r, u32 cons_head, void* obj_table, u32 n)
+__fnp_ring_dequeue_elems(fnp_ring_t* r, u32 cons_head, void* obj_table, u32 n)
 {
     unsigned int i;
     const uint32_t size = r->size;
@@ -262,7 +262,7 @@ __fnp_ring_dequeue_elems(fnp_pring_t* r, u32 cons_head, void* obj_table, u32 n)
 }
 
 
-static __rte_always_inline u32 __fnp_ring_do_dequeue_elem(fnp_pring_t* r, void* obj_table, u32 n)
+static __rte_always_inline u32 __fnp_ring_do_dequeue_elem(fnp_ring_t* r, void* obj_table, u32 n)
 {
     u32 cons_head, cons_next;
 
@@ -278,18 +278,18 @@ static __rte_always_inline u32 __fnp_ring_do_dequeue_elem(fnp_pring_t* r, void* 
 }
 
 // 多生产者并发安全的环形队列入队
-u32 fnp_pring_dequeue(fnp_pring_t* r, void** obj_p)
+u32 fnp_ring_dequeue(fnp_ring_t* r, void** obj_p)
 {
     return __fnp_ring_do_dequeue_elem(r, obj_p, 1);
 }
 
-u32 fnp_pring_dequeue_burst(fnp_pring_t* r, void** obj_table, u32 len)
+u32 fnp_ring_dequeue_burst(fnp_ring_t* r, void** obj_table, u32 len)
 {
     return __fnp_ring_do_dequeue_elem(r, obj_table, len);
 }
 
 //only read data, don't amend r->head
-void* fnp_pring_top(fnp_pring_t* r, i32 offset)
+void* fnp_ring_top(fnp_ring_t* r, i32 offset)
 {
     u32 index = (r->cons_tail + offset) & r->mask;
     return r->buf[index];

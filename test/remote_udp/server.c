@@ -28,7 +28,7 @@ int worker_loop_echo_func(void* arg)
     }
 }
 
-int worker_recv_loop_func(void* arg)
+int tcp_cnx_cps(void* arg)
 {
     printf("worker_recv_loop_func: %d\n", rte_lcore_id());
 

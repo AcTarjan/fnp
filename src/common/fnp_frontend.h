@@ -1,9 +1,13 @@
 #ifndef FNP_FRONTEND_H
 #define FNP_FRONTEND_H
 
+#include <rte_spinlock.h>
+
 #include "fnp_socket.h"
 #include "fnp_list.h"
-#include <rte_spinlock.h>
+#include "fnp_msg.h"
+
+#define FNP_FRONTEND_MAX_FDS 1024
 
 typedef struct fnp_frontend
 {
@@ -12,30 +16,21 @@ typedef struct fnp_frontend
     u16 fail_cnt; // 没有接收到心跳包的次数
     fnp_list_node_t master_node; // 用于master使用链表管理前端
     rte_spinlock_t lock;
-    int socket_num;
-    fnp_list_t socket_list;
+    i32 socket_num;
+    // 对于多进程来说，不同进程的efd是不同的
+    struct rte_mempool* pool; //后端为前端分配的内存池
+    fsocket_t* fd_table[FNP_FRONTEND_MAX_FDS]; // 通过eventfd查找fsocket
 } fnp_frontend_t;
 
 
-static inline void frontend_add_socket(fnp_frontend_t* frontend, fsocket_t* socket)
+static inline void frontend_free(fnp_frontend_t* frontend)
 {
-    socket->frontend_id = frontend->pid;
-
-    rte_spinlock_lock(&frontend->lock);
-    frontend->socket_num++;
-    fnp_list_insert(&frontend->socket_list, &socket->frontend_node, socket);
-    rte_spinlock_unlock(&frontend->lock);
+    if (frontend->pool != NULL)
+    {
+        // 后端释放
+        rte_mempool_free(frontend->pool);
+    }
+    fnp_free(frontend);
 }
-
-static inline void frontend_remove_socket(fnp_frontend_t* frontend, fsocket_t* socket)
-{
-    socket->frontend_id = 0;
-
-    rte_spinlock_lock(&frontend->lock);
-    frontend->socket_num--;
-    fnp_list_delete(&frontend->socket_list, &socket->frontend_node);
-    rte_spinlock_unlock(&frontend->lock);
-}
-
 
 #endif // FNP_FRONTEND_H

@@ -12,7 +12,7 @@ struct test_info
 u64 total = 1000; // 10w
 u64 count = 0;
 
-int worker_recv_loop_func(void* arg)
+int tcp_cnx_cps(void* arg)
 {
     fsocket_t* socket = arg;
     printf("start to recv packet from local udp server: %d\n", rte_lcore_id());
@@ -73,7 +73,7 @@ int worker_recv_loop_func(void* arg)
     printf("write all data to file\n");
 }
 
-int worker_send_loop_func(void* arg)
+int handle_incoming_packet(void* arg)
 {
     fsocket_t* socket = (fsocket_t*)arg;
     printf("worker_send_loop_func: %d\n", rte_lcore_id());
@@ -138,7 +138,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    ret = fnp_launch_on_lcore(worker_send_loop_func, socket, -1);
+    ret = fnp_launch_on_lcore(handle_incoming_packet, socket, -1);
     if (ret != FNP_OK)
     {
         printf("Failed to launch send worker loop: %d\n", ret);

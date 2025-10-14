@@ -69,22 +69,8 @@ typedef struct tcp_option
 
 typedef struct tcp_segment
 {
-    union
-    {
-        struct
-        {
-            u8 pad0;
-            u8 proto;
-            u16 pad1;
-            u32 rip;
-            u32 lip;
-            u16 rport;
-            u16 lport;
-        };
-
-        fsockaddr_t local;
-        fsockaddr_t remote;
-    };
+    fsockaddr_t local;
+    fsockaddr_t remote;
 
     u32 seq;
     u32 ack;
@@ -92,6 +78,7 @@ typedef struct tcp_segment
     u16 data_len;
     u8 hdr_len;
     u8 flags;
+    u16 proto;
     u16 iface_id;
     tcp_option opt;
     struct rte_mbuf* data;

@@ -1,7 +1,14 @@
 #ifndef FNP_QUIC_COMMON_H
 #define FNP_QUIC_COMMON_H
 
-#include "fnp_cc.h"
+#include "fnp_common.h"
+
+typedef enum congestion_algorithm_id
+{
+    congestion_algo_cubic = 0,
+    congestion_algo_new_reno,
+    congestion_algo_fast,
+} congestion_algorithm_id_t;
 
 typedef struct fnp_quic_config
 {

@@ -8,7 +8,7 @@
 #define BUF_SIZE 2000
 // #define LISTEN_ADDR "192.168.136.88"
 #define LISTEN_ADDR "127.0.0.1"
-#define PORT 18888
+#define LOCAL_PORT 18888
 
 
 // 线程参数结构体
@@ -19,7 +19,7 @@ typedef struct
 
 void* echo_thread(void* arg)
 {
-    printf("UDP echo服务器已启动，监听地址 %s 端口 %d ...\n", LISTEN_ADDR, PORT);
+    printf("UDP echo服务器已启动，监听地址 %s 端口 %d ...\n", LISTEN_ADDR, LOCAL_PORT);
 
     int sockfd = (int)arg;
     struct sockaddr_in cliaddr;
@@ -50,7 +50,7 @@ void* echo_thread(void* arg)
 // 接收线程函数
 void* send_thread(void* arg)
 {
-    printf("UDP服务器已启动，监听地址 %s 端口 %d ...\n", LISTEN_ADDR, PORT);
+    printf("UDP服务器已启动，监听地址 %s 端口 %d ...\n", LISTEN_ADDR, LOCAL_PORT);
 
     int sockfd = (int)arg;
     struct sockaddr_in cliaddr;
@@ -117,7 +117,7 @@ int main()
         return -1;
     }
     // 创建套接字
-    int sockfd = create_socket(LISTEN_ADDR, PORT);
+    int sockfd = create_socket(LISTEN_ADDR, LOCAL_PORT);
     if (sockfd == 0)
     {
         return 1;

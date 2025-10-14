@@ -9,8 +9,9 @@
 #include "picoquic.h"
 #include "picoquic_utils.h"
 #include "fnp_socket.h"
-#include "fnp_quic_common.h"
-#include "fnp_pring.h"
+#include "fnp_config.h"
+#include "fnp_ring.h"
+#include "fnp_list.h"
 
 
 #ifndef PICOQUIC_MAX_PACKET_SIZE
@@ -963,12 +964,13 @@ typedef int (*picoquic_performance_log_fn)(quic_context_t* quic, quic_cnx_t* cnx
 typedef struct st_quic_context
 {
     fsocket_t socket;
+    fnp_list_node_t quic_list_node;
     fsocket_t* udp_socket;
     void* tls_master_ctx;
     // picoquic_stream_data_cb_fn default_callback_fn;
     // void* default_callback_ctx;
     congestion_algorithm_id_t default_congestion_alg;
-    fnp_pring_t* pending_cnxs; // 只有服务端存在
+    fnp_ring_t* pending_cnxs; // 只有服务端存在
     char const* default_sni;
     char const* default_alpn;
     picoquic_alpn_select_fn alpn_select_fn;

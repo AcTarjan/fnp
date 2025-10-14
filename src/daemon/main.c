@@ -1,5 +1,6 @@
 #include "fnp_context.h"
 #include "fnp_worker.h"
+#include "fnp_master.h"
 
 int main()
 {
@@ -20,6 +21,5 @@ int main()
     int lcore_id = rte_lcore_id();
     printf("fnp daemon start, lcore_id: %d\n", lcore_id);
 
-    // Main Lcore进入事件循环
-    rte_eal_mp_wait_lcore();
+    fnp_master_loop();
 }

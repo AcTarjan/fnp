@@ -7,6 +7,7 @@
 #include "quic.h"
 #include "fnp_worker.h"
 #include "quic_cc.h"
+#include "udp.h"
 
 /*
  * Sending logic.
@@ -2691,7 +2692,7 @@ void picoquic_ready_state_transition(quic_cnx_t* cnx, uint64_t current_time)
         (void)quic_enqueue_handshake_done_frame(cnx);
         // 添加到QUIC Contetx的QUIC连接列表
         fsocket_t* socket = &cnx->quic->socket;
-        if (!fnp_pring_enqueue(socket->pending_cnxs, cnx))
+        if (!fnp_ring_enqueue(socket->pending_cnxs, cnx))
         {
             printf("error to enqueue connection to pending list\n");
         }
@@ -4146,7 +4147,7 @@ void quic_send_udp_mbuf(quic_context_t* quic)
 
         int len = rte_pktmbuf_data_len(m);
         bytes_sent += len;
-        fnp_pring_enqueue(udp_socket->tx, m);
+        udp_send_mbuf(udp_socket, m);
     }
 }
 

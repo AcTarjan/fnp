@@ -1,12 +1,14 @@
 #include "tcp_sock.h"
 
 #include "fnp_context.h"
+#include "fnp_worker.h"
 #include "tcp_ofo.h"
 #include "tcp_in.h"
 #include "tcp_out.h"
+#include "tcp_timer.h"
 
-char* tcp_state_str[11] = {
-    "TCP_CLOSED",
+char* tcp_state_str[TCP_STATE_END] = {
+    "TCP_NEW",
     "TCP_LISTEN",
     "TCP_SYN_SENT",
     "TCP_SYN_RECV",
@@ -17,83 +19,44 @@ char* tcp_state_str[11] = {
     "TCP_FIN_WAIT_2",
     "TCP_CLOSING",
     "TCP_TIME_WAIT",
+    "TCP_CLOSED",
 };
+
+static inline void tcp_close_sock(tcp_sock_t* sock)
+{
+    // TODO: tcp sock从当前worker的epoll删除，停止定时器，其它由master线程删除
+    fsocket_t* socket = fsocket(sock);
+    free_fsocket(socket);
+}
 
 void tcp_set_state(tcp_sock_t* sock, tcp_state_t state)
 {
     tcp_state_t old_state = sock->state;
     sock->state = state;
-    FNP_INFO("%p: state from %s to %s\n", sock, tcp_state_str[old_state], tcp_state_str[state]);
+    // FNP_INFO("%p: state from %s to %s\n", sock, tcp_state_str[old_state], tcp_state_str[state]);
+    if (state == TCP_SYN_SENT || state == TCP_SYN_RECV)
+    {
+        // 发送SYN包
+        tcp_send_syn(sock);
+    }
+    else if (state == TCP_LAST_ACK || state == TCP_FIN_WAIT_1)
+    {
+        // 发送FIN包
+        tcp_send_fin(sock);
+    }
+    else if (state == TCP_CLOSED)
+    {
+        // 关闭socket
+        tcp_close_sock(sock);
+    }
 }
 
-
-static tcp_recv_func tcp_recv[TCP_STATE_END];
-static tcp_send_func tcp_send[TCP_STATE_END];
 
 void init_tcp_layer()
 {
-    tcp_recv[TCP_NEW] = tcp_closed_recv;
-    tcp_recv[TCP_LISTEN] = tcp_listen_recv;
-    tcp_recv[TCP_SYN_SENT] = tcp_synsent_recv;
-    tcp_recv[TCP_SYN_RECV] = tcp_synrecv_recv;
-    tcp_recv[TCP_ESTABLISHED] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSE_WAIT] = tcp_estab_recv;
-    tcp_recv[TCP_LAST_ACK] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_1] = tcp_estab_recv;
-    tcp_recv[TCP_FIN_WAIT_2] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSING] = tcp_estab_recv;
-    tcp_recv[TCP_TIME_WAIT] = tcp_estab_recv;
-    tcp_recv[TCP_CLOSED] = tcp_closed_recv;
+    tcp_send_init();
 
-    tcp_send[TCP_NEW] = tcp_empty_send;
-    tcp_send[TCP_LISTEN] = tcp_empty_send;
-    tcp_send[TCP_SYN_SENT] = tcp_syn_send;
-    tcp_send[TCP_SYN_RECV] = tcp_syn_send;
-    tcp_send[TCP_ESTABLISHED] = tcp_data_send;
-    tcp_send[TCP_CLOSE_WAIT] = tcp_data_send;
-    tcp_send[TCP_LAST_ACK] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_1] = tcp_data_send;
-    tcp_send[TCP_FIN_WAIT_2] = tcp_data_send;
-    tcp_send[TCP_CLOSING] = tcp_data_send;
-    tcp_send[TCP_TIME_WAIT] = tcp_data_send;
-    tcp_send[TCP_CLOSED] = tcp_closed_send;
-}
-
-
-static void tcp_handler(tcp_sock_t* sock)
-{
-    // 处理用户请求
-    fsocket_t* socket = fsocket(sock);
-    if (socket->request_syn)
-    {
-        tcp_set_state(sock, TCP_SYN_SENT);
-    }
-    else if (socket->request_close)
-    {
-        //修改TCP的状态, 发送FIN
-        if (tcp_get_state(sock) == TCP_CLOSE_WAIT)
-            tcp_set_state(sock, TCP_LAST_ACK);
-        else
-            tcp_set_state(sock, TCP_FIN_WAIT_1);
-    }
-
-    struct rte_mbuf* mbufs[32];
-
-    // 从应用层接收数据，放到缓存中
-    if (tcp_get_state(sock) != TCP_LISTEN)
-    {
-        u32 num = fnp_pring_dequeue_burst(socket->tx, mbufs, 32);
-        if (num > 0)
-        {
-            // mbuf融合，送进发送队列
-            // printf("recv %d mbufs from app\n", num);
-            fnp_pring_dequeue_burst(sock->txbuf, mbufs, num);
-        }
-    }
-
-    // 发送缓存中的TCP数据
-    i32 state = tcp_get_state(sock);
-    tcp_send[state](sock);
+    tcp_recv_init();
 }
 
 
@@ -103,38 +66,34 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
     if (sock == NULL)
         return NULL;
 
-    fsocket_t* socket = fsocket(sock);
-    socket->handler = tcp_handler;
-    if (remote == NULL) //服务端socket
+    if (remote == NULL || remote->ip == 0) //服务端socket
     {
         tcp_set_state(sock, TCP_LISTEN);
         return sock;
     }
 
-    sock->txbuf = fnp_pring_create(TCP_TXBUF_SIZE, false, false);
-    if (unlikely(sock->txbuf == NULL))
-    {
-        fnp_free(sock);
-        return NULL;
-    }
-
-
-    tcp_set_state(sock, TCP_NEW);
+    sock->state = TCP_NEW;
     sock->parent = NULL;
+
+    u64 tsc = fnp_get_tsc();
+    init_congestion_algorithm(&sock->cc_algo, congestion_algo_cubic, tsc);
+
     sock->iss = time(NULL);
-    sock->tx_offset = 0;
     sock->snd_una = sock->iss;
     sock->snd_nxt = sock->iss;
-    sock->snd_max = sock->iss;
+    sock->max_snd_wnd = 0;
     sock->mss = TCP_MSS;
     sock->rcv_wnd_scale = TCP_WS_SHIFT;
-    sock->cwnd = 2; // 2个mss
     sock->dup_ack = 0;
-    sock->ofo_root.root = sock->ofo_root.max = NULL;
-    sock->max_snd_wnd = 0;
+    tcp_ofo_tree_init(&sock->ofo_tree);
     sock->fin_sent = 0;
-    for (int i = 0; i < TCPT_NTIMERS; i++)
-        rte_timer_init(&sock->timers[i]);
+
+    //初始化定时器
+    rte_timer_init(&sock->retransmit_timer);
+    rte_timer_init(&sock->ack_timer);
+    rte_timer_init(&sock->msl_timer);
+
+    // 开始3次握手
 
     return sock;
 }
@@ -144,9 +103,34 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
 // 没有被用户使用的socket，由协议栈自动释放
 void free_tcp_sock(tcp_sock_t* sock)
 {
-    // listen socket没有txbuf
-    if (sock->txbuf != NULL)
-        fnp_pring_free(sock->txbuf);
+    // 停止定时器, 避免rte_timer_manager函数core
+    tcp_stop_retransmit_timer(sock);
+    tcp_stop_ack_timer(sock);
+    tcp_stop_2msl_timer(sock);
+
+    // 释放pending list中所有的rte_mbuf
+    fnp_list_node_t* node = fnp_list_first(&sock->pending_list);
+    while (node != NULL)
+    {
+        // 进入重传
+        fnp_list_node_t* next = node->next;
+        free_mbuf(node->value);
+        node = next;
+    }
+
+    // 释放ofo tree中的所有rte_mbuf
+    tcp_ofo_seg* seg = NULL;
+    while ((seg = tcp_ofo_first_seg(sock)) != NULL)
+    {
+        tcp_ofo_dequeue_seg(sock, seg);
+        free_mbuf(seg->data);
+    }
 
     fnp_free(sock);
+}
+
+void tcp_handle_fsocket_event(fsocket_t* socket, u64 event)
+{
+    tcp_sock_t* sock = (tcp_sock_t*)socket;
+    tcp_send(sock);
 }

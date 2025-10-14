@@ -1,7 +1,7 @@
 #include "fnp_iface.h"
 #include "fnp_context.h"
 #include "fnp_worker.h"
-#include "../../common/fnp_pring.h"
+#include "../../common/fnp_ring.h"
 #include "arp.h"
 #include "ipv4.h"
 
@@ -42,7 +42,7 @@ void ether_send_mbuf(struct rte_mbuf* m, struct rte_ether_addr* dmac, u16 type)
     m->l2_len = RTE_ETHER_HDR_LEN;
 
     fnp_worker_t* worker = get_local_worker();
-    if (unlikely(fnp_pring_enqueue(worker->tx_ring, m) == 0))
+    if (unlikely(fnp_ring_enqueue(worker->tx_ring, m) == 0))
     {
         FNP_WARN("ether_send_mbuf failed!\n");
         free_mbuf(m);

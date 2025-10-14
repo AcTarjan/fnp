@@ -1,53 +1,27 @@
+#include "fnp_master.h"
 #include "fnp_frontend.h"
-
-
 #include "fnp_common.h"
 #include "fnp_error.h"
 #include "fnp_context.h"
-#include "fnp_msg.h"
 #include "fnp_worker.h"
+#include "fnp_api.h"
+#include "fapi.h"
 #include "hash.h"
 #include "quic.h"
 #include "tcp.h"
 
 #include <rte_ethdev.h>
-#include <sys/timerfd.h>
+
 #include <unistd.h>
 
 
-static fnp_list_t frontend_list;
-
-static int compare_pid(fnp_frontend_t* a, fnp_frontend_t* b)
-{
-    return a->pid - b->pid;
-}
-
-// 控制线程调用
-static int handle_register_fmsg(fnp_msg_t* msg)
-{
-    FNP_INFO("start to register frontend from %d\n", msg->src_id);
-
-    fnp_frontend_t* frontend = msg->ptr;
-    if (frontend == NULL)
-        return FNP_ERR_NO_FRONTEND;
-
-    if (fnp_list_find(&frontend_list, frontend))
-    {
-        return FNP_ERR_FRONTEND_REGISTERED;
-    }
-
-    // 注册前端
-    fnp_list_insert(&frontend_list, &frontend->master_node, frontend);
-
-    FNP_INFO("register frontend %d successfully\n", frontend->pid);
-    return FNP_OK;
-}
+fmaster_context_t master;
 
 // main lcore调用，检查fnp-frontend是否正常
 // daemon的控制线程添加frontendTbl
 static void check_frontend_alive()
 {
-    fnp_list_node_t* node = fnp_list_first(&frontend_list);
+    fnp_list_node_t* node = fnp_list_first(&master.frontend_list);
     while (node != NULL)
     {
         fnp_frontend_t* frontend = node->value;
@@ -64,101 +38,75 @@ static void check_frontend_alive()
             {
                 FNP_INFO("frontend %d fail to keepalive, start to delete!!!\n", frontend->pid);
                 // 从master删除该前端
-                fnp_list_delete(&frontend_list, node);
+                fnp_list_delete(&master.frontend_list, node);
 
                 // 释放该前端所有的socket
-                fnp_list_node_t* socket_node = fnp_list_first(&frontend->socket_list);
-                while (socket_node != NULL)
+                for (int i = 0; i < 1024; i++)
                 {
-                    fsocket_t* socket = socket_node->value;
-                    fnp_list_node_t* next_socket_node = fnp_list_get_next(socket_node);
-                    if (socket->worker_id == FNP_MAX_WORKER_NUM) //worker中不包含这种类型的socket, 直接释放
+                    fsocket_t* socket = frontend->fd_table[i];
+                    if (socket != NULL)
                     {
                         free_fsocket(socket);
                     }
-                    else
-                    {
-                        socket->request_close = 1; // 请求关闭socket, worker执行释放
-                    }
-
-                    socket_node = next_socket_node;
                 }
 
                 // 删除该前端
-                fnp_free(frontend);
+                frontend_free(frontend);
             }
         }
         node = next_node;
     }
 }
 
-static void handle_create_socket_fmsg(fnp_msg_t* msg)
+static inline void handle_create_stream_fmsg(fnp_msg_t* msg)
 {
-    create_socket_param_t* param = msg->data;
-    fsocket_t* socket = create_fsocket(param->proto, &param->local, &param->remote, param->conf, -1);
-    if (socket == NULL)
+    create_stream_param_t* param = msg->data;
+    quic_stream_t* stream = quic_create_local_stream(param->cnx, param->is_unidir, param->priority);
+    if (stream == NULL)
     {
         msg->code = FNP_ERR_CREATE_SOCKET;
     }
     else
     {
         msg->code = FNP_OK;
-        msg->ptr = socket;
+        msg->ptr = stream;
     }
 
-    send_fmsg_reply(msg);
+    fmsg_send_reply(msg);
+}
+
+static inline void handle_create_cnx_fmsg(fnp_msg_t* msg)
+{
+    create_quic_cnx_param_t* param = msg->data;
+    quic_cnx_t* cnx = quic_create_client_cnx(param->quic, &param->remote);
+    if (cnx == NULL)
+    {
+        msg->code = FNP_ERR_CREATE_SOCKET;
+    }
+    else
+    {
+        msg->code = FNP_OK;
+        msg->ptr = cnx;
+    }
+
+    fmsg_send_reply(msg);
 }
 
 static void handle_master_fmsg(fnp_msg_t* msg)
 {
     switch (msg->type)
     {
-    case fmsg_type_create_socket:
+    case fmsg_type_create_cnx:
         {
-            handle_create_socket_fmsg(msg);
+            handle_create_cnx_fmsg(msg);
             break;
         }
-    case fmsg_type_register_frontend:
+    case fmsg_type_create_stream:
         {
-            int ret = handle_register_fmsg(msg);
-            msg->code = ret;
-            send_fmsg_reply(msg);
+            handle_create_stream_fmsg(msg);
             break;
         }
     }
-}
-
-int create_timerfd(int timeout, bool periodic)
-{
-    int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (timerfd == -1)
-    {
-        perror("timerfd_create");
-        return -1;
-    }
-
-    struct itimerspec new_value = {0};
-    struct itimerspec old_value; // 可选，用于获取旧的定时器设置
-
-    // 设置首次超时时间 (例如：5秒后)
-    new_value.it_value.tv_sec = timeout;
-    new_value.it_value.tv_nsec = 0;
-
-    // 设置周期性超时时间 (例如：之后每1秒超时一次)
-    // 如果设置为0，则为一次性定时器
-    if (periodic)
-    {
-        new_value.it_interval.tv_sec = timeout;
-        new_value.it_interval.tv_nsec = 0;
-    }
-
-    if (timerfd_settime(timerfd, 0, &new_value, &old_value) == -1)
-    {
-        perror("timerfd_settime");
-        // 错误处理
-    }
-
-    return timerfd;
 }
 
 static u64 prev_tsc = 0;
@@ -200,13 +148,11 @@ static void check_daemon_info(FILE* fp)
     rte_eth_stats_reset(port_id);
 }
 
-/*
- * master控制线程:
- * 1. 负责frontend注册
- * 2. 检查frontend的状态, 删除丢失心跳的frontend, 并释放其资源
- */
-static void fnp_master_loop()
+void fnp_master_loop()
 {
+#define MAX_EVENTS 8
+    struct epoll_event evs[MAX_EVENTS];
+
     printf("start task to manage frontend\n");
     FILE* fp = fopen("./fnp_master_stat.txt", "w");
     if (fp == NULL)
@@ -215,30 +161,16 @@ static void fnp_master_loop()
         return;
     }
 
-    fmsg_listener_t* listener = register_fmsg_listener(fnp_master_id);
-    if (listener == NULL)
-    {
-        printf("controller register fmsg_listener failed\n");
-        return;
-    }
+    // 监听master eventfd
+    fnp_epoll_add(master.epoll_fd, master.chan->event_fd);
 
-    int timerfd = create_timerfd(5, true);
-    int epfd = epoll_create1(0);
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET; // 监听可读事件，通常使用边缘触发
-    ev.data.fd = timerfd;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, timerfd, &ev) == -1)
-    {
-        perror("epoll_ctl: timerfd");
-        // 错误处理
-    }
-
-#define MAX_EVENTS 4
-    struct epoll_event evs[MAX_EVENTS];
+    // 添加定时器，定时检查frontend状态
+    int timerfd = fnp_create_timerfd(5, true);
+    fnp_epoll_add(master.epoll_fd, timerfd);
 
     while (1)
     {
-        int n = epoll_wait(epfd, evs, MAX_EVENTS, 0);
+        int n = epoll_wait(master.epoll_fd, evs, MAX_EVENTS, -1);
         for (int i = 0; i < n; i++)
         {
             if (evs[i].data.fd == timerfd)
@@ -246,31 +178,81 @@ static void fnp_master_loop()
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); //清除定时器计数
                 check_frontend_alive();
-                check_daemon_info(fp);
+                // check_daemon_info(fp);
+                // show_all_fsocket();
+            }
+            else if (evs[i].data.fd == master.chan->event_fd)
+            {
+                fchannel_handle(master.chan, handle_master_fmsg);
             }
         }
-        fmsg_listener_wait(listener, handle_master_fmsg);
     }
+}
+
+int compare_pid(void* v1, void* v2)
+{
+    fnp_frontend_t* f1 = (fnp_frontend_t*)v1;
+    fnp_frontend_t* f2 = (fnp_frontend_t*)v2;
+    return f1->pid - f2->pid;
 }
 
 int init_fnp_master()
 {
-    fnp_init_list(&frontend_list, compare_pid);
-
     fnp.sockTbl = create_socket_table();
     if (fnp.sockTbl == NULL)
     {
         return FNP_ERR_CREATE_HASH_TABLE;
     }
 
-    pthread_t ctrl_thread;
-    int ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_master_task", NULL,
-                                     fnp_master_loop, NULL);
+    fnp_init_list(&master.frontend_list, compare_pid);
+    master.epoll_fd = fnp_epoll_create();
+    if (master.epoll_fd < 0)
+    {
+        return FNP_ERR_MALLOC;
+    }
+
+    master.chan = fchannel_create(64);
+    if (master.chan == NULL)
+    {
+        return FNP_ERR_MALLOC;
+    }
+
+    int ret = rte_mp_action_register(FAPI_REGISTER_ACTION_NAME, register_frontend_action);
     if (ret != 0)
     {
-        RTE_LOG(ERR, EAL, "Failed to create control thread\n");
+        printf("fail to register action of %s\n", FAPI_REGISTER_ACTION_NAME);
         return ret;
     }
+
+    ret = rte_mp_action_register(FAPI_CREATE_FSOCKET_ACTION_NAME, create_fsocket_action);
+    if (ret != 0)
+    {
+        printf("fail to register action of %s\n", FAPI_CREATE_FSOCKET_ACTION_NAME);
+        return ret;
+    }
+
+    ret = rte_mp_action_register(FAPI_ACCEPT_FSOCKET_ACTION_NAME, accept_fsocket_action);
+    if (ret != 0)
+    {
+        printf("fail to register action of %s\n", FAPI_ACCEPT_FSOCKET_ACTION_NAME);
+        return ret;
+    }
+
+    ret = rte_mp_action_register(FAPI_CLOSE_FSOCKET_ACTION_NAME, close_fsocket_action);
+    if (ret != 0)
+    {
+        printf("fail to register action of %s\n", FAPI_CLOSE_FSOCKET_ACTION_NAME);
+        return ret;
+    }
+
+    // pthread_t ctrl_thread;
+    // ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_master_task", NULL,
+    //                              fnp_master_loop, NULL);
+    // if (ret != 0)
+    // {
+    //     printf("failed to create master thread\n");
+    //     return ret;
+    // }
 
     return FNP_OK;
 }

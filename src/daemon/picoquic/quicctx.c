@@ -817,7 +817,7 @@ void quic_free_context(quic_context_t* quic)
     if (quic->udp_socket != NULL)
     {
         // 不能在这直接free，会导致worker遍历时next为空
-        quic->udp_socket->request_close = 1;
+        quic->udp_socket->close_requested = 1;
     }
 
     fnp_free(quic);
@@ -1033,7 +1033,7 @@ int quic_init_context(quic_context_t* quic, fnp_quic_config_t* conf, u64 current
 
     picoquic_init_transport_parameters(&quic->default_tp, 0);
 
-    quic->pending_cnxs = fnp_pring_create(128, false, false);
+    quic->pending_cnxs = fnp_ring_create(128, false, false);
     if (quic->pending_cnxs == NULL)
     {
         return -1;

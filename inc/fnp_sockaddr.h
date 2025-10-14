@@ -25,9 +25,9 @@ typedef struct fsockaddr
 
 typedef enum fnp_protocol
 {
+    fnp_protocol_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
     fnp_protocol_tcp = IPPROTO_TCP,
     fnp_protocol_udp = IPPROTO_UDP,
-    fnp_protocol_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
 } fnp_protocol_t;
 
 
@@ -36,6 +36,8 @@ static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
     if (src == NULL)
     {
         dst->family = FSOCKADDR_NONE;
+        dst->ip = 0;
+        dst->port = 0;
         return;
     }
     dst->family = src->family;
@@ -63,19 +65,8 @@ static inline int fsockaddr_init(fsockaddr_t* addr, int family, const char* ip, 
 
     addr->family = family;
     addr->port = fnp_swap16(port);
-    addr->ip = ipv4_ston(ip);
+    addr->ip = fnp_ipv4_ston(ip);
     return FNP_OK;
 }
-
-// 最大256字节
-// 参见picoquic_stateless_packet_t
-typedef struct fnp_mbuf_info
-{
-    fsockaddr_t local;
-    fsockaddr_t remote;
-    u32 receive_fin : 1; // 接收FIN标志
-} fmbuf_info_t;
-
-#define get_fmbuf_info(m) (fmbuf_info_t *)rte_mbuf_to_priv(m);
 
 #endif // FNP_SOCKADDR_H

@@ -6,7 +6,6 @@
 
 #include <rte_arp.h>
 #include <rte_malloc.h>
-#include <sys/eventfd.h>
 
 #include "fnp_worker.h"
 
@@ -35,7 +34,7 @@ arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
     arp_entry_t* e = NULL;
 
     // can't find
-    if (unlikely(!hash_lookup(fnp.arpTbl, &ip, &e)))
+    if (unlikely(!hash_lookup(fnp.arpTbl, &ip, (void**)&e)))
     {
         e = fnp_malloc(sizeof(arp_entry_t));
         if (unlikely(e == NULL))
@@ -44,14 +43,12 @@ arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
             return NULL;
         }
         e->ip = ip;
-        e->valid = 0;
     }
 
     if (mac != NULL)
     {
         e->tsc = rte_rdtsc();
         rte_ether_addr_copy(mac, &e->mac);
-        e->valid = 1;
     }
 
 
@@ -75,20 +72,9 @@ arp_entry_t* arp_lookup(u32 ip)
 {
     arp_entry_t* e = NULL;
 
-    hash_lookup(fnp.arpTbl, &ip, &e);
+    hash_lookup(fnp.arpTbl, &ip, (void**)&e);
 
     return e;
-}
-
-struct rte_ether_addr* arp_get_mac(u32 ip)
-{
-    arp_entry_t* e = arp_lookup(ip);
-    if (e != NULL && e->valid)
-    {
-        return &e->mac;
-    }
-
-    return NULL;
 }
 
 struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
@@ -117,6 +103,8 @@ struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
 void arp_send_request(fnp_iface_t* iface, u32 tip)
 {
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REQUEST);
+    if (unlikely(mbuf == NULL))
+        return;
     mbuf->port = iface->port;
 
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(mbuf, struct rte_arp_hdr *);
@@ -166,9 +154,11 @@ void arp_recv_mbuf(struct rte_mbuf* m)
     fnp_iface_t* iface = lookup_iface(tip);
     if (iface == NULL) //不是本机的arp请求
     {
+        printf("recv wrong arp\n");
         free_mbuf(m);
         return;
     }
+
     printf("recv arp in %d for %s\n", fnp_worker_id, iface->name);
 
     // 注意: 只有worker0会收到arp
@@ -190,6 +180,65 @@ void arp_recv_mbuf(struct rte_mbuf* m)
     free_mbuf(m);
 }
 
+void arp_handle_local_pending(struct rte_timer* timer, void* arg);
+
+static void start_arp_timer(arp_pend_entry_t* e)
+{
+    // 启动定时器
+    u32 lcore_id = rte_lcore_id();
+    u64 hz = rte_get_timer_hz(); // 定时器的频率
+    u64 ticks = (1 << e->count) * hz / 100; // n * 10ms
+    if (unlikely(rte_timer_reset(&e->timer, ticks, SINGLE, lcore_id,
+        arp_handle_local_pending, e) != 0))
+    {
+        printf("fail to reset timer of arp %u\n", e->ip);
+    }
+}
+
+void arp_handle_local_pending(struct rte_timer* timer, void* arg)
+{
+    arp_pend_entry_t* pe = arg;
+    arp_entry_t* e = arp_lookup(pe->ip); //检查是否已经确定了arp项
+    if (unlikely(e == NULL))
+    {
+        if (unlikely(pe->count == 5))
+        {
+            // 放弃发送
+            printf("arp request %u timeout\n", pe->ip);
+            fnp_list_node_t* node = fnp_list_first(&pe->pending_list);
+            while (node != NULL)
+            {
+                struct rte_mbuf* m = node->value;
+                node = node->next;
+                free_mbuf(m);
+            }
+            fnp_free(pe);
+            return;
+        }
+        // 重发arp请求
+        pe->count++;
+        arp_send_request(pe->iface, pe->ip);
+        start_arp_timer(pe);
+        return;
+    }
+
+    // 发送pending mbuf
+    fnp_list_node_t* node = fnp_list_first(&pe->pending_list);
+    while (node != NULL)
+    {
+        struct rte_mbuf* m = node->value;
+        node = node->next;
+        ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
+    }
+
+    // 从hash表中删除
+    fnp_worker_t* worker = get_local_worker();
+    hash_del(worker->arp_table, &pe->ip);
+    // 释放资源
+    fnp_free(pe);
+}
+
+
 void arp_pend_mbuf(fnp_iface_t* iface, u32 next_ip, struct rte_mbuf* m)
 {
     // 添加到本地pending_mbuf
@@ -200,63 +249,30 @@ void arp_pend_mbuf(fnp_iface_t* iface, u32 next_ip, struct rte_mbuf* m)
     {
         // 创建arp_pend_entry_t
         e = fnp_malloc(sizeof(arp_pend_entry_t));
-        e->ip = next_ip;
-        e->iface = iface;
-        e->tsc = rte_rdtsc();
-        e->pending = fnp_pring_create(128, false, false);
+        if (unlikely(e == NULL))
+        {
+            free_mbuf(m);
+            return;
+        }
 
+        e->ip = next_ip;
+        e->count = 0;
+        e->iface = iface;
+        fnp_init_list(&e->pending_list, NULL);
+        rte_timer_init(&e->timer);
+
+        // 添加worker的arp table中
         hash_add(worker->arp_table, &next_ip, e);
     }
 
     // 放入pending队列中
-    fnp_pring_enqueue(e->pending, m);
+    fnp_list_node_t* node = rte_mbuf_to_priv(m);
+    fnp_list_insert_head(&e->pending_list, node, m);
 
     // 发送arp请求, 只有worker0能收到arp reply
     arp_send_request(iface, next_ip);
+    start_arp_timer(e);
 }
-
-void arp_handle_local_pending()
-{
-    u32 next = 0;
-    u32* key = NULL;
-    arp_pend_entry_t* pe = NULL;
-    fnp_worker_t* worker = get_local_worker();
-    u64 tsc = rte_rdtsc();
-    u64 hz = rte_get_tsc_hz(); // 1s
-    while (hash_iterate(worker->arp_table, &key, &pe, &next))
-    {
-        arp_entry_t* e = arp_lookup(pe->ip); //检查是否已经确定了arp项
-        if (e == NULL || !e->valid)
-        {
-            if (tsc - pe->tsc >= hz) // 每隔1s发送一次arp请求
-            {
-                pe->tsc = tsc;
-                arp_send_request(pe->iface, pe->ip);
-            }
-            continue;
-        }
-        // 发送pending mbuf
-        while (1)
-        {
-            struct rte_mbuf* mbufs[16];
-            u32 n = fnp_pring_dequeue_burst(pe->pending, mbufs, 16);
-            for (int i = 0; i < n; i++)
-            {
-                ether_send_mbuf(mbufs[i], &e->mac, RTE_ETHER_TYPE_IPV4);
-            }
-            if (n < 16)
-                break;
-        }
-
-        // 从hash表中删除
-        hash_del(worker->arp_table, &pe->ip);
-
-        // 释放资源
-        fnp_pring_free(pe->pending);
-        fnp_free(pe);
-    }
-}
-
 
 void arp_update_entry()
 {
@@ -265,7 +281,7 @@ void arp_update_entry()
     arp_entry_t* e = NULL;
     while (hash_iterate(fnp.arpTbl, &key, &e, &next))
     {
-        if (e->valid)
+        if (0)
         {
             // if(cur_tsc - e->tsc > 20 * hz) {
             //     arp_del_entry(e);

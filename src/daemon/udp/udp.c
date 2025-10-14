@@ -2,90 +2,52 @@
 
 #include "fnp_common.h"
 #include "fnp_worker.h"
+#include "fnp_iface.h"
 #include "ipv4.h"
 
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_jhash.h>
 
-
 #define FNP_UDP_HDR_LEN 8
-#define MAX_PORT_NUM 8
-
-
-static void udp_handler(fsocket_t* socket)
-{
-    // 处理用户请求
-    if (unlikely(socket->request_close))
-    {
-        // 把应用层待发送的数据发送完成
-        if (fnp_pring_empty(socket->tx))
-        {
-            free_fsocket(socket);
-            return;
-        }
-    }
-
-    static struct rte_mbuf* mbufs[SOCKET_TX_BURST_NUM];
-
-    // 从应用层接收数据，发送出去。
-    const u32 num = fnp_pring_dequeue_burst(socket->tx, mbufs, SOCKET_TX_BURST_NUM);
-    for (i32 i = 0; i < num; i++)
-    {
-        udp_send_mbuf(socket, mbufs[i]);
-    }
-}
-
-udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote)
-{
-    udp_sock_t* sock = fnp_zmalloc(sizeof(udp_sock_t));
-    if (sock == NULL)
-    {
-        return NULL;
-    }
-
-    fsocket_t* socket = fsocket(sock);
-
-    socket->handler = udp_handler;
-
-    return sock;
-}
-
 
 void free_udp_sock(udp_sock_t* sock)
 {
     fnp_free(sock);
 }
 
+// 本地转发路径
+// 只有目的地址不确定的UDP Socket需要，检查对方是否是本地
+// TCP Socket的四元组确定，可以在创建Socket时检查是否是本地直接通信
+static inline void local_forward_path(fsockaddr_t* local, fsockaddr_t* remote, struct rte_mbuf* m)
+{
+    fsocket_t* dst_socket = lookup_socket_table(fnp_protocol_udp, remote, local);
+    if (dst_socket == NULL)
+    {
+        dst_socket = lookup_socket_table(fnp_protocol_udp, remote, NULL);
+    }
+
+    if (unlikely(dst_socket == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    if (!fsocket_enqueue_for_app(dst_socket, m))
+    {
+        free_mbuf(m);
+    }
+}
 
 void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
 {
     fmbuf_info_t* info = get_fmbuf_info(m);
-
-    // 检查对方是否是本地Socket
-    if (unlikely(lookup_iface(info->remote.ip) != NULL))
+    // 检查是否是local forward path
+    if (is_local_ipaddr(info->remote.ip))
     {
-        fsocket_t* rsocket = lookup_socket_table(socket->proto, &info->remote, &socket->local);
-        if (rsocket == NULL)
-        {
-            rsocket = lookup_socket_table(socket->proto, &info->remote, NULL);
-        }
-
-        if (rsocket != NULL)
-        {
-            if (!fnp_socket_enqueue_for_app(rsocket, m))
-            {
-                free_mbuf(m);
-            }
-        }
-        else
-        {
-            free_mbuf(m);
-        }
-
+        local_forward_path(&info->local, &info->remote, m);
         return;
     }
-
 
     // 目的地址不是本地的, 直接发送到网络上
     struct rte_udp_hdr* hdr = (struct rte_udp_hdr*)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
@@ -94,23 +56,13 @@ void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
     hdr->dgram_cksum = 0;
 
-    m->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
-
     ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
 }
 
-void udp_recv_from_net(struct rte_mbuf* m)
+// 处理来自IP层的UDP数据包
+static void udp_recv_mbuf(fsocket_t* socket, struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* ip_hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-    // 这个socket可能是udp_sock, 也可能是quic_sock
-    fsocket_t* socket = lookup_socket_table_by_ipv4(ip_hdr);
-    if (unlikely(socket == NULL))
-    {
-        FNP_WARN("fail to find udp sock")
-        free_mbuf(m);
-        return;
-    }
-
     u16 iphdr_len = rte_ipv4_hdr_len(ip_hdr);
     struct rte_udp_hdr* udp_hdr = (struct rte_udp_hdr*)rte_pktmbuf_adj(m, iphdr_len); // 去掉ipv4
     rte_pktmbuf_adj(m, FNP_UDP_HDR_LEN); // 去掉udp头
@@ -128,9 +80,57 @@ void udp_recv_from_net(struct rte_mbuf* m)
     info->local.port = udp_hdr->dst_port;
 
     // 交付给应用层/QUIC处理
-    if (unlikely(fnp_socket_enqueue_for_app(socket, m) == 0))
+    if (unlikely(fsocket_enqueue_for_app(socket, m) == false))
     {
-        // 入队失败,释放mbuf
         free_mbuf(m);
     }
+}
+
+void udp_handle_fsocket_event(fsocket_t* socket, u64 event)
+{
+    // 判断是否有应用数据
+    static struct rte_mbuf* mbufs[32];
+    bool still_have_data = false;
+    u32 count = fnp_ring_count(socket->tx);
+    if (count > 0)
+    {
+        u32 n = fnp_ring_dequeue_burst(socket->tx, (void**)mbufs, 32);
+        for (int i = 0; i < n; i++)
+        {
+            udp_send_mbuf(socket, mbufs[i]);
+        }
+
+        still_have_data = count > n;
+    }
+
+    // 判断是否有IP层数据
+    count = fnp_ring_count(socket->net_rx);
+    if (count > 0)
+    {
+        u32 n = fnp_ring_dequeue_burst(socket->net_rx, (void**)mbufs, 32);
+        for (int i = 0; i < n; i++)
+        {
+            udp_recv_mbuf(socket, mbufs[i]);
+        }
+
+        still_have_data = still_have_data || (count > n);
+    }
+
+
+    // 如果还有数据发送, 则继续唤醒socket
+    if (still_have_data)
+    {
+        fsocket_notify_backend(socket);
+    }
+}
+
+udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote)
+{
+    udp_sock_t* sock = fnp_zmalloc(sizeof(udp_sock_t));
+    if (sock == NULL)
+    {
+        return NULL;
+    }
+
+    return sock;
 }

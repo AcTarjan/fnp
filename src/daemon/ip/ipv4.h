@@ -1,7 +1,7 @@
 #ifndef FNP_IPV4_H
 #define FNP_IPV4_H
 
-#include "fnp_socket.h"
+#include "../../common/fnp_socket.h"
 #include <rte_mbuf.h>
 
 #define IPV4_HDR_LEN 20

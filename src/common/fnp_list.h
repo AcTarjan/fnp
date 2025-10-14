@@ -26,6 +26,10 @@ void fnp_init_list(fnp_list_t* list, fnp_list_node_compare_func compare);
 
 void fnp_list_insert(fnp_list_t* list, fnp_list_node_t* node, void* value);
 
+void fnp_list_insert_head(fnp_list_t* list, fnp_list_node_t* node, void* value);
+
+void fnp_list_insert_tail(fnp_list_t* list, fnp_list_node_t* node, void* value);
+
 // 必须配置compare函数
 bool fnp_list_find(fnp_list_t* list, void* value);
 
@@ -34,6 +38,11 @@ void fnp_list_delete(fnp_list_t* list, fnp_list_node_t* node);
 static inline fnp_list_node_t* fnp_list_first(fnp_list_t* list)
 {
     return list->head;
+}
+
+static inline fnp_list_node_t* fnp_list_last(fnp_list_t* list)
+{
+    return list->tail;
 }
 
 static inline fnp_list_node_t* fnp_list_get_next(fnp_list_node_t* node)

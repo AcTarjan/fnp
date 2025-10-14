@@ -23,6 +23,11 @@ struct rte_ether_addr* get_port_mac(int id);
 
 fnp_iface_t* lookup_iface(u32 ip);
 
+static inline bool is_local_ipaddr(u32 ip)
+{
+    return lookup_iface(ip) != NULL;
+}
+
 u32 find_next_hop(fnp_iface_t* iface, u32 rip);
 
 fnp_iface_t* find_iface_for_outlet(u32 rip);

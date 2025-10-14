@@ -7,7 +7,7 @@ struct test_info
     u8 data[1400];
 };
 
-int worker_recv_loop_func(void* arg)
+int tcp_cnx_cps(void* arg)
 {
     printf("worker_recv_loop_func: %d\n", rte_lcore_id());
 
@@ -32,7 +32,7 @@ int worker_recv_loop_func(void* arg)
     }
 }
 
-int worker_send_loop_func(void* arg)
+int handle_incoming_packet(void* arg)
 {
     int sockfd = (int)arg;
     printf("worker_send_loop_func: %d\n", rte_lcore_id());
@@ -102,14 +102,14 @@ int main()
 
     printf("已连接到服务器 %s:%d\n", server_ip, server_port);
 
-    ret = fnp_launch_on_lcore(worker_send_loop_func, (void*)sockfd, -1);
+    ret = fnp_launch_on_lcore(handle_incoming_packet, (void*)sockfd, -1);
     if (ret != 0)
     {
         printf("Failed to launch send worker loop: %d\n", ret);
         return ret;
     }
 
-    ret = fnp_launch_on_lcore(worker_recv_loop_func, (void*)sockfd, 12);
+    ret = fnp_launch_on_lcore(tcp_cnx_cps, (void*)sockfd, 12);
     if (ret != 0)
     {
         printf("Failed to launch recv worker loop: %d\n", ret);
