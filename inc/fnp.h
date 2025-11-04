@@ -34,17 +34,18 @@ void fnp_close(int fd);
  * socketfd: a listen socket
  * 返回值: a new connection socket
  */
-int fnp_accept(int server_fd);
-
+int fnp_accept(int fd);
 
 // 用于已经确定目标ip和端口号的socket
 int fnp_send(int fd, fnp_mbuf_t* m);
 
 // 用于未确定目标ip和端口号的socket
-int fnp_sendto(int fd, fnp_mbuf_t* m, fsockaddr_t* raddr);
+int fnp_sendto(int fd, fnp_mbuf_t* m, fsockaddr_t* peer);
 
 // 可以通过fmbuf_info获取数据包的信息
-int fnp_recv(int fd, fnp_mbuf_t** m);
+int fnp_recvfrom(int fd, uint8_t* buf, int buf_len, fsockaddr_t* peer);
+
+int fnp_recv(int fd, uint8_t* buf, int buf_len);
 
 
 /* fnp_quic相关API接口 */

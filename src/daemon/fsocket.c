@@ -183,13 +183,14 @@ static inline void encode_fsocket_name(fsocket_t* socket)
 
     fnp_string_free(local_ip);
     fnp_string_free(remote_ip);
+    printf("create socket%s\n", socket->name);
 }
 
 static inline int create_fsocket_ring(fsocket_t* socket)
 {
     // 对于server socket, 必须支持多生产者
     bool is_mp = (socket->remote.ip == 0);
-    socket->rx = fnp_ring_create(256, is_mp, false);
+    socket->rx = fnp_ring_create(1024 * 1024 * 4, is_mp, false);
     if (socket->rx == NULL)
     {
         printf("Failed to create rx ring\n");
@@ -208,7 +209,8 @@ static inline int create_fsocket_ring(fsocket_t* socket)
         return FNP_OK;
     }
 
-    socket->tx = fnp_ring_create(256, false, false);
+    // 8M
+    socket->tx = fnp_ring_create(1024 * 1024 * 4, false, false);
     if (socket->tx == NULL)
     {
         printf("Failed to create tx ring\n");
@@ -221,11 +223,15 @@ static inline int create_fsocket_ring(fsocket_t* socket)
         return FNP_ERR_CREATE_EVENTFD;
     }
 
-    socket->net_rx = fnp_ring_create(256, false, false);
-    if (socket->net_rx == NULL)
+    // TCP需要一个额外的net_rx环来接收来自网络的数据包
+    if (socket->proto == fnp_protocol_tcp)
     {
-        printf("Failed to create net_rx ring\n");
-        return FNP_ERR_CREATE_RING;
+        socket->net_rx = fnp_ring_create(1024 * 16, false, false);
+        if (socket->net_rx == NULL)
+        {
+            printf("Failed to create net_rx ring\n");
+            return FNP_ERR_CREATE_RING;
+        }
     }
 
     // 会被前端重新修正
@@ -241,11 +247,12 @@ static inline int create_fsocket_ring(fsocket_t* socket)
 // QUIC: 不支持
 int build_local_direct_path(fsocket_t* socket)
 {
-    // 查看对端的socket是否存在
+    // peer socket创建
     fsocket_t* peer_socket = lookup_socket_table(socket->proto, &socket->remote, &socket->local);
     if (peer_socket != NULL)
     {
         // 交换ring和eventfd
+        printf("find peer socket: %s\n", peer_socket->name);
         socket->rx = fnp_ring_clone(peer_socket->tx);
         socket->tx = fnp_ring_clone(peer_socket->rx);
         socket->rx_efd_in_backend = peer_socket->tx_efd_in_backend;
@@ -262,34 +269,32 @@ int build_local_direct_path(fsocket_t* socket)
     // 对端socket不存在，创建ring和eventfd
     if (create_fsocket_ring(socket) != FNP_OK)
     {
+        return FNP_ERR_CREATE_RING;
+    }
+
+
+    // 查看是否存在server socket来accept
+    fsocket_t* server_socket = lookup_socket_table(socket->proto, &socket->remote, NULL);
+    if (server_socket == NULL)
+    {
+        // 端口没有监听，connect会失败
         return FNP_ERR_GENERIC;
     }
 
-    if (socket->proto == fnp_protocol_tcp)
+    // UDP查看是否是listen状态
+    // TCP跳过3次握手,直接进入ESTABLISHED状态,
+    // 创建对端socket
+    peer_socket = create_fsocket(socket->proto, &socket->remote, &socket->local, NULL, server_socket->worker_id);
+    if (peer_socket == NULL)
     {
-        // 查看是否监听目的端口
-        fsocket_t* server_socket = lookup_socket_table(fnp_protocol_tcp, &socket->remote, NULL);
-        if (server_socket == NULL)
-        {
-            // 端口没有监听，connect会失败
-            return FNP_ERR_GENERIC;
-        }
-
-        // 跳过3次握手,直接进入ESTABLISHED状态, 创建对端socket
-        peer_socket = create_fsocket(socket->proto, &socket->remote, &socket->local, NULL, server_socket->worker_id);
-        if (peer_socket == NULL)
-        {
-            return FNP_ERR_GENERIC;
-        }
-
-        // server socket接受到新连接，入队列
-        fnp_ring_enqueue(server_socket->rx, peer_socket);
-        fsocket_notify_frontend(server_socket);
-
-        socket->is_ldp = true;
-        return FNP_OK;
+        return FNP_ERR_GENERIC;
     }
 
+    // server socket接受到新连接，入队列
+    fnp_ring_enqueue(server_socket->rx, peer_socket);
+    fsocket_notify_frontend(server_socket);
+
+    socket->is_ldp = true;
     return FNP_OK;
 }
 
@@ -302,6 +307,12 @@ static inline int init_fsocket(fsocket_t* socket, fnp_protocol_t proto,
     fsockaddr_copy(&socket->remote, remote);
 
     encode_fsocket_name(socket);
+
+    // 添加socket到master socket表
+    if (add_fsocket_to_table(socket) != FNP_OK)
+    {
+        return FNP_ERR_ADD_HASH;
+    }
 
     // 5元组必须全部确定，且目的IP为本地IP
     if (socket->local.ip != 0 && is_local_ipaddr(socket->remote.ip))
@@ -341,6 +352,7 @@ static inline void dispatch_fsocket_to_worker(fsocket_t* socket, int worker_id)
 
     socket->worker_id = worker_id;
     // 添加socket到worker的epoll中
+    printf("dispatch socket %s to worker %d\n", socket->name, worker_id);
     fnp_worker_t* worker = get_fnp_worker(worker_id);
     fnp_epoll_add_fsocket(worker->epoll_fd, socket);
 }
@@ -356,6 +368,7 @@ fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t*
     }
 
     // 判断socket是否已经存在
+    // TODO: 只判断端口是否被占用
     fsocket_t* old_socket = lookup_socket_table(proto, local, remote);
     if (old_socket != NULL)
     {
@@ -385,17 +398,10 @@ fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t*
         return NULL;
     }
 
-    if (init_fsocket(socket, proto, local, remote) != FNP_OK)
+    int ret = init_fsocket(socket, proto, local, remote);
+    if (ret != FNP_OK)
     {
-        printf("socket init fail\n");
-        free_fsocket(socket);
-        return NULL;
-    }
-
-    // 添加socket到master socket表
-    if (add_fsocket_to_table(socket) != FNP_OK)
-    {
-        printf("fail to add socket to table\n");
+        printf("socket init fail: %d\n", ret);
         free_fsocket(socket);
         return NULL;
     }

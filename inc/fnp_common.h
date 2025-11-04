@@ -28,7 +28,7 @@ typedef long long int i64;
 #define fnp_swap32(x) rte_cpu_to_be_32((x))
 #define fnp_swap16(x) rte_cpu_to_be_16((x))
 
-#define FNP_MBUFPOOL_PRIV_SIZE 256
+#define FNP_MBUFPOOL_PRIV_SIZE 128
 
 #define FNP_MAX_WORKER_NUM 4
 
@@ -135,7 +135,21 @@ static inline int fnp_launch_on_lcore(fnp_lcore_function_t* f, void* arg, int lc
 {
     if (lcore_id == -1)
     {
-        lcore_id = rte_get_next_lcore(0, 1, 0);
+        // 自动选择一个空闲的 lcore
+        for (lcore_id = rte_get_next_lcore(-1, 1, 0);
+             lcore_id < RTE_MAX_LCORE;
+             lcore_id = rte_get_next_lcore(lcore_id, 1, 0))
+        {
+            // 只在 main lcore 上调用：查看该 lcore 当前状态
+            if (rte_eal_get_lcore_state(lcore_id) == WAIT)
+            {
+                break; // 这个 lcore 已启用且尚未被 launch
+            }
+        }
+        if (lcore_id == RTE_MAX_LCORE)
+        {
+            return -1; // 没有可用的 lcore
+        }
     }
     return rte_eal_remote_launch(f, arg, lcore_id);
 }

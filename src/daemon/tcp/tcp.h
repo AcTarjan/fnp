@@ -14,7 +14,7 @@ void tcp_connect(fsocket_t* socket);
 void tcp_close(fsocket_t* socket);
 
 // 接收来自网络的TCP数据，并发送给TCP协议
-void tcp_recv_mbuf(struct rte_mbuf* m);
+void tcp_recv_mbuf_from_ipv4(struct rte_mbuf* m);
 
 void tcp_handle_fsocket_event(fsocket_t* socket, u64 event);
 

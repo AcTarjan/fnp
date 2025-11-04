@@ -8,8 +8,41 @@ fnp_frontend_t* frontend = NULL; //该前端上下文
 
 fnp_mbuf_t* fnp_alloc_mbuf()
 {
-    return rte_pktmbuf_alloc(frontend->pool);
+    // 批量申请，提高效率
+#define ALLOC_BATCH_SIZE 64
+    static struct rte_mbuf* alloc_mbufs[ALLOC_BATCH_SIZE];
+    static int alloc_idx = ALLOC_BATCH_SIZE;
+
+    if (unlikely(alloc_idx == ALLOC_BATCH_SIZE))
+    {
+        int ret = rte_pktmbuf_alloc_bulk(frontend->pool, alloc_mbufs, ALLOC_BATCH_SIZE);
+        if (unlikely(ret != 0))
+        {
+            return NULL;
+        }
+        alloc_idx = 0;
+    }
+
+    return alloc_mbufs[alloc_idx++];
 }
+
+
+void fnp_free_mbuf(fnp_mbuf_t* m)
+{
+    // 批量释放
+#define FREE_BATCH_SIZE 128
+    static struct rte_mbuf* free_mbufs[FREE_BATCH_SIZE];
+    static int free_index = 0;
+
+    free_mbufs[free_index++] = m;
+
+    if (unlikely(free_index == FREE_BATCH_SIZE))
+    {
+        free_index = 0;
+        rte_pktmbuf_free_bulk(free_mbufs, FREE_BATCH_SIZE);
+    }
+}
+
 
 // 保活线程
 static void* keepalive_task(void* arg)
@@ -78,6 +111,7 @@ static int register_frontend_to_daemon()
             return ret;
         }
 
+        free(reply.msgs);
         return FNP_OK;
     }
 

@@ -54,7 +54,7 @@ int fnp_create_socket(fnp_protocol_t proto, const fsockaddr_t* local, const fsoc
     socket->tx_efd_in_frontend = reply_msg->fds[1];
 
     frontend_add_fsocket(socket);
-    rte_free(reply.msgs);
+    free(reply.msgs);
 
     return socket->fd;
   }
@@ -62,15 +62,21 @@ int fnp_create_socket(fnp_protocol_t proto, const fsockaddr_t* local, const fsoc
   return FNP_ERR_TIMEOUT;
 }
 
-int fnp_accept(int server_fd)
+int fnp_accept(int fd)
 {
+  fsocket_t* server_socket = frontend_get_fsocket(fd);
+  if (server_socket == NULL)
+    return FNP_ERR_BAD_FD;
+
+  if (fnp_ring_count(server_socket->rx) == 0)
+    return FNP_ERR_EMPTY; //没有连接可接受
+
   struct rte_mp_msg msg = {0};
   struct rte_mp_reply reply = {0};
-  struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
+  struct timespec ts = {.tv_sec = 2, .tv_nsec = 0};
   sprintf(msg.name, FAPI_ACCEPT_FSOCKET_ACTION_NAME);
   msg.len_param = sizeof(fapi_common_req_t);
   fapi_common_req_t* req = msg.param;
-  fsocket_t* server_socket = frontend_get_fsocket(server_fd);
   req->ptr = server_socket;
 
   //等待master返回响应
@@ -98,7 +104,7 @@ int fnp_accept(int server_fd)
     new_socket->tx_efd_in_frontend = reply_msg->fds[1];
 
     frontend_add_fsocket(new_socket);
-    rte_free(reply.msgs);
+    free(reply.msgs);
 
     return new_socket->fd;
   }
@@ -134,15 +140,16 @@ int fnp_sendto(int fd, fnp_mbuf_t* m, fsockaddr_t* raddr)
     return FNP_ERR_BAD_FD;
 
   fmbuf_info_t* info = get_fmbuf_info(m);
-  info->socket = socket;
   fsockaddr_copy(&info->local, &socket->local);
   fsockaddr_copy(&info->remote, raddr);
 
-  if (fnp_ring_enqueue(socket->tx, m) == 0)
+  if (unlikely(fnp_ring_enqueue(socket->tx, m) == 0))
   {
     return FNP_ERR_FULL;
   }
-  fsocket_notify_backend(socket);
+
+  // 会严重降低吞吐量，注释掉
+  // fsocket_notify_backend(socket);
 
   return FNP_OK;
 }
@@ -156,29 +163,52 @@ int fnp_send(int fd, fnp_mbuf_t* m)
 }
 
 // 可以通过get_sockinfo获取到目的地址等mbufinfo
-int fnp_recv(int fd, fnp_mbuf_t** m)
+int fnp_recvfrom(int fd, uint8_t* buf, int buf_len, fsockaddr_t* peer)
 {
   fsocket_t* socket = frontend_get_fsocket(fd);
   if (unlikely(socket == NULL))
     return FNP_ERR_BAD_FD;
-
   if (unlikely(socket->fin_received))
     return FNP_ERR_EOF;
 
-  // 等待接收数据
-  while (fnp_ring_dequeue(socket->rx, (void**)m) == 0)
+  // 当前批次数据已经接收完毕, 需要再从ring里取数据
+  if (unlikely(frontend->recv_mbufs_counter[fd].index == frontend->recv_mbufs_counter[fd].total))
   {
-    if (unlikely(socket->receive_fin))
+    while ((frontend->recv_mbufs_counter[fd].total = fnp_ring_dequeue_burst(
+      socket->rx, (void**)frontend->recv_mbufs[fd], RECV_BATCH_SIZE)) == 0)
     {
-      // 再次确认数据已接收完毕
-      if (fnp_ring_empty(socket->rx))
+      if (unlikely(socket->receive_fin))
       {
-        socket->fin_received = 1;
-        return FNP_ERR_EOF;
+        // 再次确认数据已接收完毕
+        if (fnp_ring_empty(socket->rx))
+        {
+          socket->fin_received = 1;
+          return FNP_ERR_EOF;
+        }
       }
     }
+    frontend->recv_mbufs_counter[fd].index = 0;
+  }
+  struct rte_mbuf* m = frontend->recv_mbufs[fd][frontend->recv_mbufs_counter[fd].index++];
+
+  u8* data = rte_pktmbuf_mtod(m, u8*);
+  int data_len = rte_pktmbuf_data_len(m);
+  if (unlikely(data_len > buf_len))
+    data_len = buf_len;
+  // 复制数据到buf, memcpy比rte_memcpy的性能要好很多
+  memcpy(buf, data, data_len);
+
+  if (likely(peer != NULL))
+  {
+    fmbuf_info_t* info = get_fmbuf_info(m);
+    fsockaddr_copy(peer, &info->remote);
   }
 
-  return FNP_OK;
+  fnp_free_mbuf(m);
+  return data_len;
 }
 
+int fnp_recv(int fd, uint8_t* buf, int buf_len)
+{
+  return fnp_recvfrom(fd, buf, buf_len, NULL);
+}

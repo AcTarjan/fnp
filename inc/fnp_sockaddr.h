@@ -30,10 +30,9 @@ typedef enum fnp_protocol
     fnp_protocol_udp = IPPROTO_UDP,
 } fnp_protocol_t;
 
-
 static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
 {
-    if (src == NULL)
+    if (unlikely(src == NULL))
     {
         dst->family = FSOCKADDR_NONE;
         dst->ip = 0;
@@ -43,6 +42,20 @@ static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
     dst->family = src->family;
     dst->ip = src->ip;
     dst->port = src->port;
+}
+
+static inline void fsockaddr2sockaddr_in(fsockaddr_t* faddr, sockaddr_in_t* addr)
+{
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = faddr->ip;
+    addr->sin_port = faddr->port;
+}
+
+static inline void sockaddr_in2fsockaddr(sockaddr_in_t* addr, fsockaddr_t* faddr)
+{
+    faddr->family = FSOCKADDR_IPV4;
+    faddr->ip = addr->sin_addr.s_addr;
+    faddr->port = addr->sin_port;
 }
 
 static inline bool fsockaddr_compare(const fsockaddr_t* expected, const fsockaddr_t* actual)

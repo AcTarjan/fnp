@@ -556,7 +556,7 @@ static inline void tcp_seg_init(struct rte_mbuf* m, tcp_segment* seg)
 }
 
 // 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
-void tcp_recv_mbuf(struct rte_mbuf* m)
+void tcp_recv_mbuf_from_ipv4(struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
@@ -570,6 +570,11 @@ void tcp_recv_mbuf(struct rte_mbuf* m)
     {
         sock = socket;
         state = tcp_get_state(sock);
+    }
+    else
+    {
+        // tcp_send_rst();
+        free_mbuf(m);
     }
 
     // mbuf在tcp_recv中释放, 释放mbuf不影响seg

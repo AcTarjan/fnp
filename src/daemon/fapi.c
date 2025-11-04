@@ -33,9 +33,11 @@ int register_frontend_action(const struct rte_mp_msg* msg, const void* peer)
             {
                 //为前端分配mbuf pool
                 char pool_name[32];
+                // 1024 * 128 * 2048 = 256MB
                 snprintf(pool_name, sizeof(pool_name), "fe_pool_%d", frontend->pid);
-                frontend->pool = rte_pktmbuf_pool_create(pool_name, 1024, 0, FNP_MBUFPOOL_PRIV_SIZE,
-                                                         RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+                frontend->pool = rte_pktmbuf_pool_create(pool_name, 1024 * 128 - 1, 0, FNP_MBUFPOOL_PRIV_SIZE,
+                                                         RTE_MBUF_DEFAULT_BUF_SIZE - FNP_MBUFPOOL_PRIV_SIZE,
+                                                         rte_socket_id());
                 if (frontend->pool == NULL)
                 {
                     FNP_ERR("fail to create %s", pool_name);
@@ -89,6 +91,7 @@ int create_fsocket_action(const struct rte_mp_msg* msg, const void* peer)
             reply.fds[0] = socket->rx_efd_in_backend; //将eventfd传递回去
             reply.fds[1] = socket->tx_efd_in_backend; //将eventfd传递回去
             resp->ptr = socket;
+            printf("create fsocket successfully: %s\n", socket->name);
         }
         else
         {

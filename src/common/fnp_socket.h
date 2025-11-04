@@ -5,6 +5,7 @@
 #include "fnp_ring.h"
 
 #define SOCKET_TX_BURST_NUM 16
+#define RECV_BATCH_SIZE 32
 
 
 typedef struct fnp_socket fsocket_t;
@@ -96,9 +97,8 @@ typedef enum fsocket_event
 
 // 最大256字节
 // 参见picoquic_stateless_packet_t
-typedef struct fnp_mbuf_info
+typedef struct
 {
-    fsocket_t* socket;
     fsockaddr_t local;
     fsockaddr_t remote;
     u32 request_syn : 1; // 请求发送SYN标志

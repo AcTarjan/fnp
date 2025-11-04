@@ -1,4 +1,6 @@
 #include "fnp_ring.h"
+
+#include <rte_errno.h>
 #include <stdatomic.h>
 
 
@@ -12,7 +14,11 @@ fnp_ring_t* fnp_ring_create(i32 size, bool is_mp, bool is_mc)
 
     fnp_ring_t* r = fnp_malloc(sizeof(fnp_ring_t) + size * sizeof(void*));
     if (r == NULL)
+    {
+        printf("error to malloc: %s\n", rte_strerror(rte_errno));
+        rte_malloc_dump_heaps(stdout);
         return NULL;
+    }
 
     rte_atomic32_set(&r->ref_count, 1);
     r->size = size;

@@ -4,6 +4,7 @@
 #include "fnp_worker.h"
 #include "fnp_iface.h"
 #include "ipv4.h"
+#include "icmp.h"
 
 #include <rte_ip.h>
 #include <rte_udp.h>
@@ -33,8 +34,11 @@ static inline void local_forward_path(fsockaddr_t* local, fsockaddr_t* remote, s
         return;
     }
 
-    if (!fsocket_enqueue_for_app(dst_socket, m))
+    if (unlikely(!fsocket_enqueue_for_app(dst_socket, m)))
     {
+        static int fail_count = 0;
+        fail_count++;
+        printf("enqueue failed %d\n", fail_count);
         free_mbuf(m);
     }
 }
@@ -59,8 +63,27 @@ void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
 }
 
+void udp_handle_fsocket_event(fsocket_t* socket, u64 event)
+{
+    // 判断是否有应用数据
+#define UDP_BURST_SIZE 32
+    static struct rte_mbuf* mbufs[UDP_BURST_SIZE];
+
+    u32 n = fnp_ring_dequeue_burst(socket->tx, (void**)mbufs, UDP_BURST_SIZE);
+    for (int i = 0; i < n; i++)
+    {
+        udp_send_mbuf(socket, mbufs[i]);
+    }
+
+    // 可能还有数据发送, 则继续唤醒socket
+    if (n == UDP_BURST_SIZE)
+    {
+        fsocket_notify_backend(socket);
+    }
+}
+
 // 处理来自IP层的UDP数据包
-static void udp_recv_mbuf(fsocket_t* socket, struct rte_mbuf* m)
+static inline void udp_recv_mbuf(fsocket_t* socket, struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* ip_hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
     u16 iphdr_len = rte_ipv4_hdr_len(ip_hdr);
@@ -71,7 +94,7 @@ static void udp_recv_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     int udp_data_len = rte_cpu_to_be_16(udp_hdr->dgram_len) - FNP_UDP_HDR_LEN;
     rte_pktmbuf_trim(m, data_len - udp_data_len); // 去掉以太网帧填充的数据
 
-    fmbuf_info_t* info = get_fmbuf_info(m);;
+    fmbuf_info_t* info = get_fmbuf_info(m);
     info->remote.family = FSOCKADDR_IPV4;
     info->remote.ip = ip_hdr->src_addr;
     info->remote.port = udp_hdr->src_port;
@@ -86,42 +109,20 @@ static void udp_recv_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     }
 }
 
-void udp_handle_fsocket_event(fsocket_t* socket, u64 event)
+void udp_recv_mbuf_from_ipv4(struct rte_mbuf* m)
 {
-    // 判断是否有应用数据
-    static struct rte_mbuf* mbufs[32];
-    bool still_have_data = false;
-    u32 count = fnp_ring_count(socket->tx);
-    if (count > 0)
-    {
-        u32 n = fnp_ring_dequeue_burst(socket->tx, (void**)mbufs, 32);
-        for (int i = 0; i < n; i++)
-        {
-            udp_send_mbuf(socket, mbufs[i]);
-        }
+    struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
-        still_have_data = count > n;
+    // 查找匹配的Socket
+    fsocket_t* socket = lookup_socket_table_by_ipv4(hdr);
+    if (unlikely(socket == NULL))
+    {
+        icmp_send_port_unreachable(m);
+        free_mbuf(m);
+        return;
     }
 
-    // 判断是否有IP层数据
-    count = fnp_ring_count(socket->net_rx);
-    if (count > 0)
-    {
-        u32 n = fnp_ring_dequeue_burst(socket->net_rx, (void**)mbufs, 32);
-        for (int i = 0; i < n; i++)
-        {
-            udp_recv_mbuf(socket, mbufs[i]);
-        }
-
-        still_have_data = still_have_data || (count > n);
-    }
-
-
-    // 如果还有数据发送, 则继续唤醒socket
-    if (still_have_data)
-    {
-        fsocket_notify_backend(socket);
-    }
+    udp_recv_mbuf(socket, m);
 }
 
 udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote)

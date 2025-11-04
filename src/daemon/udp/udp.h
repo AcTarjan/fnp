@@ -15,6 +15,8 @@ udp_sock_t* udp_create_sock(fsockaddr_t* local, fsockaddr_t* remote);
 
 void free_udp_sock(udp_sock_t* sock);
 
+void udp_recv_mbuf_from_ipv4(struct rte_mbuf* m);
+
 void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m);
 
 void udp_handle_fsocket_event(fsocket_t* socket, u64 event);

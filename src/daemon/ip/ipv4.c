@@ -5,6 +5,8 @@
 #include "ether.h"
 #include "arp.h"
 #include "icmp.h"
+#include "udp.h"
+#include "tcp.h"
 #include "fsocket.h"
 
 #include <rte_tcp.h>
@@ -20,42 +22,6 @@ static inline void ipv4_register(int proto, ipv4_recv_handler h)
     handlers[proto] = h;
 }
 
-// 收到TCP/UDP报文，查找对应的Socket，放入net_rx队列
-static void ipv4_recv_tcp_udp(struct rte_mbuf* m)
-{
-    // 本函数中没有移除ipv4 hdr
-    struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-
-    // 查找匹配的Socket
-    fsocket_t* socket = lookup_socket_table_by_ipv4(hdr);
-    if (unlikely(socket == NULL))
-    {
-        if (hdr->next_proto_id == fnp_protocol_udp)
-        {
-            // 回复ICMP端口不可达
-            icmp_send_port_unreachable(m);
-        }
-        else if (hdr->next_proto_id == fnp_protocol_tcp)
-        {
-            // TODO: 回复TCP RST
-        }
-
-        free_mbuf(m);
-        return;
-    }
-
-
-    if (unlikely(fnp_ring_enqueue(socket->net_rx, m) == 0))
-    {
-        // 入队失败，直接丢弃
-        free_mbuf(m);
-        return;
-    }
-
-    // 通知socket的worker来处理
-    fsocket_notify_backend(socket);
-}
-
 static void ipv4_recv_default(struct rte_mbuf* m)
 {
     free_mbuf(m); // 默认处理，直接释放
@@ -69,8 +35,8 @@ void init_ipv4_layer()
     }
 
     ipv4_register(IPPROTO_ICMP, icmp_recv_mbuf);
-    ipv4_register(IPPROTO_TCP, ipv4_recv_tcp_udp);
-    ipv4_register(IPPROTO_UDP, ipv4_recv_tcp_udp);
+    ipv4_register(IPPROTO_TCP, tcp_recv_mbuf_from_ipv4);
+    ipv4_register(IPPROTO_UDP, udp_recv_mbuf_from_ipv4);
 }
 
 
@@ -129,7 +95,7 @@ void ipv4_send_mbuf(struct rte_mbuf* m, u8 proto, u32 rip)
     hdr->dst_addr = rip;
     hdr->hdr_checksum = 0; // 硬件计算
 
-    if (0)
+    if (1)
     {
         // 硬件计算校验和，UDP/TCP和
         m->ol_flags = (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4);
@@ -165,7 +131,7 @@ void ipv4_send_mbuf(struct rte_mbuf* m, u8 proto, u32 rip)
     arp_entry_t* e = arp_lookup(next_hop);
     if (unlikely(e == NULL))
     {
-        printf("can't find arp entry for %x\n", next_hop);
+        printf("can't find arp entry for %x to %x\n", rip, next_hop);
         arp_pend_mbuf(iface, next_hop, m);
         return;
     }
