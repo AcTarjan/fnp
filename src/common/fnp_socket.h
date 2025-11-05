@@ -9,7 +9,7 @@
 
 
 typedef struct fnp_socket fsocket_t;
-typedef void (*fsocket_event_handler_func)(fsocket_t*, u64 event);
+typedef void (*fsocket_polling_func)(fsocket_t*, u64 tsc);
 
 // 与应用层交互的接口
 typedef struct fnp_socket
@@ -25,7 +25,6 @@ typedef struct fnp_socket
         {
             fnp_ring_t* rx; // 从fnp-daemon接收数据的队列
             fnp_ring_t* tx; // 向fnp-daemon发送数据的队列
-            fnp_ring_t* net_rx; // 接收网络层数据的队列
         };
 
         fnp_ring_t* pending_cnxs; // QUIC/TCP服务端收到的暂存的TCP or QUIC cnx
@@ -40,11 +39,11 @@ typedef struct fnp_socket
 
     int tx_efd_in_frontend; // 前端触发tx，通知后端有数据
     int rx_efd_in_backend; // 后端触发通知，通知前端有数据
-    int tx_efd_in_backend; // 后端监听tx是否有数据，socket在后端的唯一标识
+    int tx_efd_in_backend; // master监听tx是否有数据，socket在后端的唯一标识
 
     int frontend_id; //frontend_id为0的socket是可以释放的, 因为frontend不会再使用了
-    int worker_id; //服务端socket不需要记录worker_id, 因为服务端socket不需要发送数据; 接收数据时，新连接(不同的5元组)可能位于不同的worker.
-    u32 is_ldp : 1; // 是否是本地直接通信LDP
+    int polling_worker; // 负责轮询该socket的worker_id, polling_worker为-1表示还未轮询, 为fnp_worker_count表示LDP
+    u64 polling_tsc; // 最后一次轮询到数据的时间戳
     u32 request_syn : 1; // 应用层请求建立连接
     u32 close_requested : 1; // 应用层请求关闭socket
     u32 receive_fin : 1; // 后端收到对方的fin

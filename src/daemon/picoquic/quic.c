@@ -86,11 +86,6 @@ quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
     if (quic == NULL)
         return NULL;
 
-    fsocket_t* socket = fsocket(quic);
-    // 添加到quic列表
-    fnp_worker_t* worker = get_local_worker();
-    fnp_list_insert_head(&worker->quic_list, &quic->quic_list_node, quic);
-
     uint64_t current_time = picoquic_current_time();
 
     int ret = quic_init_context(quic, conf, current_time);
@@ -102,7 +97,7 @@ quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
     }
 
     // 创建udp socket, 还是在master线程调用的
-    fsocket_t* udp_socket = create_fsocket(fnp_protocol_udp, local, NULL, NULL, -1);
+    fsocket_t* udp_socket = create_fsocket(fnp_protocol_udp, local, NULL, NULL);
     if (udp_socket == NULL)
     {
         fnp_free(quic);

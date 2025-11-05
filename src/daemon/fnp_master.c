@@ -92,27 +92,10 @@ static inline void handle_create_cnx_fmsg(fnp_msg_t* msg)
     fmsg_send_reply(msg);
 }
 
-static void handle_master_fmsg(fnp_msg_t* msg)
-{
-    switch (msg->type)
-    {
-    case fmsg_type_create_cnx:
-        {
-            handle_create_cnx_fmsg(msg);
-            break;
-        }
-    case fmsg_type_create_stream:
-        {
-            handle_create_stream_fmsg(msg);
-            break;
-        }
-    }
-}
-
-static u64 prev_tsc = 0;
 
 static void check_daemon_info(FILE* fp)
 {
+    static u64 prev_tsc = 0;
     show_mempool_info();
 
     const int port_id = 0;
@@ -148,9 +131,45 @@ static void check_daemon_info(FILE* fp)
     rte_eth_stats_reset(port_id);
 }
 
+
+int fnp_master_add_fsocket(fsocket_t* socket)
+{
+    int fd = socket->tx_efd_in_backend;
+    struct epoll_event ev = {0}; // 注意，必须初始化为0，否则read value会有异常
+    ev.events = EPOLLIN | EPOLLET; // 边沿触发，正常是指0到非0值才会触发，与epoll配合后，值变化就会触发
+    ev.data.ptr = (void*)socket;
+    // 注意ev.data是一个union，ptr,fd,u32和u64只能设置一个值。
+
+    int ret = epoll_ctl(master.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    if (ret != 0)
+    {
+        return FNP_ERR_ADD_EVENTFD;
+    }
+
+    return FNP_OK;
+}
+
+
+static void handle_fsocket_event(fsocket_t* socket, u64 event)
+{
+    // 有数据要发送
+    if (likely(event < fsocket_event_close))
+    {
+        if (socket->polling_worker < 0)
+        {
+            printf("add fsocket to worker for sending data\n");
+            fnp_worker_add_fsocket(socket);
+        }
+    }
+    else
+    {
+        // connect or close event
+    }
+}
+
 void fnp_master_loop()
 {
-#define MAX_EVENTS 8
+#define MAX_EVENTS 32
     struct epoll_event evs[MAX_EVENTS];
 
     printf("start task to manage frontend\n");
@@ -161,9 +180,6 @@ void fnp_master_loop()
         return;
     }
 
-    // 监听master eventfd
-    fnp_epoll_add(master.epoll_fd, master.chan->event_fd);
-
     // 添加定时器，定时检查frontend状态
     int timerfd = fnp_create_timerfd(5, true);
     fnp_epoll_add(master.epoll_fd, timerfd);
@@ -173,7 +189,8 @@ void fnp_master_loop()
         int n = epoll_wait(master.epoll_fd, evs, MAX_EVENTS, -1);
         for (int i = 0; i < n; i++)
         {
-            if (evs[i].data.fd == timerfd)
+            struct epoll_event* ev = &evs[i];
+            if (unlikely(ev->data.fd == timerfd))
             {
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); //清除定时器计数
@@ -181,9 +198,16 @@ void fnp_master_loop()
                 // check_daemon_info(fp);
                 // show_all_fsocket();
             }
-            else if (evs[i].data.fd == master.chan->event_fd)
+            else
             {
-                fchannel_handle(master.chan, handle_master_fmsg);
+                // 处理fsocket的eventfd事件
+                fsocket_t* socket = (fsocket_t*)evs[i].data.ptr;
+
+                eventfd_t value;
+                eventfd_read(socket->tx_efd_in_backend, &value); //清除事件fd计数
+
+                // UDP, TCP, QUIC有不同的事件处理方式
+                handle_fsocket_event(socket, value);
             }
         }
     }
@@ -207,12 +231,6 @@ int init_fnp_master()
     fnp_init_list(&master.frontend_list, compare_pid);
     master.epoll_fd = fnp_epoll_create();
     if (master.epoll_fd < 0)
-    {
-        return FNP_ERR_MALLOC;
-    }
-
-    master.chan = fchannel_create(64);
-    if (master.chan == NULL)
     {
         return FNP_ERR_MALLOC;
     }

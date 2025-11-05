@@ -19,6 +19,7 @@
 
 // 每个lcore线程会拥有一个id实例
 RTE_DEFINE_PER_LCORE(int, worker_id);
+RTE_DEFINE_PER_LCORE(uint64_t, tsc_cycles);
 
 #define MBUF_BURST_SIZE 64
 #define PORT_ID 0
@@ -28,7 +29,7 @@ int fnp_worker_count = 0; // worker的数量
 fnp_worker_t workers[FNP_MAX_WORKER_NUM];
 
 // 目前最大的协议值 + 1
-static fsocket_event_handler_func fsocket_handlers[fnp_protocol_udp + 1];
+static fsocket_polling_func fsocket_polling_handlers[fnp_protocol_udp + 1];
 
 static void recv_data_from_nic()
 {
@@ -45,7 +46,7 @@ static void recv_data_from_nic()
 static void send_data_to_net()
 {
     fnp_worker_t* worker = get_local_worker();
-    struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
+    static struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
 
     while (1)
     {
@@ -62,24 +63,6 @@ static void send_data_to_net()
         }
         if (txNum < MBUF_BURST_SIZE) // 说明没有数据了
             break;
-    }
-}
-
-static inline void fnp_epoll_wait_fsocket(int epoll_fd)
-{
-#define MAX_EVENTS 32
-    static struct epoll_event evs[MAX_EVENTS];
-
-    // 不能阻塞，因为需要轮询网卡
-    int n = epoll_wait(epoll_fd, evs, MAX_EVENTS, 0);
-    for (int i = 0; i < n; i++)
-    {
-        eventfd_t value;
-        struct epoll_event* ev = &evs[i];
-        fsocket_t* socket = (fsocket_t*)ev->data.ptr;
-        int fd = socket->tx_efd_in_backend;
-        // eventfd_read(fd, &value);   //即使不清零，每次eventfd_wirite也会触发
-        fsocket_handlers[socket->proto](socket, value);
     }
 }
 
@@ -102,6 +85,37 @@ static inline void handle_worker_fmsg(fnp_worker_t* worker)
     }
 }
 
+void fnp_worker_add_fsocket(fsocket_t* socket)
+{
+    int worker_id = 0;
+    fnp_worker_t* worker = get_fnp_worker(worker_id);
+    socket->polling_worker = worker_id;
+    // TODO: 负载均衡以及polling_table满的处理
+    rte_spinlock_lock(&worker->polling_lock);
+    worker->polling_table[worker->polling_count++] = socket;
+    rte_spinlock_unlock(&worker->polling_lock);
+}
+
+static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
+{
+    int size = worker->polling_count;
+    for (int i = 0; i < size; i++)
+    {
+        fsocket_t* socket = worker->polling_table[i];
+        fsocket_polling_handlers[socket->proto](socket, tsc); // 执行polling处理函数
+        if (unlikely(tsc - socket->polling_tsc > RTE_PER_LCORE(tsc_cycles))) // 长时间没有数据, 不再polling
+        {
+            printf("remove fsocket from worker\n");
+            rte_spinlock_lock(&worker->polling_lock);
+            worker->polling_count--; // 减少一个数据, 正好当下标
+            worker->polling_table[i] = worker->polling_table[worker->polling_count]; // 用最后一个替换当前位置
+            rte_spinlock_unlock(&worker->polling_lock);
+            socket->polling_worker = -1; // 标记为不在polling队列中
+            size--; // 数量减少
+        }
+    }
+}
+
 // 尽量避免遍历，选择epoll来处理事件通知
 // 尽量不要将mbuf保存在ofo队列或者pending队列内部，避免mbuf池耗尽
 int fnp_worker_loop(void* arg)
@@ -114,7 +128,8 @@ int fnp_worker_loop(void* arg)
     i32 lcore_id = rte_lcore_id();
     printf("fnp_worker %d is running: lcore %d in socket %d\n", fnp_worker_id, lcore_id, socket_id);
     u64 cur_tsc, prev_tsc = 0;
-    u64 hz = fnp_get_tsc_hz(); // 10ms
+    u64 hz = fnp_get_tsc_hz();
+    RTE_PER_LCORE(tsc_cycles) = hz;
     u64 timer_timeout = hz / 1000; // 1ms
     while (1)
     {
@@ -130,8 +145,8 @@ int fnp_worker_loop(void* arg)
             prev_tsc = cur_tsc;
         }
 
-        // 处理fsocket的应用层/网络层数据
-        fnp_epoll_wait_fsocket(worker->epoll_fd);
+        // 处理polling
+        worker_handle_polling(worker, cur_tsc);
 
         // 从网卡向网络发送数据
         send_data_to_net();
@@ -153,8 +168,8 @@ int init_fnp_worker(worker_config* conf)
         worker->lcore_id = conf->lcores[id];
         i32 socket_id = (i32)rte_lcore_to_socket_id(worker->lcore_id);
 
-        // 初始化socket表
-        fnp_init_list(&worker->quic_list, NULL);
+        worker->polling_count = 0;
+        rte_spinlock_init(&worker->polling_lock);
 
         //初始化arp pending table
         char arp_name[32] = {0};
@@ -222,8 +237,8 @@ int init_fnp_worker(worker_config* conf)
 
 int start_fnp_worker()
 {
-    fsocket_handlers[fnp_protocol_tcp] = tcp_handle_fsocket_event;
-    fsocket_handlers[fnp_protocol_udp] = udp_handle_fsocket_event;
+    fsocket_polling_handlers[fnp_protocol_tcp] = tcp_handle_fsocket_event;
+    fsocket_polling_handlers[fnp_protocol_udp] = udp_polling_fsocket;
     for (int id = 0; id < fnp_worker_count; id++)
     {
         fnp_worker_t* worker = get_fnp_worker(id);

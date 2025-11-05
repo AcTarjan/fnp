@@ -84,7 +84,7 @@ int create_fsocket_action(const struct rte_mp_msg* msg, const void* peer)
     else
     {
         fapi_create_socket_req_t* param = (fapi_create_socket_req_t*)msg->param;
-        fsocket_t* socket = create_fsocket(param->proto, &param->local, &param->remote, param->conf, -1);
+        fsocket_t* socket = create_fsocket(param->proto, &param->local, &param->remote, param->conf);
         if (likely(socket != NULL))
         {
             reply.num_fds = 2;

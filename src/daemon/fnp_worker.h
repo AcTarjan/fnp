@@ -23,14 +23,15 @@ typedef struct fnp_worker
     i32 queue_id; //网卡的queue_id, 等于worker_id
     i32 lcore_id; //所在的lcore
     i32 epoll_fd; // 监听socket的tx和net_rx事件
-
+    rte_spinlock_t polling_lock; // polling_count的锁
+    int polling_count; // 当前轮询的socket数量
+    fsocket_t* polling_table[1024]; //正在轮询的fsocket列表
     struct rte_mempool* pool; //内存池
     struct rte_mempool* rx_pool; //接收内存池, 用于网卡接收数据包
     struct rte_mempool* clone_pool; //间接内存池, 用于clone
     fnp_ring_t* fmsg_ring; //当前worker的消息监听器
     fnp_ring_t* tx_ring; // 暂存需要发送的mbuf, 存储一定量后一起发送, 每个port存在一个, 目前仅支持一个port
     rte_hash* arp_table; //等待arp结果的待发送的mbuf列表, key为tip
-    fnp_list_t quic_list; //当前worker负责管理的所有socket列表
 } fnp_worker_t;
 
 extern int fnp_worker_count; // worker的数量
@@ -103,6 +104,8 @@ static inline void free_mbuf(struct rte_mbuf* m)
 {
     rte_pktmbuf_free(m);
 }
+
+void fnp_worker_add_fsocket(fsocket_t* socket);
 
 int init_fnp_worker(worker_config* conf);
 

@@ -32,6 +32,11 @@ static inline fnp_ring_t* fnp_ring_clone(fnp_ring_t* r)
     return r;
 }
 
+static inline int fnp_ring_ref_count(fnp_ring_t* r)
+{
+    return rte_atomic32_read(&r->ref_count);
+}
+
 static inline void fnp_ring_free(fnp_ring_t* r)
 {
     if (r == NULL)

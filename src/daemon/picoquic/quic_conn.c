@@ -224,7 +224,6 @@ int quic_init_cnx(quic_cnx_t* cnx, quic_context_t* quic,
     // 初始化fsocket
     fsocket_t* socket = &cnx->socket;
     socket->frontend_id = quic->socket.frontend_id;
-    socket->worker_id = quic->socket.worker_id;
     socket->proto = fnp_protocol_quic;
     fsockaddr_copy(&socket->local, local);
     fsockaddr_copy(&socket->remote, remote);

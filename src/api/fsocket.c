@@ -148,8 +148,12 @@ int fnp_sendto(int fd, fnp_mbuf_t* m, fsockaddr_t* raddr)
     return FNP_ERR_FULL;
   }
 
-  // 会严重降低吞吐量，注释掉
-  // fsocket_notify_backend(socket);
+  // 如果fsocket的对端没有polling, 则需要通知后端有数据发送
+  // LDP Socket目前仅支持polling, 不支持epoll_wait阻塞
+  if (unlikely(socket->polling_worker < 0))
+  {
+    fsocket_notify_backend(socket);
+  }
 
   return FNP_OK;
 }

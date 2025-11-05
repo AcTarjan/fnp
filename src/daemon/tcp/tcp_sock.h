@@ -25,6 +25,7 @@ typedef struct tcp_sock
 {
     fsocket_t socket;
     struct tcp_sock* parent;
+    fnp_ring_t* ipv4_ring;
 
     tcp_state_t state;
 

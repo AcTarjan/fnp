@@ -74,6 +74,12 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
 
     sock->state = TCP_NEW;
     sock->parent = NULL;
+    sock->ipv4_ring = fnp_ring_create(1024 * 16, false, false);
+    if (sock->ipv4_ring == NULL)
+    {
+        printf("Failed to create ipv4_ring ring\n");
+        return NULL;
+    }
 
     u64 tsc = fnp_get_tsc();
     init_congestion_algorithm(&sock->cc_algo, congestion_algo_cubic, tsc);
@@ -92,8 +98,6 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
     rte_timer_init(&sock->retransmit_timer);
     rte_timer_init(&sock->ack_timer);
     rte_timer_init(&sock->msl_timer);
-
-    // 开始3次握手
 
     return sock;
 }

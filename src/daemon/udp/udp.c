@@ -63,7 +63,7 @@ void udp_send_mbuf(fsocket_t* socket, struct rte_mbuf* m)
     ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
 }
 
-void udp_handle_fsocket_event(fsocket_t* socket, u64 event)
+void udp_polling_fsocket(fsocket_t* socket, u64 tsc)
 {
     // 判断是否有应用数据
 #define UDP_BURST_SIZE 32
@@ -75,10 +75,9 @@ void udp_handle_fsocket_event(fsocket_t* socket, u64 event)
         udp_send_mbuf(socket, mbufs[i]);
     }
 
-    // 可能还有数据发送, 则继续唤醒socket
-    if (n == UDP_BURST_SIZE)
+    if (n > 0) // 有数据
     {
-        fsocket_notify_backend(socket);
+        socket->polling_tsc = tsc;
     }
 }
 

@@ -341,7 +341,7 @@ void tcp_listen_recv(tcp_sock_t* sk, tcp_segment* seg)
     // 检查SYN
     if (likely(seg_set_syn(seg)))
     {
-        fsocket_t* new_socket = create_fsocket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL, fnp_worker_id);
+        fsocket_t* new_socket = create_fsocket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL);
         if (unlikely(new_socket == NULL))
         {
             tcp_send_rst(seg);

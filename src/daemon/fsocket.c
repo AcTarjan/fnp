@@ -14,6 +14,7 @@
 
 #include "fnp_worker.h"
 #include "fnp_iface.h"
+#include "fnp_master.h"
 
 #define SOCK_TABLE_SIZE 1024000
 #define RXTX_RING_SIZE 2048
@@ -223,17 +224,6 @@ static inline int create_fsocket_ring(fsocket_t* socket)
         return FNP_ERR_CREATE_EVENTFD;
     }
 
-    // TCP需要一个额外的net_rx环来接收来自网络的数据包
-    if (socket->proto == fnp_protocol_tcp)
-    {
-        socket->net_rx = fnp_ring_create(1024 * 16, false, false);
-        if (socket->net_rx == NULL)
-        {
-            printf("Failed to create net_rx ring\n");
-            return FNP_ERR_CREATE_RING;
-        }
-    }
-
     // 会被前端重新修正
     socket->rx_efd_in_frontend = socket->rx_efd_in_backend;
     socket->tx_efd_in_frontend = socket->tx_efd_in_backend;
@@ -260,9 +250,11 @@ int build_local_direct_path(fsocket_t* socket)
         // 会被前端重新修正
         socket->rx_efd_in_frontend = socket->rx_efd_in_backend;
         socket->tx_efd_in_frontend = socket->tx_efd_in_backend;
-        socket->is_ldp = true;
 
-        //对于UDP来说，Socket已经被worker监听
+        // 已经构成LDP, 标记对端一直在轮询, 避免一直写eventfd造成性能下降
+        socket->polling_worker = fnp_worker_count;
+        peer_socket->polling_worker = fnp_worker_count;
+
         return FNP_OK;
     }
 
@@ -272,29 +264,31 @@ int build_local_direct_path(fsocket_t* socket)
         return FNP_ERR_CREATE_RING;
     }
 
-
-    // 查看是否存在server socket来accept
-    fsocket_t* server_socket = lookup_socket_table(socket->proto, &socket->remote, NULL);
-    if (server_socket == NULL)
+    // TCP需要查看server socket是否存在
+    if (socket->proto == fnp_protocol_tcp)
     {
-        // 端口没有监听，connect会失败
-        return FNP_ERR_GENERIC;
+        // 查看是否存在server socket来accept
+        fsocket_t* server_socket = lookup_socket_table(socket->proto, &socket->remote, NULL);
+        if (server_socket == NULL)
+        {
+            // 端口没有监听，connect会失败
+            return FNP_ERR_GENERIC;
+        }
+
+        // UDP查看是否是listen状态
+        // TCP跳过3次握手,直接进入ESTABLISHED状态,
+        // 创建对端socket
+        peer_socket = create_fsocket(socket->proto, &socket->remote, &socket->local, NULL);
+        if (peer_socket == NULL)
+        {
+            return FNP_ERR_GENERIC;
+        }
+
+        // server socket接受到新连接，入队列
+        fnp_ring_enqueue(server_socket->rx, peer_socket);
+        fsocket_notify_frontend(server_socket);
     }
 
-    // UDP查看是否是listen状态
-    // TCP跳过3次握手,直接进入ESTABLISHED状态,
-    // 创建对端socket
-    peer_socket = create_fsocket(socket->proto, &socket->remote, &socket->local, NULL, server_socket->worker_id);
-    if (peer_socket == NULL)
-    {
-        return FNP_ERR_GENERIC;
-    }
-
-    // server socket接受到新连接，入队列
-    fnp_ring_enqueue(server_socket->rx, peer_socket);
-    fsocket_notify_frontend(server_socket);
-
-    socket->is_ldp = true;
     return FNP_OK;
 }
 
@@ -305,7 +299,7 @@ static inline int init_fsocket(fsocket_t* socket, fnp_protocol_t proto,
     socket->proto = proto;
     fsockaddr_copy(&socket->local, local);
     fsockaddr_copy(&socket->remote, remote);
-
+    socket->polling_worker = -1; // 默认没有被轮询
     encode_fsocket_name(socket);
 
     // 添加socket到master socket表
@@ -323,41 +317,7 @@ static inline int init_fsocket(fsocket_t* socket, fnp_protocol_t proto,
     return create_fsocket_ring(socket);
 }
 
-static inline int fnp_epoll_add_fsocket(int epoll_fd, fsocket_t* socket)
-{
-    int fd = socket->tx_efd_in_backend;
-    struct epoll_event ev = {0}; // 注意，必须初始化为0，否则read value会有异常
-    ev.events = EPOLLIN | EPOLLET; // 边沿触发，正常是指0到非0值才会触发，与epoll配合后，值变化就会触发
-    ev.data.ptr = (void*)socket;
-    // 注意ev.data是一个union，ptr,fd,u32和u64只能设置一个值。
-
-    return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
-}
-
-static inline void dispatch_fsocket_to_worker(fsocket_t* socket, int worker_id)
-{
-    // tcp server socket和本地通信socket不需要分配到worker
-    if (is_tcp_server_socket(socket) || socket->is_ldp)
-    {
-        socket->worker_id = FNP_MAX_WORKER_NUM;
-        return;
-    }
-
-    // master创建的socket
-    if (worker_id < 0)
-    {
-        // TODO: 负载均衡
-        worker_id = 0;
-    }
-
-    socket->worker_id = worker_id;
-    // 添加socket到worker的epoll中
-    printf("dispatch socket %s to worker %d\n", socket->name, worker_id);
-    fnp_worker_t* worker = get_fnp_worker(worker_id);
-    fnp_epoll_add_fsocket(worker->epoll_fd, socket);
-}
-
-fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote, void* conf, int worker_id)
+fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote, void* conf)
 {
     // 检查本地ip是否合法
     fnp_iface_t* iface = lookup_iface(local->ip);
@@ -406,59 +366,72 @@ fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t*
         return NULL;
     }
 
-    //分配socket给worker来处理
-    dispatch_fsocket_to_worker(socket, worker_id);
-
-    return socket;
-}
-
-static inline void remove_socket_from_worker(fsocket_t* socket)
-{
-    if (socket->worker_id == FNP_MAX_WORKER_NUM)
+    ret = fnp_master_add_fsocket(socket);
+    if (ret != FNP_OK)
     {
-        // tcp server socket 和 local udp socket不需要从worker中删除
-        return;
+        printf("fnp_master_add_fsocket fail: %d\n", ret);
+        free_fsocket(socket);
+        return NULL;
     }
 
-    fnp_worker_t* worker = get_fnp_worker(socket->worker_id);
-    epoll_ctl(worker->epoll_fd, EPOLL_CTL_DEL, socket->tx_efd_in_backend, NULL);
+    return socket;
 }
 
 // 通过此接口最终释放socket
 void free_fsocket(fsocket_t* socket)
 {
     // FNP_INFO("start to free socket %s\n", socket->name);
+    bool is_ldp_socket = (socket->polling_worker == fnp_worker_count);
+    if (is_ldp_socket)
+    {
+        // peer socket已经不能构成ldp了
+        fsocket_t* peer_socket = lookup_socket_table(socket->proto, &socket->remote, &socket->local);
+        if (peer_socket == NULL)
+        {
+            // 对端已经没有了
+            is_ldp_socket = false;
+        }
+        else
+        {
+            peer_socket->polling_worker = -1;
+        }
+    }
 
-    // 从哈希表中删除, 可能插入失败
+    // 从哈希表中删除, 可能还未插入
     delete_socket_from_table(socket);
-
-    remove_socket_from_worker(socket);
 
     struct rte_mbuf* m = NULL;
     if (likely(socket->rx != NULL))
     {
-        while (fnp_ring_dequeue(socket->rx, (void**)&m))
-            free_mbuf(m);
+        // 对于LDP, 可能对端还没有释放，他们共用一个ring
+        if (!is_ldp_socket)
+        {
+            while (fnp_ring_dequeue(socket->rx, (void**)&m))
+                free_mbuf(m);
+        }
         fnp_ring_free(socket->rx);
     }
+
     if (likely(socket->tx != NULL))
     {
-        while (fnp_ring_dequeue(socket->tx, (void**)&m))
-            free_mbuf(m);
+        // 对于LDP, 可能对端还没有释放，他们共用一个ring
+        if (!is_ldp_socket)
+        {
+            while (fnp_ring_dequeue(socket->tx, (void**)&m))
+                free_mbuf(m);
+        }
         fnp_ring_free(socket->tx);
     }
-    if (likely(socket->net_rx != NULL))
-    {
-        while (fnp_ring_dequeue(socket->net_rx, (void**)&m))
-            free_mbuf(m);
-        fnp_ring_free(socket->net_rx);
-    }
 
-    // 关闭eventfd
-    if (socket->rx_efd_in_backend >= 0)
-        close(socket->rx_efd_in_backend);
-    if (socket->tx_efd_in_backend >= 0)
-        close(socket->tx_efd_in_backend);
+    // 关闭eventfd, 对于LDP, 可能对端还没有释放，他们共用一个eventfd
+    if (!is_ldp_socket)
+    {
+        // 不是LDP socket, 直接关闭
+        if (socket->rx_efd_in_backend >= 0)
+            close(socket->rx_efd_in_backend);
+        if (socket->tx_efd_in_backend >= 0)
+            close(socket->tx_efd_in_backend);
+    }
 
     // 释放协议相关的资源
     if (socket->proto == fnp_protocol_tcp)
@@ -473,30 +446,28 @@ void free_fsocket(fsocket_t* socket)
     {
         quic_free_context((quic_context_t*)socket);
     }
-
-    // show_all_socket(); // 打印所有socket
 }
 
 void close_fsocket(fsocket_t* socket)
 {
-    // udp socket或者未分配worker的socket直接释放
-    if (socket->proto == fnp_protocol_udp || socket->worker_id == FNP_MAX_WORKER_NUM)
+    if (socket->proto == fnp_protocol_tcp)
     {
-        // 直接释放
+        // TODO: 检查TCP状态，如果已关闭，则直接释放
+        // 否则，设置tcp socket状态, 然后添加到worker polling table去发送FIN
+        return;
+    }
+
+    // udp socket, 如果没有被worker轮询，LDP Socket直接释放
+    if (socket->polling_worker < 0 || socket->polling_worker == fnp_worker_count)
+    {
+        //,是否需要把环形队列中的mbuf发送完？
+        // LDP可以直接释放
         free_fsocket(socket);
     }
-    else if (socket->proto == fnp_protocol_tcp)
+    else
     {
-        // 通知worker执行4次挥手
-        fnp_msg_t* msg = fmsg_new(fmsg_type_close_fsocket);
-        msg->ptr = socket;
-        fnp_worker_t* worker = get_fnp_worker(socket->worker_id);
-        if (unlikely(fnp_ring_enqueue(worker->fmsg_ring, msg) == 0))
-        {
-            // 通知失败，直接释放
-            fnp_free(msg);
-            free_fsocket(socket);
-        }
+        // TODO: 正在轮询中，需要等待轮询结束后再释放
+        free_fsocket(socket);
     }
 }
 
