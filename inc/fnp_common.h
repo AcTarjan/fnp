@@ -23,7 +23,7 @@ typedef long long int i64;
 
 #define fnp_malloc(size) rte_malloc(NULL, (size), 0)
 #define fnp_zmalloc(size) rte_zmalloc(NULL, (size), 0)
-#define fnp_memcpy(dst, src, len) rte_memcpy((dst), (src), (len))
+#define fnp_memcpy(dst, src, len) memcpy((dst), (src), (len))
 #define fnp_free(obj) rte_free((obj))
 #define fnp_swap32(x) rte_cpu_to_be_32((x))
 #define fnp_swap16(x) rte_cpu_to_be_16((x))

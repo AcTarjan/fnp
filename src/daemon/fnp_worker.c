@@ -34,11 +34,18 @@ static fsocket_polling_func fsocket_polling_handlers[fnp_protocol_udp + 1];
 static void recv_data_from_nic()
 {
     fnp_worker_t* worker = get_local_worker();
-    struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
+    static struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
     /*** recv from nic ***/
     i32 rxNum = rte_eth_rx_burst(PORT_ID, worker->queue_id, mbufs, MBUF_BURST_SIZE);
     for (i32 i = 0; i < rxNum; ++i)
     {
+        /* 先预取下一个 mbuf 的数据头部 (prefetch1 稍远一点) */
+        if (likely(i + 1 < rxNum))
+            rte_prefetch1(rte_pktmbuf_mtod(mbufs[i + 1], void *));
+
+        /* 预取当前 mbuf 数据（prefetch0） */
+        // prefetch 能提升0.6Mpps左右
+        rte_prefetch0(rte_pktmbuf_mtod(mbufs[i], void *));
         ether_recv_mbuf(mbufs[i]);
     }
 }
@@ -63,25 +70,6 @@ static void send_data_to_net()
         }
         if (txNum < MBUF_BURST_SIZE) // 说明没有数据了
             break;
-    }
-}
-
-static inline void handle_worker_fmsg(fnp_worker_t* worker)
-{
-    fnp_msg_t* msg;
-    // 遍历来自master的消息，少量
-    while (fnp_ring_dequeue(worker->fmsg_ring, (void**)&msg) != 0)
-    {
-        if (msg->type == fmsg_type_connect_fsocket)
-        {
-            // tcp_connect(msg->ptr);
-        }
-        else if (msg->type == fmsg_type_close_fsocket)
-        {
-            // tcp_close(msg->ptr);
-        }
-
-        fnp_free(msg);
     }
 }
 
@@ -150,9 +138,6 @@ int fnp_worker_loop(void* arg)
 
         // 从网卡向网络发送数据
         send_data_to_net();
-
-        // 处理来自master的消息
-        handle_worker_fmsg(worker);
     }
 }
 

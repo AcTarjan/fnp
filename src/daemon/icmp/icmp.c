@@ -55,9 +55,15 @@ static void icmp_echo_reply(struct rte_mbuf* orig_mbuf, u32 dip)
 void icmp_recv_mbuf(struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    fnp_iface_t* iface = lookup_iface(ipv4Hdr->dst_addr);
+    if (unlikely(iface == NULL)) //不是本机ip
+    {
+        free_mbuf(m);
+        return;
+    }
+
     int ip_hdr_len = rte_ipv4_hdr_len(ipv4Hdr);
     struct rte_icmp_hdr* icmpHdr = (struct rte_icmp_hdr*)rte_pktmbuf_adj(m, ip_hdr_len);
-
     switch (icmpHdr->icmp_type)
     {
     case RTE_IP_ICMP_ECHO_REQUEST:

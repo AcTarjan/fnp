@@ -1,7 +1,7 @@
 #include "fnp_iface.h"
 #include "fnp_context.h"
 #include "fnp_worker.h"
-#include "../../common/fnp_ring.h"
+#include "fnp_ring.h"
 #include "arp.h"
 #include "ipv4.h"
 
@@ -11,23 +11,17 @@ void ether_recv_mbuf(struct rte_mbuf* m)
     rte_pktmbuf_adj(m, RTE_ETHER_HDR_LEN);
 
     u16 type = rte_cpu_to_be_16(hdr->ether_type);
-    switch (type)
+    if (likely(type == RTE_ETHER_TYPE_IPV4))
     {
-    case RTE_ETHER_TYPE_IPV4:
-        {
-            ipv4_recv_mbuf(m);
-            break;
-        }
-    case RTE_ETHER_TYPE_ARP:
-        {
-            arp_recv_mbuf(m);
-            break;
-        }
-    default:
-        {
-            // FNP_WARN("unknown ether type: %x\n",
-            free_mbuf(m);
-        }
+        ipv4_recv_mbuf(m);
+    }
+    else if (likely(type == RTE_ETHER_TYPE_ARP))
+    {
+        arp_recv_mbuf(m);
+    }
+    else
+    {
+        free_mbuf(m);
     }
 }
 

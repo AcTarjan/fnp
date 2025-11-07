@@ -8,8 +8,8 @@ fnp_frontend_t* frontend = NULL; //该前端上下文
 
 fnp_mbuf_t* fnp_alloc_mbuf()
 {
-    // 批量申请，提高效率
-#define ALLOC_BATCH_SIZE 64
+    // 批量申请，提高效率，如果一次申请太多，时延会变大
+#define ALLOC_BATCH_SIZE 8
     static struct rte_mbuf* alloc_mbufs[ALLOC_BATCH_SIZE];
     static int alloc_idx = ALLOC_BATCH_SIZE;
 
@@ -30,7 +30,7 @@ fnp_mbuf_t* fnp_alloc_mbuf()
 void fnp_free_mbuf(fnp_mbuf_t* m)
 {
     // 批量释放
-#define FREE_BATCH_SIZE 128
+#define FREE_BATCH_SIZE 8
     static struct rte_mbuf* free_mbufs[FREE_BATCH_SIZE];
     static int free_index = 0;
 

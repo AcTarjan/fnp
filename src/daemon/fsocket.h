@@ -25,7 +25,7 @@ static inline bool fsocket_enqueue_for_app(fsocket_t* socket, void* data)
   return false;
  }
 
- fsocket_notify_frontend(socket);
+ // fsocket_notify_frontend(socket);
  return true;
 }
 

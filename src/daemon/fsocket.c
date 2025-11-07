@@ -9,6 +9,7 @@
 #include <rte_ip.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
+#include <rte_hash_crc.h>
 #include <rte_vect.h>
 #include <rte_errno.h>
 
@@ -16,8 +17,7 @@
 #include "fnp_iface.h"
 #include "fnp_master.h"
 
-#define SOCK_TABLE_SIZE 1024000
-#define RXTX_RING_SIZE 2048
+#define SOCK_TABLE_SIZE 1024
 
 #define ALL_32_BITS 0xffffffff
 #define BIT_8_TO_15 0x0000ff00
@@ -66,23 +66,27 @@ static inline xmm_t em_mask_key(void* key, xmm_t mask)
 #endif
 }
 
+// 默认开启硬件计算CRC64, 需要CPU支持
+#define EM_HASH_CRC_64
+
 static inline uint32_t ipv4_hash_crc(const void* data, __rte_unused uint32_t data_len,
                                      uint32_t init_val)
 {
-    const socket_key_t* k;
+# ifdef  EM_HASH_CRC_64
+    uint64_t d1 = *(uint64_t*)data;
+    uint64_t d2 = *(uint64_t*)(data + 1);
+    init_val = rte_hash_crc_8byte(d1, init_val);
+    init_val = rte_hash_crc_8byte(d2, init_val);
+    // init_val = rte_hash_crc_4byte(t, init_val);
+    // init_val = rte_hash_crc_4byte(k->lip, init_val);
+    // init_val = rte_hash_crc_4byte(k->rip, init_val);
+    // init_val = rte_hash_crc_4byte(*p, init_val);
+#else
+    const socket_key_t* k = data;
     uint32_t t;
     const uint32_t* p;
-
-    k = data;
     t = k->proto;
     p = (const uint32_t*)&k->rport;
-
-#ifdef EM_HASH_CRC
-    init_val = rte_hash_crc_4byte(t, init_val);
-    init_val = rte_hash_crc_4byte(k->ip_src, init_val);
-    init_val = rte_hash_crc_4byte(k->ip_dst, init_val);
-    init_val = rte_hash_crc_4byte(*p, init_val);
-#else
     init_val = rte_jhash_1word(t, init_val);
     init_val = rte_jhash_1word(k->rip, init_val);
     init_val = rte_jhash_1word(k->lip, init_val);
@@ -95,6 +99,9 @@ static inline uint32_t ipv4_hash_crc(const void* data, __rte_unused uint32_t dat
 
 struct rte_hash* create_socket_table()
 {
+    /* 强制使用硬件（若可用） */
+    rte_hash_crc_set_alg(CRC32_SSE42 | CRC32_SSE42_x64);
+
     int socket_id = (int)rte_socket_id();
     char name[32];
     sprintf(name, "fnp_socket_table");
@@ -105,7 +112,7 @@ struct rte_hash* create_socket_table()
         .hash_func = ipv4_hash_crc,
         .hash_func_init_val = 0,
         .socket_id = socket_id,
-        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY,
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY, // 使用这个会降低性能
         //无锁模式, 多读少写的场景, 删除操作不会立即释放位置
         // | RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL // 禁止删除时自动释放内存,
         //  RTE_HASH_EXTRA_FLAGS_EXT_TABLE
@@ -152,7 +159,7 @@ fsocket_t* lookup_socket_table_by_ipv4(struct rte_ipv4_hdr* hdr)
     key.xmm = em_mask_key(data, mask0.x);
 
     // 查询本地socket是否存在
-    if (rte_hash_lookup_data(fnp.sockTbl, (const void*)&key, &socket) >= 0)
+    if (rte_hash_lookup_data(fnp.sockTbl, (const void*)&key, (void**)&socket) >= 0)
     {
         return socket;
     }

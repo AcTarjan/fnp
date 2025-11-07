@@ -44,13 +44,6 @@ void ipv4_recv_mbuf(struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
 
-    fnp_iface_t* iface = lookup_iface(hdr->dst_addr);
-    if (unlikely(iface == NULL)) //不是本机ip
-    {
-        free_mbuf(m);
-        return;
-    }
-
     handlers[hdr->next_proto_id](m);
 }
 
@@ -82,6 +75,7 @@ void ipv4_send_mbuf(struct rte_mbuf* m, u8 proto, u32 rip)
 {
     // 查询路由表，选择出口网卡
     fnp_iface_t* iface = find_iface_for_outlet(rip);
+    m->port = iface->port;
 
     struct rte_ipv4_hdr* hdr = (struct rte_ipv4_hdr*)rte_pktmbuf_prepend(m, IPV4_HDR_LEN);
     hdr->version_ihl = 0x45;
@@ -127,7 +121,6 @@ void ipv4_send_mbuf(struct rte_mbuf* m, u8 proto, u32 rip)
     // 查找下一跳
     u32 next_hop = find_next_hop(iface, rip);
 
-    m->port = iface->port;
     arp_entry_t* e = arp_lookup(next_hop);
     if (unlikely(e == NULL))
     {

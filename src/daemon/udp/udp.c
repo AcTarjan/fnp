@@ -72,6 +72,7 @@ void udp_polling_fsocket(fsocket_t* socket, u64 tsc)
     u32 n = fnp_ring_dequeue_burst(socket->tx, (void**)mbufs, UDP_BURST_SIZE);
     for (int i = 0; i < n; i++)
     {
+        // 注意，这里不能prefetch，性能会下降
         udp_send_mbuf(socket, mbufs[i]);
     }
 
