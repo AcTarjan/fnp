@@ -10,6 +10,7 @@ fnp_mbuf_t* fnp_alloc_mbuf()
 {
     // 批量申请，提高效率，如果一次申请太多，时延会变大
 #define ALLOC_BATCH_SIZE 8
+    // 每个线程，并且应该放在frontend中
     static struct rte_mbuf* alloc_mbufs[ALLOC_BATCH_SIZE];
     static int alloc_idx = ALLOC_BATCH_SIZE;
 
