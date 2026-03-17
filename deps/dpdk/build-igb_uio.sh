@@ -1,7 +1,15 @@
-# 编译igb_uio
-git clone http://dpdk.org/git/dpdk-kmods
-cd dpdk-kmods/linux/igb_uio
-make -j8
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+KMODS_DIR="${SCRIPT_DIR}/dpdk-kmods"
+
+if [ ! -d "${KMODS_DIR}" ]; then
+    git clone http://dpdk.org/git/dpdk-kmods "${KMODS_DIR}"
+fi
+
+cd "${KMODS_DIR}/linux/igb_uio"
+make -j"$(nproc)"
 
 # 安装igb_uio到内核
 sudo modprobe uio        # 先加载uio框架

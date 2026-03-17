@@ -8,7 +8,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mssse3")
 find_package(PkgConfig REQUIRED)
 
 # 查找DPDK库（REQUIRED表示必需）
-#set(ENV{PKG_CONFIG_PATH} "/opt/dpdk/lib64/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+#set(ENV{PKG_CONFIG_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/../deps/dpdk/lib/x86_64-linux-gnu/pkgconfig:$ENV{PKG_CONFIG_PATH}")
 #pkg_check_modules(DPDK REQUIRED IMPORTED_TARGET libdpdk)
 #include_directories(${DPDK_INCLUDE_DIRS})
 #link_directories(${DPDK_LIBRARY_DIRS})
@@ -19,10 +19,16 @@ find_package(PkgConfig REQUIRED)
 #message(STATUS "DPDK_CFLAGS: ${DPDK_CFLAGS}")
 #message(STATUS "DPDK_STATIC_LIBRARIES: ${DPDK_STATIC_LIBRARIES}")
 
-set(DPDK_DIR "/opt/dpdk")
+set(DPDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../deps/dpdk")
+set(DPDK_LIB_DIR "${DPDK_DIR}/lib")
+if(DEFINED CMAKE_LIBRARY_ARCHITECTURE AND EXISTS "${DPDK_DIR}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+    set(DPDK_LIB_DIR "${DPDK_DIR}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+elseif(EXISTS "${DPDK_DIR}/lib64")
+    set(DPDK_LIB_DIR "${DPDK_DIR}/lib64")
+endif()
 message(STATUS "DPDK_DIR: ${DPDK_DIR}")
 include_directories(${DPDK_DIR}/include)
-link_directories(${DPDK_DIR}/lib64)
+link_directories(${DPDK_LIB_DIR})
 set(DPDK_LIBRARIES "rte_pdump;rte_timer;rte_hash;rte_cmdline;rte_pci;rte_ethdev;rte_mbuf;rte_mempool;rte_rcu;rte_ring;rte_eal")
 
 # fnp api库

@@ -1,0 +1,18 @@
+build/
+
+# 依赖库，可能与本地环境相关，不需要提交。
+deps/conf/go.sum
+deps/conf/libfnp-conf.a
+deps/conf/libfnp-conf.h
+
+deps/dpdk/dpdk-stable-22.11.8/
+deps/dpdk/bin/
+deps/dpdk/lib/
+deps/dpdk/include/
+deps/dpdk/share/
+
+deps/picotls/picotls-src/
+deps/picotls/include/
+deps/picotls/lib/
+
+

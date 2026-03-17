@@ -5,14 +5,21 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mssse3")
 
 # dpdk
-set(DPDK_DIR "/opt/dpdk")
+set(DPDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/dpdk")
+set(DPDK_LIB_DIR "${DPDK_DIR}/lib")
+if(DEFINED CMAKE_LIBRARY_ARCHITECTURE AND EXISTS "${DPDK_DIR}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+    set(DPDK_LIB_DIR "${DPDK_DIR}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+elseif(EXISTS "${DPDK_DIR}/lib64")
+    set(DPDK_LIB_DIR "${DPDK_DIR}/lib64")
+endif()
 message(STATUS "DPDK_DIR: ${DPDK_DIR}")
+message(STATUS "DPDK_LIB_DIR: ${DPDK_LIB_DIR}")
 include_directories(${DPDK_DIR}/include)
-link_directories(${DPDK_DIR}/lib64)
+link_directories(${DPDK_LIB_DIR})
 set(DPDK_LIBRARIES "rte_pdump;rte_timer;rte_hash;rte_cmdline;rte_pci;rte_ethdev;rte_mbuf;rte_mempool;rte_rcu;rte_ring;rte_eal")
 
 # picotls
-set(PICOTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dep_libs/picotls")
+set(PICOTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/picotls")
 message(STATUS "PICOTLS_DIR: ${PICOTLS_DIR}")
 include_directories(${PICOTLS_DIR}/include)
 link_directories(${PICOTLS_DIR}/lib)
@@ -23,8 +30,10 @@ set(PICOTLS_LIBRARIES "picotls-core;picotls-openssl;picotls-fusion;picotls-minic
 set(OPENSSL_LIBRARIES "ssl;crypto")
 
 # conf
-include_directories(dep_libs/conf)
-link_directories(dep_libs/conf)
+set(FNP_CONF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/conf")
+message(STATUS "FNP_CONF_DIR: ${FNP_CONF_DIR}")
+include_directories(${FNP_CONF_DIR})
+link_directories(${FNP_CONF_DIR})
 
 set(FNP_CC_ALGO_FILES
         src/daemon/cc/cc_internal.c
@@ -117,9 +126,10 @@ target_include_directories(fnp-daemon PRIVATE src/daemon/arp)
 target_link_libraries(fnp-daemon
         PRIVATE
         ${OPENSSL_LIBRARIES}
+        fnp-conf
         PUBLIC
         ${PICOTLS_LIBRARIES}
-        -pthread -lm -ldl -lnuma -lpcap -latomic libfnp-conf.so
+        -pthread -lm -ldl -lnuma -lpcap -latomic
         ${DPDK_LIBRARIES}
 )
 

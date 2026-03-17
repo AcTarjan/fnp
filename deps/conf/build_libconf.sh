@@ -1,1 +1,0 @@
-go build -buildmode=c-shared -o ./libfnp-conf.so main.go

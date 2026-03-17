@@ -1,7 +1,10 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd /opt/dpdk/bin/
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+DPDK_DIR="${SCRIPT_DIR}/../deps/dpdk"
+
+cd "${DPDK_DIR}/bin"
 #modprobe uio_pci_generic
 modprobe vfio-pci
 # 适用于不支持iommu的设备
