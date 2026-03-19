@@ -7,6 +7,7 @@
 #define FAPI_CREATE_FSOCKET_ACTION_NAME "fapi_create_fsocket"
 #define FAPI_ACCEPT_FSOCKET_ACTION_NAME "fapi_accept_fsocket"
 #define FAPI_CLOSE_FSOCKET_ACTION_NAME "fapi_close_fsocket"
+#define FAPI_SOCKET_CONF_MAX_LEN 128
 
 typedef struct fapi_common_req
 {
@@ -21,10 +22,10 @@ typedef struct fapi_common_resp
 
 typedef struct fapi_create_socket_req
 {
-    fnp_protocol_t proto;
-    fsockaddr_t local;
-    fsockaddr_t remote;
-    void* conf;
+    fsocket_type_t type;
+    u16 conf_len;
+    u16 reserved0;
+    u8 conf[FAPI_SOCKET_CONF_MAX_LEN];
 } fapi_create_socket_req_t;
 
 #endif //FNP_FNP_API_H

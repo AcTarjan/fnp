@@ -77,8 +77,8 @@ static void tcp_send_mbuf(tcp_sock_t* sock, struct rte_mbuf* m, u32 seq, u8 flag
 
     struct rte_tcp_hdr* hdr = (struct rte_tcp_hdr*)rte_pktmbuf_prepend(m, hdr_len);
 
-    hdr->src_port = socket->local.port;
-    hdr->dst_port = socket->remote.port;
+    hdr->src_port = fsocket_local_addr_const(socket)->port;
+    hdr->dst_port = fsocket_remote_addr_const(socket)->port;
     hdr->sent_seq = fnp_swap32(seq);
     hdr->recv_ack = fnp_swap32(sock->rcv_nxt);
     hdr->tcp_flags = flags;
@@ -92,7 +92,7 @@ static void tcp_send_mbuf(tcp_sock_t* sock, struct rte_mbuf* m, u32 seq, u8 flag
         tcp_write_syn_options(sock, hdr);
     }
 
-    ipv4_send_mbuf(m, fnp_protocol_tcp, socket->remote.ip);
+    ipv4_send_mbuf(m, IPPROTO_TCP, fsocket_remote_addr_const(socket)->ip);
 }
 
 void tcp_send_rst(tcp_segment* seg)

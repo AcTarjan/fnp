@@ -52,11 +52,10 @@ static void icmp_echo_reply(struct rte_mbuf* orig_mbuf, u32 dip)
     ipv4_send_mbuf(m, IPPROTO_ICMP, dip);
 }
 
-void icmp_recv_mbuf(struct rte_mbuf* m)
+static void icmp_recv_mbuf(struct rte_mbuf* m)
 {
     struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-    fnp_iface_t* iface = lookup_iface(ipv4Hdr->dst_addr);
-    if (unlikely(iface == NULL)) //不是本机ip
+    if (unlikely(lookup_ifaddr(ipv4Hdr->dst_addr) == NULL))
     {
         free_mbuf(m);
         return;
@@ -109,4 +108,9 @@ void icmp_send_port_unreachable(struct rte_mbuf* orig_mbuf)
 
     u32 dst_ip = orig_ipv4_hdr->src_addr;
     ipv4_send_mbuf(m, IPPROTO_ICMP, dst_ip);
+}
+
+int icmp_module_init(void)
+{
+    return ipv4_register_input(IPPROTO_ICMP, icmp_recv_mbuf);
 }

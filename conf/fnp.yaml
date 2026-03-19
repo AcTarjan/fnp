@@ -1,0 +1,40 @@
+# DPDK相关配置
+dpdk:
+  mbuf_pool_size: 4096
+  lcores: [2, 3] # 必填,指定DPDK使用的核心
+  app_id: "fnp" # 对应DPDK的--file-prefix参数，必须唯一，标识不同的DPDK程序
+  log_level: 8 # DPDK日志级别，0-8，数值越大日志越详细
+  other_argv: # 其它补充的DPDK启动参数，会直接附加在启动参数后
+#    - "--main-lcore=2"                      # 指定主核，必须出现在lcores中
+#    - "--iova-mode=pa"                      # iova模式, 取值：pa or va
+#    - "--base-virtaddr=0x000000000000"      # 虚拟基地址
+#    - "-a 0000:03:00.0"                     # 白名单, -a, --allow，该参数可以出现多次
+#    - "-n 4"                                # 内存通道数
+#    - "--no-huge"                           # 不使用hugepage
+#    - "--no-pci"                            # 不使用pci
+
+# 网络配置
+network:
+  devices: # 底层网络设备列表, 在DPDK中的port编号按声明顺序从0开始
+    - name: "eth0"
+      type: "physical" # 设备类型: physical表示物理网卡, tap表示DPDK TAP vdev
+      pci: "0000:03:00.0" # physical类型必填, 会根据此构造DPDK白名单参数; tap类型忽略
+      mac: "" # 可选MAC地址, 留空表示使用设备默认MAC
+      promiscuous: true
+      nb_rx_desc: 2048 #接收描述符数
+      nb_tx_desc: 2048 #发送描述符数
+      ifaddrs: # 挂在该device下的本地IPv4地址列表, 每一项都是一个ifaddr
+        - "192.168.136.88/24"
+  routes: # 静态路由/默认路由列表
+    - dst: "default" # 默认路由，也可以写标准CIDR，如 "10.0.0.0/24"
+      via: "192.168.11.2" # 下一跳IPv4地址
+      dev: "eth0" # 出口device名称
+      src: "192.168.136.88" # 可选源地址，需属于该device下的某个ifaddr
+
+# 工作线程配置
+worker: #每个worker对应一个rx/tx queue, 绑定一个lcore
+  mbuf_pool_size: 4095
+  clone_pool_size: 4095
+  rx_pool_size: 4095
+  tx_ring_size: 8192 #发送环形队列大小, 必须是2的幂
+  lcores: [3] # 每个worker按顺序绑定的lcore

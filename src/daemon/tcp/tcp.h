@@ -18,4 +18,6 @@ void tcp_recv_mbuf_from_ipv4(struct rte_mbuf* m);
 
 void tcp_handle_fsocket_event(fsocket_t* socket, u64 event);
 
+extern const fsocket_ops_t tcp_socket_ops;
+
 #endif // FNP_TCP_H

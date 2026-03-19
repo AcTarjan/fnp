@@ -38,7 +38,7 @@ spec:
           volumeMounts:
             - mountPath: /root/k8s
               name: k8s
-            - mountPath: /root/deps/dpdk
+            - mountPath: /opt/dpdk
               name: dpdk
               readOnly: true
             - mountPath: /var/run/dpdk
@@ -56,7 +56,7 @@ spec:
             type: Directory
           name: k8s
         - hostPath:
-            path: /root/fnp/deps/dpdk
+            path: /opt/dpdk
             type: Directory
           name: dpdk
         - hostPath:

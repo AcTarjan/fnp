@@ -8,7 +8,6 @@
 #include "sys/epoll.h"
 #include <rte_per_lcore.h>
 
-#include "fnp_context.h"
 #include "fnp_list.h"
 #include "fnp_msg.h"
 #include "fsocket.h"
@@ -30,22 +29,29 @@ typedef struct fnp_worker
     struct rte_mempool* rx_pool; //接收内存池, 用于网卡接收数据包
     struct rte_mempool* clone_pool; //间接内存池, 用于clone
     fnp_ring_t* fmsg_ring; //当前worker的消息监听器
-    fnp_ring_t* tx_ring; // 暂存需要发送的mbuf, 存储一定量后一起发送, 每个port存在一个, 目前仅支持一个port
+    fnp_ring_t* tx_ring; // 暂存待发送的mbuf, 由worker按mbuf->port分发到对应device
     rte_hash* arp_table; //等待arp结果的待发送的mbuf列表, key为tip
 } fnp_worker_t;
 
-extern int fnp_worker_count; // worker的数量
-extern fnp_worker_t workers[FNP_MAX_WORKER_NUM];
+typedef struct fnp_worker_context
+{
+    int count;
+    fnp_worker_t workers[FNP_MAX_WORKER_NUM];
+} fnp_worker_context_t;
 
 RTE_DECLARE_PER_LCORE(int, worker_id); /**< Per thread "lcore id". */
 
 #define fnp_worker_id   RTE_PER_LCORE(worker_id)
-#define get_local_worker()  &workers[fnp_worker_id]
-#define get_fnp_worker(id)  &workers[(id)]
+
+int get_fnp_worker_count(void);
+
+fnp_worker_t* get_local_worker(void);
+
+fnp_worker_t* get_fnp_worker(int id);
 
 static void show_mempool_info()
 {
-    for (int i = 0; i < fnp_worker_count; i++)
+    for (int i = 0; i < get_fnp_worker_count(); i++)
     {
         fnp_worker_t* worker = get_fnp_worker(i);
         struct rte_mempool* mp = worker->pool;

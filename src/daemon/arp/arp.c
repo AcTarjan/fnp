@@ -1,8 +1,9 @@
 #include "arp.h"
-#include "fnp_context.h"
 #include "ether.h"
+#include "hash.h"
 
 #include <unistd.h>
+#include <string.h>
 
 #include <rte_arp.h>
 #include <rte_malloc.h>
@@ -16,11 +17,24 @@ static struct rte_ether_addr broadcast = {
     0xFF, 0xFF, 0xFF
 };
 
-
-int init_arp_layer()
+typedef struct arp_context
 {
-    fnp.arpTbl = hash_create("ArpSocketTable", ARP_TABLE_SIZE, 4);
-    if (unlikely(fnp.arpTbl == NULL))
+    rte_hash* arp_tbl;
+} arp_context_t;
+
+static arp_context_t arp_context;
+
+static inline void arp_init_key(arp_key_t* key, const fnp_ifaddr_t* ifaddr, u32 ip)
+{
+    memset(key, 0, sizeof(*key));
+    key->ifaddr_id = ifaddr == NULL ? 0 : ifaddr->id;
+    key->ip = ip;
+}
+
+static int arp_init_context(void)
+{
+    arp_context.arp_tbl = hash_create("ArpSocketTable", ARP_TABLE_SIZE, sizeof(arp_key_t));
+    if (unlikely(arp_context.arp_tbl == NULL))
     {
         printf("alloc arp table error!\n");
         return -1;
@@ -29,12 +43,13 @@ int init_arp_layer()
     return 0;
 }
 
-arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
+static arp_entry_t* arp_insert_entry(fnp_ifaddr_t* ifaddr, u32 ip, struct rte_ether_addr* mac)
 {
+    arp_key_t key;
     arp_entry_t* e = NULL;
+    arp_init_key(&key, ifaddr, ip);
 
-    // can't find
-    if (unlikely(!hash_lookup(fnp.arpTbl, &ip, (void**)&e)))
+    if (unlikely(!hash_lookup(arp_context.arp_tbl, &key, (void**)&e)))
     {
         e = fnp_malloc(sizeof(arp_entry_t));
         if (unlikely(e == NULL))
@@ -42,7 +57,8 @@ arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
             printf("malloc arp_entry_t failed!\n");
             return NULL;
         }
-        e->ip = ip;
+        memset(e, 0, sizeof(*e));
+        e->key = key;
     }
 
     if (mac != NULL)
@@ -51,10 +67,9 @@ arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
         rte_ether_addr_copy(mac, &e->mac);
     }
 
-
-    if (likely(!hash_add(fnp.arpTbl, &ip, e)))
+    if (likely(!hash_add(arp_context.arp_tbl, &e->key, e)))
     {
-        printf("fail to add %u in gArpTable\n", ip);
+        printf("fail to add arp entry for ifaddr %u ip %u\n", key.ifaddr_id, ip);
         fnp_free(e);
         return NULL;
     }
@@ -62,22 +77,16 @@ arp_entry_t* arp_insert_entry(u32 ip, struct rte_ether_addr* mac)
     return e;
 }
 
-static void arp_del_entry(arp_entry_t* e)
+arp_entry_t* arp_lookup(fnp_ifaddr_t* ifaddr, u32 ip)
 {
-    hash_del(fnp.arpTbl, &e->ip);
-    fnp_free(e);
-}
-
-arp_entry_t* arp_lookup(u32 ip)
-{
+    arp_key_t key;
     arp_entry_t* e = NULL;
-
-    hash_lookup(fnp.arpTbl, &ip, (void**)&e);
-
+    arp_init_key(&key, ifaddr, ip);
+    hash_lookup(arp_context.arp_tbl, &key, (void**)&e);
     return e;
 }
 
-struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
+static struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
 {
     struct rte_mbuf* m = alloc_mbuf();
     if (unlikely(m == NULL))
@@ -89,165 +98,155 @@ struct rte_mbuf* arp_alloc_mbuf(u16 opcode)
     rte_pktmbuf_append(m, ARP_HDR_LEN);
 
 #define IPV4_ADDR_LEN 4
-    // add arp header
     struct rte_arp_hdr* arp_hdr = rte_pktmbuf_mtod(m, struct rte_arp_hdr *);
-    arp_hdr->arp_hardware = fnp_swap16(RTE_ARP_HRD_ETHER); // 硬件类型：1 以太网
-    arp_hdr->arp_protocol = fnp_swap16(RTE_ETHER_TYPE_IPV4); // 协议类型：0x0800 IP地址
-    arp_hdr->arp_hlen = RTE_ETHER_ADDR_LEN; // 硬件地址长度：6
-    arp_hdr->arp_plen = IPV4_ADDR_LEN; // 协议地址长度：4
-    arp_hdr->arp_opcode = fnp_swap16(opcode); // OP
+    arp_hdr->arp_hardware = fnp_swap16(RTE_ARP_HRD_ETHER);
+    arp_hdr->arp_protocol = fnp_swap16(RTE_ETHER_TYPE_IPV4);
+    arp_hdr->arp_hlen = RTE_ETHER_ADDR_LEN;
+    arp_hdr->arp_plen = IPV4_ADDR_LEN;
+    arp_hdr->arp_opcode = fnp_swap16(opcode);
 
     return m;
 }
 
-void arp_send_request(fnp_iface_t* iface, u32 tip)
+void arp_send_request(fnp_ifaddr_t* ifaddr, u32 tip)
 {
+    if (ifaddr == NULL || ifaddr->dev == NULL)
+    {
+        return;
+    }
+
     struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REQUEST);
     if (unlikely(mbuf == NULL))
+    {
         return;
-    mbuf->port = iface->port;
+    }
 
+    mbuf->port = ifaddr->dev->port_id;
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(mbuf, struct rte_arp_hdr *);
     struct rte_arp_ipv4* arp_data = &arpHdr->arp_data;
-
-    // sender
-    struct rte_ether_addr* src_mac = get_port_mac(iface->port);
+    const struct rte_ether_addr* src_mac = get_device_mac(ifaddr->dev);
     rte_ether_addr_copy(src_mac, &arp_data->arp_sha);
-    arp_data->arp_sip = iface->ip;
-
-    // target
+    arp_data->arp_sip = ifaddr->local_ip_be;
     memset(&arp_data->arp_tha, 0, RTE_ETHER_ADDR_LEN);
     arp_data->arp_tip = tip;
 
     ether_send_mbuf(mbuf, &broadcast, RTE_ETHER_TYPE_ARP);
 }
 
-static void arp_send_reply(fnp_iface_t* iface, struct rte_arp_hdr* req)
+static void arp_send_reply(fnp_ifaddr_t* ifaddr, struct rte_arp_hdr* req)
 {
-    struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REPLY);
-    mbuf->port = iface->id;
+    if (ifaddr == NULL || ifaddr->dev == NULL)
+    {
+        return;
+    }
 
+    struct rte_mbuf* mbuf = arp_alloc_mbuf(RTE_ARP_OP_REPLY);
+    if (unlikely(mbuf == NULL))
+    {
+        return;
+    }
+
+    mbuf->port = ifaddr->dev->port_id;
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(mbuf, struct rte_arp_hdr *);
     struct rte_arp_ipv4* arp_data = &arpHdr->arp_data;
-
-    // sender
-    struct rte_ether_addr* src_mac = get_port_mac(iface->port);
+    const struct rte_ether_addr* src_mac = get_device_mac(ifaddr->dev);
     rte_ether_addr_copy(src_mac, &arp_data->arp_sha);
-    arp_data->arp_sip = iface->ip;
-
-    // target
-    struct rte_ether_addr* tha = &req->arp_data.arp_sha;
-    rte_ether_addr_copy(tha, &arp_data->arp_tha);
+    arp_data->arp_sip = ifaddr->local_ip_be;
+    rte_ether_addr_copy(&req->arp_data.arp_sha, &arp_data->arp_tha);
     arp_data->arp_tip = req->arp_data.arp_sip;
 
     ether_send_mbuf(mbuf, &arp_data->arp_tha, RTE_ETHER_TYPE_ARP);
 }
 
-
-void arp_recv_mbuf(struct rte_mbuf* m)
+static void arp_recv_mbuf(struct rte_mbuf* m)
 {
     struct rte_arp_hdr* arpHdr = rte_pktmbuf_mtod(m, struct rte_arp_hdr *);
-
     u32 sip = arpHdr->arp_data.arp_sip;
     u32 tip = arpHdr->arp_data.arp_tip;
-
-    fnp_iface_t* iface = lookup_iface(tip);
-    if (iface == NULL) //不是本机的arp请求
+    fnp_ifaddr_t* ifaddr = lookup_ifaddr(tip);
+    if (ifaddr == NULL)
     {
-        printf("recv wrong arp\n");
         free_mbuf(m);
         return;
     }
 
-    printf("recv arp in %d for %s\n", fnp_worker_id, iface->name);
-
-    // 注意: 只有worker0会收到arp
-    arp_insert_entry(sip, &arpHdr->arp_data.arp_sha);
-
+    arp_insert_entry(ifaddr, sip, &arpHdr->arp_data.arp_sha);
     switch (fnp_swap16(arpHdr->arp_opcode))
     {
     case RTE_ARP_OP_REQUEST:
-        {
-            arp_send_reply(iface, arpHdr);
-            break;
-        }
+        arp_send_reply(ifaddr, arpHdr);
+        break;
     case RTE_ARP_OP_REPLY:
-        {
-            break;
-        }
+        break;
     }
 
     free_mbuf(m);
 }
 
-void arp_handle_local_pending(struct rte_timer* timer, void* arg);
+static void arp_handle_local_pending(struct rte_timer* timer, void* arg);
 
 static void start_arp_timer(arp_pend_entry_t* e)
 {
-    // 启动定时器
     u32 lcore_id = rte_lcore_id();
-    u64 hz = rte_get_timer_hz(); // 定时器的频率
-    u64 ticks = (1 << e->count) * hz / 100; // n * 10ms
-    if (unlikely(rte_timer_reset(&e->timer, ticks, SINGLE, lcore_id,
-        arp_handle_local_pending, e) != 0))
+    u64 hz = rte_get_timer_hz();
+    u64 ticks = (1 << e->count) * hz / 100;
+    if (unlikely(rte_timer_reset(&e->timer, ticks, SINGLE, lcore_id, arp_handle_local_pending, e) != 0))
     {
-        printf("fail to reset timer of arp %u\n", e->ip);
+        printf("fail to reset timer of arp %u\n", e->key.ip);
     }
 }
 
-void arp_handle_local_pending(struct rte_timer* timer, void* arg)
+static void arp_handle_local_pending(struct rte_timer* timer, void* arg)
 {
+    (void)timer;
     arp_pend_entry_t* pe = arg;
-    arp_entry_t* e = arp_lookup(pe->ip); //检查是否已经确定了arp项
+    arp_entry_t* e = arp_lookup(pe->ifaddr, pe->key.ip);
     if (unlikely(e == NULL))
     {
         if (unlikely(pe->count == 5))
         {
-            // 放弃发送
-            printf("arp request %u timeout\n", pe->ip);
             fnp_list_node_t* node = fnp_list_first(&pe->pending_list);
             while (node != NULL)
             {
                 struct rte_mbuf* m = node->value;
-                node = node->next;
+                fnp_list_node_t* next = node->next;
                 free_mbuf(m);
+                fnp_free(node);
+                node = next;
             }
             fnp_free(pe);
             return;
         }
-        // 重发arp请求
+
         pe->count++;
-        arp_send_request(pe->iface, pe->ip);
+        arp_send_request(pe->ifaddr, pe->key.ip);
         start_arp_timer(pe);
         return;
     }
 
-    // 发送pending mbuf
     fnp_list_node_t* node = fnp_list_first(&pe->pending_list);
     while (node != NULL)
     {
         struct rte_mbuf* m = node->value;
-        node = node->next;
+        fnp_list_node_t* next = node->next;
         ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
+        fnp_free(node);
+        node = next;
     }
 
-    // 从hash表中删除
     fnp_worker_t* worker = get_local_worker();
-    hash_del(worker->arp_table, &pe->ip);
-    // 释放资源
+    hash_del(worker->arp_table, &pe->key);
     fnp_free(pe);
 }
 
-
-void arp_pend_mbuf(fnp_iface_t* iface, u32 next_ip, struct rte_mbuf* m)
+void arp_pend_mbuf(fnp_ifaddr_t* ifaddr, u32 next_ip, struct rte_mbuf* m)
 {
-    // 添加到本地pending_mbuf
     fnp_worker_t* worker = get_local_worker();
-
+    arp_key_t key;
     arp_pend_entry_t* e = NULL;
-    if (!hash_lookup(worker->arp_table, &next_ip, (void**)&e))
+    arp_init_key(&key, ifaddr, next_ip);
+    if (!hash_lookup(worker->arp_table, &key, (void**)&e))
     {
-        // 创建arp_pend_entry_t
         e = fnp_malloc(sizeof(arp_pend_entry_t));
         if (unlikely(e == NULL))
         {
@@ -255,40 +254,36 @@ void arp_pend_mbuf(fnp_iface_t* iface, u32 next_ip, struct rte_mbuf* m)
             return;
         }
 
-        e->ip = next_ip;
+        memset(e, 0, sizeof(*e));
+        e->ifaddr = ifaddr;
+        e->key = key;
         e->count = 0;
-        e->iface = iface;
-        fnp_init_list(&e->pending_list, NULL);
         rte_timer_init(&e->timer);
+        fnp_init_list(&e->pending_list, NULL);
+        hash_add(worker->arp_table, &e->key, e);
 
-        // 添加worker的arp table中
-        hash_add(worker->arp_table, &next_ip, e);
+        arp_send_request(ifaddr, next_ip);
+        start_arp_timer(e);
     }
 
-    // 放入pending队列中
-    fnp_list_node_t* node = rte_mbuf_to_priv(m);
-    fnp_list_insert_head(&e->pending_list, node, m);
+    fnp_list_node_t* node = fnp_zmalloc(sizeof(*node));
+    if (unlikely(node == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
 
-    // 发送arp请求, 只有worker0能收到arp reply
-    arp_send_request(iface, next_ip);
-    start_arp_timer(e);
+    fnp_list_insert_tail(&e->pending_list, node, m);
 }
 
 void arp_update_entry()
 {
-    u32 next = 0;
-    u32* key = NULL;
-    arp_entry_t* e = NULL;
-    while (hash_iterate(fnp.arpTbl, &key, &e, &next))
-    {
-        if (0)
-        {
-            // if(cur_tsc - e->tsc > 20 * hz) {
-            //     arp_del_entry(e);
-            // }
-        }
-
-        // arp_send_request(0, e->ip);
-    }
 }
 
+int arp_module_init(void)
+{
+    int ret = arp_init_context();
+    CHECK_RET(ret);
+
+    return ether_register_input(RTE_ETHER_TYPE_ARP, arp_recv_mbuf);
+}

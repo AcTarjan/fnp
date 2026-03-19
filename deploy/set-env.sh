@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-DPDK_DIR="${SCRIPT_DIR}/../deps/dpdk"
+DPDK_DIR="/opt/dpdk"
 
 cd "${DPDK_DIR}/bin"
 #modprobe uio_pci_generic

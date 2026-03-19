@@ -1,6 +1,8 @@
 #include "tcp_sock.h"
 
+#include "fnp.h"
 #include "fnp_context.h"
+#include "fnp_iface.h"
 #include "fnp_worker.h"
 #include "tcp_ofo.h"
 #include "tcp_in.h"
@@ -21,6 +23,33 @@ char* tcp_state_str[TCP_STATE_END] = {
     "TCP_TIME_WAIT",
     "TCP_CLOSED",
 };
+
+static fsocket_t* tcp_socket_create(const fsockaddr_t* local, const fsockaddr_t* remote, void* conf);
+static void tcp_socket_close(fsocket_t* socket);
+static void tcp_socket_send(fsocket_t* socket, u64 tsc);
+
+static inline void tcp_socket_resolve_addrs(const fsockaddr_t* local, const fsockaddr_t* remote,
+                                            const fnp_tcp_socket_conf_t* conf,
+                                            fsockaddr_t* resolved_local, fsockaddr_t* resolved_remote)
+{
+    fsockaddr_copy(resolved_local, local);
+    fsockaddr_copy(resolved_remote, remote);
+
+    if (conf == NULL)
+    {
+        return;
+    }
+
+    if (resolved_local->family == FSOCKADDR_NONE)
+    {
+        fsockaddr_copy(resolved_local, &conf->local);
+    }
+
+    if (resolved_remote->family == FSOCKADDR_NONE)
+    {
+        fsockaddr_copy(resolved_remote, &conf->remote);
+    }
+}
 
 static inline void tcp_close_sock(tcp_sock_t* sock)
 {
@@ -62,9 +91,14 @@ void init_tcp_layer()
 
 tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
 {
+    (void)local;
+    (void)conf;
+
     tcp_sock_t* sock = fnp_zmalloc(sizeof(tcp_sock_t));
     if (sock == NULL)
+    {
         return NULL;
+    }
 
     if (remote == NULL || remote->ip == 0) //服务端socket
     {
@@ -78,6 +112,7 @@ tcp_sock_t* tcp_create_sock(fsockaddr_t* local, fsockaddr_t* remote, void* conf)
     if (sock->ipv4_ring == NULL)
     {
         printf("Failed to create ipv4_ring ring\n");
+        fnp_free(sock);
         return NULL;
     }
 
@@ -130,11 +165,88 @@ void free_tcp_sock(tcp_sock_t* sock)
         free_mbuf(seg->data);
     }
 
+    if (sock->ipv4_ring != NULL)
+    {
+        fnp_ring_free(sock->ipv4_ring);
+    }
+
     fnp_free(sock);
 }
 
 void tcp_handle_fsocket_event(fsocket_t* socket, u64 event)
 {
+    (void)event;
     tcp_sock_t* sock = (tcp_sock_t*)socket;
     tcp_send(sock);
 }
+
+static fsocket_t* tcp_socket_create(const fsockaddr_t* local, const fsockaddr_t* remote, void* conf)
+{
+    const fnp_tcp_socket_conf_t* tcp_conf = conf;
+    fsockaddr_t resolved_local;
+    fsockaddr_t resolved_remote;
+    tcp_socket_resolve_addrs(local, remote, tcp_conf, &resolved_local, &resolved_remote);
+
+    if (unlikely(resolved_local.ip == 0 || lookup_iface(resolved_local.ip) == NULL))
+    {
+        return NULL;
+    }
+
+    tcp_sock_t* tcp_socket = tcp_create_sock(&resolved_local, &resolved_remote, conf);
+    if (tcp_socket == NULL)
+    {
+        return NULL;
+    }
+
+    fsocket_t* socket = &tcp_socket->socket;
+    fsocket_init_base(socket, fsocket_type_tcp);
+    fsockaddr_copy(fsocket_local_addr(socket), &resolved_local);
+    fsockaddr_copy(fsocket_remote_addr(socket), &resolved_remote);
+    fsocket_format_transport_name(socket, "TCP");
+
+    if (fsocket_add_to_table(socket) != FNP_OK)
+    {
+        tcp_socket_close(socket);
+        return NULL;
+    }
+
+    int ret;
+    if (fsocket_local_addr_const(socket)->ip != 0 &&
+        is_local_ipaddr(fsocket_remote_addr_const(socket)->ip))
+    {
+        ret = fsocket_build_local_direct_path(socket);
+    }
+    else
+    {
+        ret = fsocket_create_io_rings(socket, is_server_socket(socket));
+    }
+
+    if (ret != FNP_OK)
+    {
+        tcp_socket_close(socket);
+        return NULL;
+    }
+
+    printf("create socket %s\n", socket->name);
+    return socket;
+}
+
+static void tcp_socket_close(fsocket_t* socket)
+{
+    fsocket_cleanup(socket);
+    free_tcp_sock((tcp_sock_t*)socket);
+}
+
+static void tcp_socket_send(fsocket_t* socket, u64 tsc)
+{
+    (void)tsc;
+    tcp_send((tcp_sock_t*)socket);
+}
+
+const fsocket_ops_t tcp_socket_ops = {
+    // .create = tcp_socket_create,
+    // TCP create path is intentionally disabled until it is migrated to conf-only.
+    .close = tcp_socket_close,
+    .send = tcp_socket_send,
+    .recv = NULL,
+};

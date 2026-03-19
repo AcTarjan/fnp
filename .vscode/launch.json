@@ -1,0 +1,54 @@
+{
+  // fnp-daemon 现在支持通过命令行参数传入配置文件路径。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "fnp-daemon (gdb, default config)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/fnp-daemon",
+      "args": [
+        "${workspaceFolder}/conf/fnp.yaml"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        {
+          "description": "Enable GDB pretty printing",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "environment": [
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "${workspaceFolder}/build:${env:LD_LIBRARY_PATH}"
+        }
+      ]
+    },
+    {
+      "name": "fnp-daemon (run only, tap test)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/fnp-daemon",
+      "args": [
+        "${workspaceFolder}/conf/fnp-tap.yaml"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "noDebug": true,
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "environment": [
+        {
+          "name": "LD_LIBRARY_PATH",
+          "value": "${workspaceFolder}/build:${env:LD_LIBRARY_PATH}"
+        }
+      ]
+    }
+  ]
+}

@@ -24,7 +24,7 @@ void hash_free(rte_hash* h)
 
 bool hash_add(rte_hash* h, void* key, void* data)
 {
-    return rte_hash_add_key_data(h, key, data) == 0;
+    return rte_hash_add_key_data(h, key, data) >= 0;
 }
 
 bool hash_lookup(rte_hash* h, void* key, void** data)

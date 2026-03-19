@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DPDK_DIR="${HOME}/deps/dpdk"
+DPDK_DIR="/opt/dpdk"
 for candidate in \
     "${DPDK_DIR}/lib/$(uname -m)-linux-gnu" \
     "${DPDK_DIR}/lib64" \

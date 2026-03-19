@@ -23,12 +23,13 @@ typedef struct fsockaddr
     u32 ip;
 } fsockaddr_t;
 
-typedef enum fnp_protocol
+typedef enum fsocket_type
 {
-    fnp_protocol_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
-    fnp_protocol_tcp = IPPROTO_TCP,
-    fnp_protocol_udp = IPPROTO_UDP,
-} fnp_protocol_t;
+    fsocket_type_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
+    fsocket_type_tcp = IPPROTO_TCP,
+    fsocket_type_udp = IPPROTO_UDP,
+    fsocket_type_raw = 253, // 直接收发ipv4数据包
+} fsocket_type_t;
 
 static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
 {

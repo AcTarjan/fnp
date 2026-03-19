@@ -7,7 +7,7 @@
 - 前端是动态库 `fnp-api`，由业务进程加载。
 - 后端是宿主机上的守护进程 `fnp-daemon`。
 - 正常运行时通过 DPDK 接管物理网卡。
-- 测试态希望通过 TAP 设备与内核协议栈互通，但这一条路径目前还没有实现。
+- 测试态现在可以通过 DPDK TAP `vdev` 与内核协议栈互通，参考 [fnp-tap.yaml](/root/fnp/conf/fnp-tap.yaml) 和 [setup-tap-test.sh](/root/fnp/deploy/setup-tap-test.sh)。
 
 当前仓库里，UDP 路径最完整；TCP 已有真实状态机和数据通路；QUIC 后端代码很多，但前端公开 API 还没有完整接通。
 
@@ -17,7 +17,7 @@
 
 1. 根目录 [CMakeLists.txt](/root/fnp/CMakeLists.txt)
 2. `inc/` 下的当前头文件，以及被 `CMakeLists.txt` 实际编译进目标的 `src/api/`、`src/common/`、`src/daemon/`
-3. `deps/conf/main.go` 定义的配置文件 schema，与 [deps/conf/fnp.yaml](/root/fnp/deps/conf/fnp.yaml)
+3. [main.go](/root/fnp/src/daemon/go/main.go) 定义的配置文件 schema，与 [fnp.yaml](/root/fnp/conf/fnp.yaml) / [fnp-tap.yaml](/root/fnp/conf/fnp-tap.yaml)
 4. `test/`、`src/demo/`、`deploy/`
 5. [README.md](/root/fnp/README.md)
 
@@ -42,13 +42,16 @@
   - `fsocket.*` 管理共享 socket、socket 表、本地直连路径。
   - `iface/`、`ether/`、`arp/`、`ip/`、`icmp/`、`udp/`、`tcp/` 是主协议路径。
   - `picoquic/` 是大块 QUIC 实现，绝大多数是上游/移植代码。
-- `deps/conf/`
+- `src/daemon/go/`
   - Go 写的 YAML 解析器，编译成 `libfnp-conf.a` 给 C 使用。
+- `conf/`
+  - daemon 配置模板目录。
 - `dep_libs/`
   - 历史预编译依赖目录。
   - 当前构建已经改为直接使用 `deps/` 下的产物，不再依赖它。
 - `deps/dpdk/`、`deps/picotls/`
-  - 第三方依赖的源码、构建脚本和本地安装产物。
+  - 第三方依赖的源码、构建脚本和模板。
+  - 当前运行时 DPDK 安装前缀默认是 `/opt/dpdk`。
 - `test/`
   - 各种实验、压测、对比样例。
   - 很多代码已经落后于当前 API。
@@ -173,17 +176,18 @@ QUIC 现状要分开看：
 这些点后续代理非常容易踩：
 
 - [inc/fnp.h](/root/fnp/inc/fnp.h) 注释说 TCP/UDP client 的本地地址可以是 0，但当前后端 `create_fsocket()` 会先 `lookup_iface(local->ip)`，也就是本地 IP 必须已经配置在某个 iface 上。
-- [deploy/fnp.yaml](/root/fnp/deploy/fnp.yaml) 是旧 schema，不匹配 `deps/conf/main.go` 当前解析逻辑。兼容模板应以 [deps/conf/fnp.yaml](/root/fnp/deps/conf/fnp.yaml) 为准。
-- [src/daemon/main.c](/root/fnp/src/daemon/main.c) 写死读取当前工作目录下的 `fnp.yaml`，没有命令行参数覆盖。
-- DPDK 现在默认从 [deps/dpdk](/root/fnp/deps/dpdk) 取头文件和库，库目录会优先选择 `lib/${CMAKE_LIBRARY_ARCHITECTURE}`，其次才是 `lib64` 或 `lib`。
+- [deploy/fnp.yaml](/root/fnp/deploy/fnp.yaml) 已删除；兼容模板应以 [fnp.yaml](/root/fnp/conf/fnp.yaml) 为准。
+- [src/daemon/main.c](/root/fnp/src/daemon/main.c) 现在支持可选命令行参数传入配置文件路径；不传时仍默认找 `fnp.yaml`。
+- DPDK 现在默认从 `/opt/dpdk` 取头文件和库，库目录会优先选择 `lib/${CMAKE_LIBRARY_ARCHITECTURE}`，其次才是 `lib64` 或 `lib`。
 - picotls 现在默认从 [deps/picotls](/root/fnp/deps/picotls) 取头文件和库，需要先跑 [deps/picotls/build.sh](/root/fnp/deps/picotls/build.sh)。
-- `conf` 解析库现在来自 [deps/conf](/root/fnp/deps/conf) 下的静态库 `libfnp-conf.a`，不是旧的 `dep_libs/conf/libfnp-conf.so`。
+- `conf` 解析库现在来自 [src/daemon/go](/root/fnp/src/daemon/go) 下的静态库 `libfnp-conf.a`，不是旧的 `dep_libs/conf/libfnp-conf.so`。
 - 很多 `test/` 和 `src/demo/` 样例使用了旧签名：
   - 把 `fnp_recv` 当成“直接返回 mbuf”的接口
   - 把 `fnp_create_socket` 当成“返回 `fsocket_t*`”的接口
   - 调用当前头文件里并未导出的 QUIC API
 - `src/common/fnp_msg.*` 和 `fchannel` 更像一套早期/旁路消息机制；当前主路径还是 `rte_mp_* + ring + eventfd`。
-- TAP 测试路径目前仓库中没有实现，不要误以为已有现成后端。
+- TAP 测试路径已经可用，但目前更适合单 worker、本机联调。
+- worker 的 `mbuf_pool_size` / `clone_pool_size` / `rx_pool_size` 建议使用 `2^n - 1`，`tx_ring_size` 必须是 2 的幂；模板已经按这个约束修正。
 
 ## 构建和运行建议
 
@@ -193,8 +197,6 @@ QUIC 现状要分开看：
 
 - `fnp-daemon`
 - `fnp-api`
-- `fnp_udp_client`
-- `fnp_udp_server`
 
 没有直接编进主构建的内容包括：
 
@@ -209,8 +211,8 @@ QUIC 现状要分开看：
 通常需要先准备：
 
 1. DPDK，且安装位置要和 `CMakeLists.txt` 一致
-2. `deps/conf/libfnp-conf.a`
-   - 由 [deps/conf/build.sh](/root/fnp/deps/conf/build.sh) 生成
+2. `src/daemon/go/libfnp-conf.a`
+   - 由 [build.sh](/root/fnp/src/daemon/go/build.sh) 生成
 3. `deps/picotls`
    - 由 [deps/picotls/build.sh](/root/fnp/deps/picotls/build.sh) 生成
 4. OpenSSL、libnuma、libpcap
@@ -221,16 +223,21 @@ QUIC 现状要分开看：
 
 1. 先生成 `libfnp-conf.a`
 2. 再生成 `deps/picotls` 里的头文件和静态库
-3. 确认 `deps/dpdk` 已经完成本地安装
-4. 准备一份兼容的 `fnp.yaml` 到 daemon 运行目录
+3. 确认 DPDK 已经安装到 `/opt/dpdk`
+4. 准备一份兼容的 `fnp.yaml`，或者直接在启动参数里传配置文件路径
 5. 配置和编译 CMake
 
 ### 运行目录
 
-daemon 会在当前工作目录找 `fnp.yaml`。最简单的做法通常是：
+daemon 不传参时会在当前工作目录找 `fnp.yaml`。更稳妥的做法通常是直接传配置文件路径：
 
-- 以 [deps/conf/fnp.yaml](/root/fnp/deps/conf/fnp.yaml) 为模板复制到运行目录
-- 再按本机网卡、lcore、gateway 修改
+- `./build/fnp-daemon /root/fnp/conf/fnp.yaml`
+- `./build/fnp-daemon /root/fnp/conf/fnp-tap.yaml`
+
+如果仍想走工作目录模式：
+
+- 以 [fnp.yaml](/root/fnp/conf/fnp.yaml) 或 [fnp-tap.yaml](/root/fnp/conf/fnp-tap.yaml) 为模板复制到运行目录
+- 再按本机网卡、lcore、gateway 或 TAP 地址修改
 
 ## 修改代码时的工作准则
 

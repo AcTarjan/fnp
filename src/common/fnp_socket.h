@@ -7,59 +7,65 @@
 #define SOCKET_TX_BURST_NUM 16
 #define RECV_BATCH_SIZE 32
 
+typedef struct fsocket fsocket_t;
 
-typedef struct fnp_socket fsocket_t;
-typedef void (*fsocket_polling_func)(fsocket_t*, u64 tsc);
+#define FSOCKET_FRONTEND_FLAG_EVENTFD 0x01u
+#define FSOCKET_FRONTEND_FLAG_POLLING 0x02u
 
 // 与应用层交互的接口
-typedef struct fnp_socket
+typedef struct fsocket
 {
-    fnp_protocol_t proto; // 协议类型
-    fsockaddr_t local;
-    fsockaddr_t remote;
+    fsocket_type_t type; // 前后端共享的socket类型
     char name[48]; // socket的名称, 用于调试和日志
 
-    union
-    {
-        struct
-        {
-            fnp_ring_t* rx; // 从fnp-daemon接收数据的队列
-            fnp_ring_t* tx; // 向fnp-daemon发送数据的队列
-        };
+    fnp_ring_t* rx; // 从fnp-daemon接收数据的队列
+    fnp_ring_t* tx; // 向fnp-daemon发送数据的队列
 
-        fnp_ring_t* pending_cnxs; // QUIC/TCP服务端收到的暂存的TCP or QUIC cnx
-        fnp_ring_t* pending_streams; // QUIC cnx收到的暂存的QUIC Stream
-    };
-
-    union
-    {
-        int rx_efd_in_frontend; // 前端监听rx是否有数据的eventfd，将用作用户空间的唯一标识socket fd
-        int fd; // 前端的唯一标识socket fd
-    };
-
+    int rx_efd_in_frontend; // 前端监听rx是否有数据的eventfd
     int tx_efd_in_frontend; // 前端触发tx，通知后端有数据
     int rx_efd_in_backend; // 后端触发通知，通知前端有数据
     int tx_efd_in_backend; // master监听tx是否有数据，socket在后端的唯一标识
 
     int frontend_id; //frontend_id为0的socket是可以释放的, 因为frontend不会再使用了
-    int polling_worker; // 负责轮询该socket的worker_id, polling_worker为-1表示还未轮询, 为fnp_worker_count表示LDP
+    int polling_worker; // 负责轮询该socket的worker_id, polling_worker为-1表示还未加入轮询
     u64 polling_tsc; // 最后一次轮询到数据的时间戳
-    u32 request_syn : 1; // 应用层请求建立连接
+    u32 frontend_flags; // 前端共享状态位, 见FSOCKET_FRONTEND_FLAG_*
     u32 close_requested : 1; // 应用层请求关闭socket
-    u32 receive_fin : 1; // 后端收到对方的fin
-    u32 fin_received : 1; // 应用层收到对方的fin
     u32 is_ready : 1; // 连接已建立，后端设置
     u32 is_closed : 1; // 连接已关闭, 后端设置
 } fsocket_t;
 
 #define fsocket(sock) ((fsocket_t *)sock)
-#define is_server_socket(socket)   ((socket)->remote.ip == 0)
-#define is_tcp_socket(socket)   ((socket)->proto == fnp_protocol_tcp)
-#define is_udp_socket(socket)   ((socket)->proto == fnp_protocol_udp)
-#define is_quic_socket(socket)   ((socket)->proto == fnp_protocol_quic)
-#define is_tcp_server_socket(socket)   (is_tcp_socket(socket) && is_server_socket(socket))
-#define is_udp_server_socket(socket)   (is_udp_socket(socket) && is_server_socket(socket))
-#define is_quic_server_socket(socket)   (is_quic_socket(socket) && is_server_socket(socket))
+
+#define is_tcp_socket(socket)   ((socket)->type == fsocket_type_tcp)
+#define is_udp_socket(socket)   ((socket)->type == fsocket_type_udp)
+#define is_quic_socket(socket)   ((socket)->type == fsocket_type_quic)
+#define is_raw_socket(socket)   ((socket)->type == fsocket_type_raw)
+
+static inline u32 fsocket_frontend_flags_load(const fsocket_t* socket)
+{
+    return __atomic_load_n(&socket->frontend_flags, __ATOMIC_ACQUIRE);
+}
+
+static inline void fsocket_frontend_flags_set(fsocket_t* socket, u32 flags)
+{
+    __atomic_or_fetch(&socket->frontend_flags, flags, __ATOMIC_RELEASE);
+}
+
+static inline void fsocket_frontend_flags_clear(fsocket_t* socket, u32 flags)
+{
+    __atomic_and_fetch(&socket->frontend_flags, ~flags, __ATOMIC_RELEASE);
+}
+
+static inline bool fsocket_frontend_eventfd_enabled(const fsocket_t* socket)
+{
+    return (fsocket_frontend_flags_load(socket) & FSOCKET_FRONTEND_FLAG_EVENTFD) != 0;
+}
+
+static inline bool fsocket_frontend_polling_enabled(const fsocket_t* socket)
+{
+    return (fsocket_frontend_flags_load(socket) & FSOCKET_FRONTEND_FLAG_POLLING) != 0;
+}
 
 // quic stream与应用层交互的接口
 typedef struct fnp_quic_stream
@@ -105,6 +111,6 @@ typedef struct
     u32 receive_fin : 1; // 接收FIN标志
 } fmbuf_info_t;
 
-#define get_fmbuf_info(m) (fmbuf_info_t *)rte_mbuf_to_priv(m);
+#define get_fmbuf_info(m) ((fmbuf_info_t *)rte_mbuf_to_priv(m))
 
 #endif // FNP_SOCKET_H

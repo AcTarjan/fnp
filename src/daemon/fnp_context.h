@@ -2,15 +2,16 @@
 #define FNP_CONTEXT_H
 
 #include "fnp_common.h"
-#include "hash.h"
 #include "libfnp-conf.h"
+#include "fnp_network.h"
+#include "fnp_worker.h"
 
 
 typedef struct fnp_context
 {
     fnp_config conf;
-    rte_hash* arpTbl;
-    rte_hash* sockTbl; // key is proto
+    fnp_worker_context_t worker;
+    fnp_network_t net;
 } fnp_context_t;
 
 extern fnp_context_t fnp;

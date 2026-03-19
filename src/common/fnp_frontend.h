@@ -7,19 +7,12 @@
 #include "fnp_list.h"
 #include "fnp_msg.h"
 
-#define FNP_FRONTEND_MAX_FDS 128
+#define FNP_FRONTEND_INITIAL_FDS 64
 
 typedef struct fnp_frontend
 {
-    // 对于多进程来说，不同进程的efd是不同的
-    fsocket_t* fd_table[FNP_FRONTEND_MAX_FDS]; // 通过eventfd查找fsocket
-    struct rte_mbuf* recv_mbufs[FNP_FRONTEND_MAX_FDS][RECV_BATCH_SIZE];
-
-    struct
-    {
-        int index;
-        int total;
-    } recv_mbufs_counter[FNP_FRONTEND_MAX_FDS];
+    fsocket_t** sockets; // 共享fsocket数组，仅供daemon在frontend崩溃时清理
+    u32 socket_capacity;
 
     struct rte_mempool* pool; //后端为前端分配的内存池
 
@@ -35,11 +28,7 @@ typedef struct fnp_frontend
 
 static inline void frontend_free(fnp_frontend_t* frontend)
 {
-    if (frontend->pool != NULL)
-    {
-        // 后端释放
-        rte_mempool_free(frontend->pool);
-    }
+    fnp_free(frontend->sockets);
     fnp_free(frontend);
 }
 

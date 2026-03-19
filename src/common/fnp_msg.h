@@ -66,12 +66,12 @@ typedef struct fnp_msg
 } fnp_msg_t;
 
 // fnp epoll
-static inline int fnp_epoll_create()
+static inline int fmsg_epoll_create()
 {
     return epoll_create1(0);
 };
 
-static inline int fnp_epoll_add(int epfd, int fd)
+static inline int fmsg_epoll_add(int epfd, int fd)
 {
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET;
@@ -80,12 +80,13 @@ static inline int fnp_epoll_add(int epfd, int fd)
     return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 }
 
-static inline void fnp_epoll_del(int epfd, int op, int fd)
+static inline void fmsg_epoll_del(int epfd, int op, int fd)
 {
+    (void)op;
     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 }
 
-static inline void fnp_epoll_close(int epfd)
+static inline void fmsg_epoll_close(int epfd)
 {
     close(epfd);
 }

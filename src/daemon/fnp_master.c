@@ -7,8 +7,6 @@
 #include "fnp_api.h"
 #include "fapi.h"
 #include "hash.h"
-#include "quic.h"
-#include "tcp.h"
 
 #include <rte_ethdev.h>
 
@@ -41,14 +39,17 @@ static void check_frontend_alive()
                 fnp_list_delete(&master.frontend_list, node);
 
                 // 释放该前端所有的socket
-                for (int i = 0; i < 1024; i++)
+                rte_spinlock_lock(&frontend->lock);
+                for (u32 i = 0; i < frontend->socket_capacity; ++i)
                 {
-                    fsocket_t* socket = frontend->fd_table[i];
+                    fsocket_t* socket = frontend->sockets[i];
                     if (socket != NULL)
                     {
                         free_fsocket(socket);
+                        frontend->sockets[i] = NULL;
                     }
                 }
+                rte_spinlock_unlock(&frontend->lock);
 
                 // 删除该前端
                 frontend_free(frontend);
@@ -57,41 +58,6 @@ static void check_frontend_alive()
         node = next_node;
     }
 }
-
-static inline void handle_create_stream_fmsg(fnp_msg_t* msg)
-{
-    create_stream_param_t* param = msg->data;
-    quic_stream_t* stream = quic_create_local_stream(param->cnx, param->is_unidir, param->priority);
-    if (stream == NULL)
-    {
-        msg->code = FNP_ERR_CREATE_SOCKET;
-    }
-    else
-    {
-        msg->code = FNP_OK;
-        msg->ptr = stream;
-    }
-
-    fmsg_send_reply(msg);
-}
-
-static inline void handle_create_cnx_fmsg(fnp_msg_t* msg)
-{
-    create_quic_cnx_param_t* param = msg->data;
-    quic_cnx_t* cnx = quic_create_client_cnx(param->quic, &param->remote);
-    if (cnx == NULL)
-    {
-        msg->code = FNP_ERR_CREATE_SOCKET;
-    }
-    else
-    {
-        msg->code = FNP_OK;
-        msg->ptr = cnx;
-    }
-
-    fmsg_send_reply(msg);
-}
-
 
 static void check_daemon_info(FILE* fp)
 {
@@ -182,7 +148,7 @@ void fnp_master_loop()
 
     // 添加定时器，定时检查frontend状态
     int timerfd = fnp_create_timerfd(5, true);
-    fnp_epoll_add(master.epoll_fd, timerfd);
+    fmsg_epoll_add(master.epoll_fd, timerfd);
 
     while (1)
     {
@@ -206,7 +172,6 @@ void fnp_master_loop()
                 eventfd_t value;
                 eventfd_read(socket->tx_efd_in_backend, &value); //清除事件fd计数
 
-                // UDP, TCP, QUIC有不同的事件处理方式
                 handle_fsocket_event(socket, value);
             }
         }
@@ -222,14 +187,8 @@ int compare_pid(void* v1, void* v2)
 
 int init_fnp_master()
 {
-    fnp.sockTbl = create_socket_table();
-    if (fnp.sockTbl == NULL)
-    {
-        return FNP_ERR_CREATE_HASH_TABLE;
-    }
-
     fnp_init_list(&master.frontend_list, compare_pid);
-    master.epoll_fd = fnp_epoll_create();
+    master.epoll_fd = fmsg_epoll_create();
     if (master.epoll_fd < 0)
     {
         return FNP_ERR_MALLOC;

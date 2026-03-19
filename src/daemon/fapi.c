@@ -4,6 +4,7 @@
 #include "fnp_frontend.h"
 #include "fnp_master.h"
 #include "fsocket.h"
+#include "fnp_worker.h"
 
 int register_frontend_action(const struct rte_mp_msg* msg, const void* peer)
 {
@@ -31,16 +32,11 @@ int register_frontend_action(const struct rte_mp_msg* msg, const void* peer)
             }
             else
             {
-                //为前端分配mbuf pool
-                char pool_name[32];
-                // 1024 * 128 * 2048 = 256MB
-                snprintf(pool_name, sizeof(pool_name), "fe_pool_%d", frontend->pid);
-                frontend->pool = rte_pktmbuf_pool_create(pool_name, 1024 * 128 - 1, 0, FNP_MBUFPOOL_PRIV_SIZE,
-                                                         RTE_MBUF_DEFAULT_BUF_SIZE - FNP_MBUFPOOL_PRIV_SIZE,
-                                                         rte_socket_id());
+                fnp_worker_t* worker = get_fnp_worker(0);
+                frontend->pool = worker == NULL ? NULL : worker->pool;
                 if (frontend->pool == NULL)
                 {
-                    FNP_ERR("fail to create %s", pool_name);
+                    FNP_ERR("fail to bind shared frontend pool");
                     code = FNP_ERR_CREATE_MBUFPOOL;
                 }
                 else
@@ -84,7 +80,8 @@ int create_fsocket_action(const struct rte_mp_msg* msg, const void* peer)
     else
     {
         fapi_create_socket_req_t* param = (fapi_create_socket_req_t*)msg->param;
-        fsocket_t* socket = create_fsocket(param->proto, &param->local, &param->remote, param->conf);
+        void* conf = param->conf_len == 0 ? NULL : param->conf;
+        fsocket_t* socket = create_fsocket(param->type, conf);
         if (likely(socket != NULL))
         {
             reply.num_fds = 2;

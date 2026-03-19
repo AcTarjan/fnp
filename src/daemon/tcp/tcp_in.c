@@ -341,23 +341,12 @@ void tcp_listen_recv(tcp_sock_t* sk, tcp_segment* seg)
     // 检查SYN
     if (likely(seg_set_syn(seg)))
     {
-        fsocket_t* new_socket = create_fsocket(fnp_protocol_tcp, &seg->local, &seg->remote, NULL);
-        if (unlikely(new_socket == NULL))
-        {
-            tcp_send_rst(seg);
-            printf("fail to new a tcp_sock\n");
-            return;
-        }
-
-        tcp_sock_t* new_sock = new_socket;
-        new_sock->parent = sk;
-        new_sock->irs = seg->seq;
-        new_sock->adv_wnd = seg->rx_win;
-        new_sock->rcv_nxt = seg->seq + 1;
-
-        tcp_handle_syn_option(new_sock, seg);
-
-        tcp_set_state(new_sock, TCP_SYN_RECV);
+        /*
+         * TCP passive connection creation is intentionally disabled until TCP
+         * is migrated to the conf-only socket creation path.
+         */
+        tcp_send_rst(seg);
+        return;
     }
 }
 
@@ -555,33 +544,32 @@ static inline void tcp_seg_init(struct rte_mbuf* m, tcp_segment* seg)
     seg->data = m;
 }
 
-// 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
-void tcp_recv_mbuf_from_ipv4(struct rte_mbuf* m)
+void tcp_socket_recv(fsocket_t* socket, struct rte_mbuf* m)
 {
-    struct rte_ipv4_hdr* ipv4Hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-
     tcp_segment seg;
     tcp_seg_init(m, &seg);
-    i32 state = TCP_CLOSED;
-    tcp_sock_t* sock = NULL;
-
-    fsocket_t* socket = lookup_socket_table_by_ipv4(ipv4Hdr);
-    if (likely(socket != NULL))
-    {
-        sock = socket;
-        state = tcp_get_state(sock);
-    }
-    else
-    {
-        // tcp_send_rst();
-        free_mbuf(m);
-    }
+    tcp_sock_t* sock = (tcp_sock_t*)socket;
+    i32 state = tcp_get_state(sock);
 
     // mbuf在tcp_recv中释放, 释放mbuf不影响seg
     tcp_incoming_data_handler[state](sock, &seg);
 
     //释放数据
     free_mbuf(m);
+}
+
+// 可以将连接置为CLOSED状态, 但不能tcp_free_sock释放资源, 由用户调用tcp_free_sock释放资源
+void tcp_recv_mbuf_from_ipv4(struct rte_mbuf* m)
+{
+    struct rte_ipv4_hdr* ipv4_hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    fsocket_t* socket = lookup_transport_socket_by_ipv4(ipv4_hdr);
+    if (unlikely(socket == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    tcp_socket_recv(socket, m);
 }
 
 

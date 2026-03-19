@@ -1,227 +1,106 @@
 #include "fsocket.h"
+
 #include "fnp_error.h"
-#include "fnp_context.h"
-#include "udp.h"
-#include "quic.h"
-#include "tcp.h"
-
-#include <rte_malloc.h>
-#include <rte_ip.h>
-#include <rte_hash.h>
-#include <rte_jhash.h>
-#include <rte_hash_crc.h>
-#include <rte_vect.h>
-#include <rte_errno.h>
-
-#include "fnp_worker.h"
-#include "fnp_iface.h"
 #include "fnp_master.h"
+#include "fnp_worker.h"
 
-#define SOCK_TABLE_SIZE 1024
+#include <string.h>
+#include <unistd.h>
 
-#define ALL_32_BITS 0xffffffff
-#define BIT_8_TO_15 0x0000ff00
+#define FSOCKET_OPS_TABLE_SIZE 256
+#define FSOCKET_IO_RING_SIZE 8192
 
-typedef union socket_key
+static void fsocket_recv_unsupported(fsocket_t* socket, struct rte_mbuf* m)
 {
-    struct
+    (void)socket;
+    free_mbuf(m);
+}
+
+static const fsocket_ops_t fsocket_unsupported_ops = {
+    .recv = fsocket_recv_unsupported,
+};
+
+static const fsocket_ops_t* fsocket_ops_table[FSOCKET_OPS_TABLE_SIZE];
+
+static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket)
+{
+    const fsocket_ops_t* ops = get_fsocket_ops(type);
+    if (socket == NULL)
     {
-        u8 pad0;
-        u8 proto;
-        u16 pad1;
-        u32 rip;
-        u32 lip;
-        u16 rport;
-        u16 lport;
-    };
-
-    xmm_t xmm;
-} socket_key_t;
-
-
-static inline void init_socket_key(socket_key_t* key, fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote)
-{
-    key->pad0 = 0;
-    key->pad1 = 0;
-    key->proto = proto;
-    key->lip = local ? local->ip : 0;
-    key->rip = remote ? remote->ip : 0;
-    key->lport = local ? local->port : 0;
-    key->rport = remote ? remote->port : 0;
-}
-
-static rte_xmm_t mask0 = {.u32 = {BIT_8_TO_15, ALL_32_BITS, ALL_32_BITS, ALL_32_BITS}};
-
-static inline xmm_t em_mask_key(void* key, xmm_t mask)
-{
-#if defined(__SSE2__)
-    __m128i data = _mm_loadu_si128((__m128i*)(key));
-    return _mm_and_si128(data, mask);
-#elif defined(__ARM_NEON)
-    int32x4_t data = vld1q_s32((int32_t*)key);
-    return vandq_s32(data, mask);
-#elif defined(RTE_ARCH_RISCV)
-    xmm_t data = vect_load_128(key);
-    return vect_and(data, mask);
-#endif
-}
-
-// 默认开启硬件计算CRC64, 需要CPU支持
-#define EM_HASH_CRC_64
-
-static inline uint32_t ipv4_hash_crc(const void* data, __rte_unused uint32_t data_len,
-                                     uint32_t init_val)
-{
-# ifdef  EM_HASH_CRC_64
-    uint64_t d1 = *(uint64_t*)data;
-    uint64_t d2 = *(uint64_t*)(data + 1);
-    init_val = rte_hash_crc_8byte(d1, init_val);
-    init_val = rte_hash_crc_8byte(d2, init_val);
-    // init_val = rte_hash_crc_4byte(t, init_val);
-    // init_val = rte_hash_crc_4byte(k->lip, init_val);
-    // init_val = rte_hash_crc_4byte(k->rip, init_val);
-    // init_val = rte_hash_crc_4byte(*p, init_val);
-#else
-    const socket_key_t* k = data;
-    uint32_t t;
-    const uint32_t* p;
-    t = k->proto;
-    p = (const uint32_t*)&k->rport;
-    init_val = rte_jhash_1word(t, init_val);
-    init_val = rte_jhash_1word(k->rip, init_val);
-    init_val = rte_jhash_1word(k->lip, init_val);
-    init_val = rte_jhash_1word(*p, init_val);
-#endif
-
-    return init_val;
-}
-
-
-struct rte_hash* create_socket_table()
-{
-    /* 强制使用硬件（若可用） */
-    rte_hash_crc_set_alg(CRC32_SSE42 | CRC32_SSE42_x64);
-
-    int socket_id = (int)rte_socket_id();
-    char name[32];
-    sprintf(name, "fnp_socket_table");
-    struct rte_hash_parameters params = {
-        .name = name,
-        .entries = SOCK_TABLE_SIZE,
-        .key_len = sizeof(socket_key_t),
-        .hash_func = ipv4_hash_crc,
-        .hash_func_init_val = 0,
-        .socket_id = socket_id,
-        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY, // 使用这个会降低性能
-        //无锁模式, 多读少写的场景, 删除操作不会立即释放位置
-        // | RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL // 禁止删除时自动释放内存,
-        //  RTE_HASH_EXTRA_FLAGS_EXT_TABLE
-    };
-
-    /* create ipv4 hash */
-    return rte_hash_create(&params);
-}
-
-int add_fsocket_to_table(fsocket_t* socket)
-{
-    socket_key_t key;
-    init_socket_key(&key, socket->proto, &socket->local, &socket->remote);
-    return rte_hash_add_key_data(fnp.sockTbl, &key, socket);
-}
-
-int delete_socket_from_table(fsocket_t* socket)
-{
-    socket_key_t key;
-    init_socket_key(&key, socket->proto, &socket->local, &socket->remote);
-    return rte_hash_del_key(fnp.sockTbl, &key) >= 0;
-}
-
-fsocket_t* lookup_socket_table(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote)
-{
-    socket_key_t key;
-    init_socket_key(&key, proto, local, remote);
-    fsocket_t* socket = NULL;
-    rte_hash_lookup_data(fnp.sockTbl, &key, (void**)&socket);
-    return socket;
-}
-
-fsocket_t* lookup_socket_table_by_ipv4(struct rte_ipv4_hdr* hdr)
-{
-    fsocket_t* socket = NULL;
-    socket_key_t key;
-
-    void* data = (u8*)hdr + offsetof(struct rte_ipv4_hdr, time_to_live);
-
-    /*
-     * Get 5 tuple: dst port, src port, dst IP address,
-     * src IP address and protocol.
-     */
-    key.xmm = em_mask_key(data, mask0.x);
-
-    // 查询本地socket是否存在
-    if (rte_hash_lookup_data(fnp.sockTbl, (const void*)&key, (void**)&socket) >= 0)
-    {
-        return socket;
+        return NULL;
     }
 
-    key.rip = 0;
-    key.rport = 0;
-    if (rte_hash_lookup_data(fnp.sockTbl, (const void*)&key, &socket) < 0)
+    if (fnp_master_add_fsocket(socket) != FNP_OK)
     {
+        if (ops != NULL && ops->close != NULL)
+        {
+            ops->close(socket);
+        }
         return NULL;
     }
 
     return socket;
 }
 
-
-static inline void encode_fsocket_name(fsocket_t* socket)
+const fsocket_ops_t* get_fsocket_ops(fsocket_type_t type)
 {
-    char* local_ip = fnp_ipv4_ntos(socket->local.ip);
-    char* remote_ip = fnp_ipv4_ntos(socket->remote.ip);
-    u16 local_port = fnp_swap16(socket->local.port);
-    u16 remote_port = fnp_swap16(socket->remote.port);
+    u32 index = (u8)type;
+    if (unlikely(index >= FSOCKET_OPS_TABLE_SIZE))
+    {
+        return &fsocket_unsupported_ops;
+    }
 
-    if (socket->proto == fnp_protocol_udp)
-        sprintf(socket->name, "UDP-%s:%d->%s:%d", local_ip, local_port, remote_ip, remote_port);
-    else if (socket->proto == fnp_protocol_tcp)
-        sprintf(socket->name, "TCP-%s:%d->%s:%d", local_ip, local_port, remote_ip, remote_port);
-    else if (socket->proto == fnp_protocol_quic)
-        sprintf(socket->name, "QUIC-%s:%d->%s:%d", local_ip, local_port, remote_ip, remote_port);
-
-    fnp_string_free(local_ip);
-    fnp_string_free(remote_ip);
-    printf("create socket%s\n", socket->name);
+    const fsocket_ops_t* ops = fsocket_ops_table[index];
+    return ops == NULL ? &fsocket_unsupported_ops : ops;
 }
 
-static inline int create_fsocket_ring(fsocket_t* socket)
+int init_fsocket_layer(void)
 {
-    // 对于server socket, 必须支持多生产者
-    bool is_mp = (socket->remote.ip == 0);
-    socket->rx = fnp_ring_create(1024 * 1024 * 4, is_mp, false);
+    memset(fsocket_ops_table, 0, sizeof(fsocket_ops_table));
+    return FNP_OK;
+}
+
+int register_fsocket_ops(fsocket_type_t type, const fsocket_ops_t* ops)
+{
+    u32 index = (u8)type;
+    if (unlikely(index >= FSOCKET_OPS_TABLE_SIZE || ops == NULL))
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    fsocket_ops_table[index] = ops;
+    return FNP_OK;
+}
+
+void fsocket_init_base(fsocket_t* socket, fsocket_type_t type)
+{
+    socket->type = type;
+    socket->rx_efd_in_frontend = -1;
+    socket->tx_efd_in_frontend = -1;
+    socket->rx_efd_in_backend = -1;
+    socket->tx_efd_in_backend = -1;
+    socket->polling_worker = -1;
+    socket->polling_tsc = 0;
+    socket->frontend_flags = 0;
+}
+
+int fsocket_create_io_rings(fsocket_t* socket, bool is_mp)
+{
+    socket->rx = fnp_ring_create(FSOCKET_IO_RING_SIZE, is_mp, false);
     if (socket->rx == NULL)
     {
-        printf("Failed to create rx ring\n");
         return FNP_ERR_CREATE_RING;
     }
 
-    // 创建eventfd
     socket->rx_efd_in_backend = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (socket->rx_efd_in_backend < 0)
     {
         return FNP_ERR_CREATE_EVENTFD;
     }
 
-    if (is_tcp_server_socket(socket))
-    {
-        return FNP_OK;
-    }
-
-    // 8M
-    socket->tx = fnp_ring_create(1024 * 1024 * 4, false, false);
+    socket->tx = fnp_ring_create(FSOCKET_IO_RING_SIZE, false, false);
     if (socket->tx == NULL)
     {
-        printf("Failed to create tx ring\n");
         return FNP_ERR_CREATE_RING;
     }
 
@@ -231,264 +110,99 @@ static inline int create_fsocket_ring(fsocket_t* socket)
         return FNP_ERR_CREATE_EVENTFD;
     }
 
-    // 会被前端重新修正
-    socket->rx_efd_in_frontend = socket->rx_efd_in_backend;
-    socket->tx_efd_in_frontend = socket->tx_efd_in_backend;
-
     return FNP_OK;
 }
 
-// 构建本地直接路径：互为目的Socket的两个Socket可以通过交换ring和eventfd直接通信
-// UDP: 目的地址确定，
-// TCP: 目的地址正在被监听
-// QUIC: 不支持
-int build_local_direct_path(fsocket_t* socket)
+void fsocket_format_transport_name(fsocket_t* socket, const char* prefix,
+                                   const fsockaddr_t* local, const fsockaddr_t* remote)
 {
-    // peer socket创建
-    fsocket_t* peer_socket = lookup_socket_table(socket->proto, &socket->remote, &socket->local);
-    if (peer_socket != NULL)
-    {
-        // 交换ring和eventfd
-        printf("find peer socket: %s\n", peer_socket->name);
-        socket->rx = fnp_ring_clone(peer_socket->tx);
-        socket->tx = fnp_ring_clone(peer_socket->rx);
-        socket->rx_efd_in_backend = peer_socket->tx_efd_in_backend;
-        socket->tx_efd_in_backend = peer_socket->rx_efd_in_backend;
-        // 会被前端重新修正
-        socket->rx_efd_in_frontend = socket->rx_efd_in_backend;
-        socket->tx_efd_in_frontend = socket->tx_efd_in_backend;
+    char* local_ip = fnp_ipv4_ntos(local->ip);
+    char* remote_ip = fnp_ipv4_ntos(remote->ip);
+    u16 local_port = fnp_swap16(local->port);
+    u16 remote_port = fnp_swap16(remote->port);
 
-        // 已经构成LDP, 标记对端一直在轮询, 避免一直写eventfd造成性能下降
-        socket->polling_worker = fnp_worker_count;
-        peer_socket->polling_worker = fnp_worker_count;
+    snprintf(socket->name, sizeof(socket->name), "%s-%s:%u->%s:%u",
+             prefix, local_ip, local_port, remote_ip, remote_port);
 
-        return FNP_OK;
-    }
-
-    // 对端socket不存在，创建ring和eventfd
-    if (create_fsocket_ring(socket) != FNP_OK)
-    {
-        return FNP_ERR_CREATE_RING;
-    }
-
-    // TCP需要查看server socket是否存在
-    if (socket->proto == fnp_protocol_tcp)
-    {
-        // 查看是否存在server socket来accept
-        fsocket_t* server_socket = lookup_socket_table(socket->proto, &socket->remote, NULL);
-        if (server_socket == NULL)
-        {
-            // 端口没有监听，connect会失败
-            return FNP_ERR_GENERIC;
-        }
-
-        // UDP查看是否是listen状态
-        // TCP跳过3次握手,直接进入ESTABLISHED状态,
-        // 创建对端socket
-        peer_socket = create_fsocket(socket->proto, &socket->remote, &socket->local, NULL);
-        if (peer_socket == NULL)
-        {
-            return FNP_ERR_GENERIC;
-        }
-
-        // server socket接受到新连接，入队列
-        fnp_ring_enqueue(server_socket->rx, peer_socket);
-        fsocket_notify_frontend(server_socket);
-    }
-
-    return FNP_OK;
+    fnp_string_free(local_ip);
+    fnp_string_free(remote_ip);
 }
 
-// 初始化socket，交给用户程序使用
-static inline int init_fsocket(fsocket_t* socket, fnp_protocol_t proto,
-                               fsockaddr_t* local, fsockaddr_t* remote)
+void fsocket_format_local_name(fsocket_t* socket, const char* prefix, const fsockaddr_t* local)
 {
-    socket->proto = proto;
-    fsockaddr_copy(&socket->local, local);
-    fsockaddr_copy(&socket->remote, remote);
-    socket->polling_worker = -1; // 默认没有被轮询
-    encode_fsocket_name(socket);
-
-    // 添加socket到master socket表
-    if (add_fsocket_to_table(socket) != FNP_OK)
-    {
-        return FNP_ERR_ADD_HASH;
-    }
-
-    // 5元组必须全部确定，且目的IP为本地IP
-    if (socket->local.ip != 0 && is_local_ipaddr(socket->remote.ip))
-    {
-        return build_local_direct_path(socket);
-    }
-
-    return create_fsocket_ring(socket);
+    char* local_ip = fnp_ipv4_ntos(local->ip);
+    snprintf(socket->name, sizeof(socket->name), "%s-%s", prefix, local_ip);
+    fnp_string_free(local_ip);
 }
 
-fsocket_t* create_fsocket(fnp_protocol_t proto, fsockaddr_t* local, fsockaddr_t* remote, void* conf)
+void fsocket_format_suffix_name(fsocket_t* socket, const char* prefix, const char* suffix)
 {
-    // 检查本地ip是否合法
-    fnp_iface_t* iface = lookup_iface(local->ip);
-    if (iface == NULL)
-    {
-        printf("can't find iface for %d\n", local->ip);
-        return NULL;
-    }
-
-    // 判断socket是否已经存在
-    // TODO: 只判断端口是否被占用
-    fsocket_t* old_socket = lookup_socket_table(proto, local, remote);
-    if (old_socket != NULL)
-    {
-        printf("socket exists\n");
-        return NULL;
-    }
-
-    fsocket_t* socket = NULL;
-    // 创建协议相关的sock
-    if (proto == fnp_protocol_udp)
-    {
-        socket = (fsocket_t*)udp_create_sock(local, remote);
-    }
-    else if (proto == fnp_protocol_tcp)
-    {
-        socket = (fsocket_t*)tcp_create_sock(local, remote, conf);
-    }
-    else if (proto == fnp_protocol_quic)
-    {
-        socket = (fsocket_t*)quic_create_context(local, conf);
-    }
-
-    // 检查socket是否创建成功
-    if (socket == NULL)
-    {
-        printf("socket malloc fail!\n");
-        return NULL;
-    }
-
-    int ret = init_fsocket(socket, proto, local, remote);
-    if (ret != FNP_OK)
-    {
-        printf("socket init fail: %d\n", ret);
-        free_fsocket(socket);
-        return NULL;
-    }
-
-    ret = fnp_master_add_fsocket(socket);
-    if (ret != FNP_OK)
-    {
-        printf("fnp_master_add_fsocket fail: %d\n", ret);
-        free_fsocket(socket);
-        return NULL;
-    }
-
-    return socket;
+    snprintf(socket->name, sizeof(socket->name), "%s-%s", prefix, suffix);
 }
 
-// 通过此接口最终释放socket
-void free_fsocket(fsocket_t* socket)
+void fsocket_cleanup(fsocket_t* socket)
 {
-    // FNP_INFO("start to free socket %s\n", socket->name);
-    bool is_ldp_socket = (socket->polling_worker == fnp_worker_count);
-    if (is_ldp_socket)
-    {
-        // peer socket已经不能构成ldp了
-        fsocket_t* peer_socket = lookup_socket_table(socket->proto, &socket->remote, &socket->local);
-        if (peer_socket == NULL)
-        {
-            // 对端已经没有了
-            is_ldp_socket = false;
-        }
-        else
-        {
-            peer_socket->polling_worker = -1;
-        }
-    }
-
-    // 从哈希表中删除, 可能还未插入
-    delete_socket_from_table(socket);
-
     struct rte_mbuf* m = NULL;
-    if (likely(socket->rx != NULL))
+    if (socket->rx != NULL)
     {
-        // 对于LDP, 可能对端还没有释放，他们共用一个ring
-        if (!is_ldp_socket)
+        while (fnp_ring_dequeue(socket->rx, (void**)&m))
         {
-            while (fnp_ring_dequeue(socket->rx, (void**)&m))
-                free_mbuf(m);
+            free_mbuf(m);
         }
         fnp_ring_free(socket->rx);
     }
 
-    if (likely(socket->tx != NULL))
+    if (socket->tx != NULL)
     {
-        // 对于LDP, 可能对端还没有释放，他们共用一个ring
-        if (!is_ldp_socket)
+        while (fnp_ring_dequeue(socket->tx, (void**)&m))
         {
-            while (fnp_ring_dequeue(socket->tx, (void**)&m))
-                free_mbuf(m);
+            free_mbuf(m);
         }
         fnp_ring_free(socket->tx);
     }
 
-    // 关闭eventfd, 对于LDP, 可能对端还没有释放，他们共用一个eventfd
-    if (!is_ldp_socket)
+    if (socket->rx_efd_in_backend >= 0)
     {
-        // 不是LDP socket, 直接关闭
-        if (socket->rx_efd_in_backend >= 0)
-            close(socket->rx_efd_in_backend);
-        if (socket->tx_efd_in_backend >= 0)
-            close(socket->tx_efd_in_backend);
+        close(socket->rx_efd_in_backend);
+    }
+    if (socket->tx_efd_in_backend >= 0)
+    {
+        close(socket->tx_efd_in_backend);
+    }
+}
+
+fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
+{
+    const fsocket_ops_t* ops = get_fsocket_ops(type);
+    if (ops == NULL || ops->create == NULL)
+    {
+        printf("socket type %d is not enabled in this build\n", type);
+        return NULL;
     }
 
-    // 释放协议相关的资源
-    if (socket->proto == fnp_protocol_tcp)
-    {
-        free_tcp_sock((tcp_sock_t*)socket);
-    }
-    else if (socket->proto == fnp_protocol_udp)
-    {
-        free_udp_sock((udp_sock_t*)socket);
-    }
-    else if (socket->proto == fnp_protocol_quic)
-    {
-        quic_free_context((quic_context_t*)socket);
-    }
+    return create_fsocket_register(type, ops->create(conf));
 }
 
 void close_fsocket(fsocket_t* socket)
 {
-    if (socket->proto == fnp_protocol_tcp)
+    if (socket == NULL)
     {
-        // TODO: 检查TCP状态，如果已关闭，则直接释放
-        // 否则，设置tcp socket状态, 然后添加到worker polling table去发送FIN
         return;
     }
 
-    // udp socket, 如果没有被worker轮询，LDP Socket直接释放
-    if (socket->polling_worker < 0 || socket->polling_worker == fnp_worker_count)
+    const fsocket_ops_t* ops = get_fsocket_ops(socket->type);
+    if (ops != NULL && ops->close != NULL)
     {
-        //,是否需要把环形队列中的mbuf发送完？
-        // LDP可以直接释放
-        free_fsocket(socket);
-    }
-    else
-    {
-        // TODO: 正在轮询中，需要等待轮询结束后再释放
-        free_fsocket(socket);
+        ops->close(socket);
     }
 }
 
-void show_all_fsocket()
+void free_fsocket(fsocket_t* socket)
 {
-    i32 count = rte_hash_count(fnp.sockTbl);
-    FNP_INFO("socket count is %d\n", count);
-    uint32_t next = 0;
-    socket_key_t key;
-    fsocket_t* socket = NULL;
-    FNP_INFO("************sockets start***************\n");
-    while (rte_hash_iterate(fnp.sockTbl, (void*)&key, (void**)&socket, &next) >= 0)
-    {
-        FNP_INFO("socket: %s\n", socket->name);
-    }
-    FNP_INFO("************sockets end***************\n");
+    close_fsocket(socket);
+}
+
+void show_all_fsocket(void)
+{
+    FNP_INFO("socket tables are owned by active protocol modules\n");
 }

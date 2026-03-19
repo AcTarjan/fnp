@@ -82,6 +82,8 @@ void quic_handle_context_event(fsocket_t* socket, u64 event)
 
 quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
 {
+    (void)local;
+
     quic_context_t* quic = fnp_zmalloc(sizeof(quic_context_t));
     if (quic == NULL)
         return NULL;
@@ -96,15 +98,10 @@ quic_context_t* quic_create_context(fsockaddr_t* local, fnp_quic_config_t* conf)
         return NULL;
     }
 
-    // 创建udp socket, 还是在master线程调用的
-    fsocket_t* udp_socket = create_fsocket(fnp_protocol_udp, local, NULL, NULL);
-    if (udp_socket == NULL)
-    {
-        fnp_free(quic);
-        return NULL;
-    }
-    quic->udp_socket = udp_socket;
-
-    return quic;
+    /*
+     * QUIC create path is intentionally disabled until QUIC is migrated to the
+     * conf-only socket creation path.
+     */
+    fnp_free(quic);
+    return NULL;
 }
-

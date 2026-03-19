@@ -2,9 +2,23 @@
 #include "fnp_worker.h"
 #include "fnp_master.h"
 
-int main()
+int main(int argc, char* argv[])
 {
-    int ret = init_fnp_daemon("fnp.yaml");
+    const char* config_path = "conf/fnp.yaml";
+    if (argc > 2)
+    {
+        fprintf(stderr, "Usage: %s [config_path]\n", argv[0]);
+        return -1;
+    }
+
+    if (argc == 2)
+    {
+        config_path = argv[1];
+    }
+
+    printf("using config: %s\n", config_path);
+
+    int ret = init_fnp_daemon((char*)config_path);
     if (ret != 0)
     {
         printf("fnp_init_daemon error!\n");

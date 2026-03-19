@@ -1,13 +1,17 @@
 #include "fnp_context.h"
 #include "fnp_error.h"
 #include "../common/fnp_socket.h"
+#include "fsocket.h"
 #include "fnp_master.h"
 #include "fnp_worker.h"
 
 #include "arp.h"
 #include "ipv4.h"
-#include "tcp.h"
-#include "quic.h"
+#include "route.h"
+#include "icmp.h"
+#include "udp.h"
+#include "raw.h"
+#include "ether.h"
 
 #include <rte_pdump.h>
 
@@ -54,15 +58,35 @@ i32 init_fnp_daemon(char* path)
     ret = init_fnp_worker(&conf->worker);
     CHECK_RET(ret);
 
-    ret = init_fnp_iface_layer(conf);
+    ret = init_fnp_device_layer(conf);
     CHECK_RET(ret);
 
-    ret = init_arp_layer();
+    ret = init_fnp_ifaddr_layer(conf);
     CHECK_RET(ret);
 
-    init_ipv4_layer();
+    ret = init_route_layer(conf);
+    CHECK_RET(ret);
 
-    init_tcp_layer();
+    ret = init_ether_layer();
+    CHECK_RET(ret);
+
+    ret = init_ipv4_layer();
+    CHECK_RET(ret);
+
+    ret = init_fsocket_layer();
+    CHECK_RET(ret);
+
+    ret = arp_module_init();
+    CHECK_RET(ret);
+
+    ret = icmp_module_init();
+    CHECK_RET(ret);
+
+    ret = udp_module_init();
+    CHECK_RET(ret);
+
+    ret = raw_module_init();
+    CHECK_RET(ret);
 
     ret = init_fnp_master();
     CHECK_RET(ret);
