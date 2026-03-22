@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -30,25 +29,6 @@ static __thread fnp_tls_mbuf_cache_t frontend_tls_cache = {
     .alloc_idx = 8,
     .free_cnt = 0,
 };
-
-static int frontend_load_dpdk_plugins(void)
-{
-    static const char *plugin_names[] = {
-        "librte_mempool_ring.so.23",
-        "librte_mempool_ring.so",
-    };
-
-    for (u32 i = 0; i < RTE_DIM(plugin_names); ++i)
-    {
-        void *handle = dlopen(plugin_names[i], RTLD_NOW | RTLD_GLOBAL);
-        if (handle != NULL)
-        {
-            return FNP_OK;
-        }
-    }
-
-    return FNP_ERR_MALLOC;
-}
 
 static int frontend_reserve_tables(u32 min_capacity)
 {
@@ -241,59 +221,39 @@ int frontend_drain_socket(fnp_socket_t *socket, int budget)
         return FNP_ERR_PARAM;
     }
 
-    if (budget <= 0)
+    if (budget <= 0 || budget > RECV_BATCH_SIZE)
     {
         budget = RECV_BATCH_SIZE;
     }
 
     fsocket_t *shared_socket = socket->shared;
-    int processed = 0;
-    for (;;)
+    struct rte_mbuf *mbufs[RECV_BATCH_SIZE] = {0};
+
+    fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
+    u32 burst = fnp_ring_dequeue_burst(shared_socket->rx, (void **)mbufs, (u32)budget);
+    if (unlikely(burst == 0))
     {
-        fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-
-        while (processed < budget)
-        {
-            struct rte_mbuf *m = NULL;
-            int ret = frontend_try_dequeue_mbuf(socket, &m);
-            if (ret == FNP_ERR_EMPTY)
-            {
-                break;
-            }
-            if (ret != FNP_OK)
-            {
-                fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-                return ret;
-            }
-
-            int handler_ret = socket->handler(socket, m, socket->handler_arg);
-            fnp_free_mbuf(m);
-            processed++;
-            if (handler_ret != FNP_OK)
-            {
-                fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-                return handler_ret;
-            }
-        }
-
         fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-        u32 pending = fnp_ring_count(shared_socket->rx);
-        if (processed >= budget)
+        if (fnp_ring_count(shared_socket->rx) > 0 && fsocket_frontend_eventfd_enabled(shared_socket))
         {
-            if (pending > 0 && fsocket_frontend_eventfd_enabled(shared_socket))
-            {
-                eventfd_write(shared_socket->rx_efd_in_frontend, 1);
-            }
-            break;
+            eventfd_write(shared_socket->rx_efd_in_frontend, 1);
         }
-
-        if (pending == 0)
-        {
-            break;
-        }
+        return 0;
     }
 
-    return processed;
+    for (u32 i = 0; i < burst; ++i)
+    {
+        socket->handler(socket, mbufs[i], socket->handler_arg);
+        fnp_free_mbuf(mbufs[i]);
+    }
+
+    fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
+    if (fsocket_frontend_eventfd_enabled(shared_socket))
+    {
+        eventfd_write(shared_socket->rx_efd_in_frontend, 1);
+    }
+
+    return (int)burst;
 }
 
 fnp_mbuf_t *fnp_alloc_mbuf()
@@ -432,9 +392,6 @@ static int register_frontend_to_daemon(void)
 
 int fnp_init(int main_lcore, int lcores[], int num_lcores)
 {
-    int ret = frontend_load_dpdk_plugins();
-    CHECK_RET(ret);
-
     char main_lcore_argv[16];
     sprintf(main_lcore_argv, "--main-lcore=%d", main_lcore);
 
@@ -468,7 +425,7 @@ int fnp_init(int main_lcore, int lcores[], int num_lcores)
     sprintf(lcore_argv, "-c %#x", lcore_mask);
     argv[argc++] = lcore_argv;
 
-    ret = rte_eal_init(argc, argv);
+    int ret = rte_eal_init(argc, argv);
     if (ret < 0)
     {
         return FNP_ERR_RTE_EAL_INIT;

@@ -28,7 +28,9 @@ typedef enum fsocket_type
     fsocket_type_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
     fsocket_type_tcp = IPPROTO_TCP,
     fsocket_type_udp = IPPROTO_UDP,
+    fsocket_type_tap = 252, // 类似 Linux TAP，前后端直接收发以太网帧
     fsocket_type_raw = 253, // 直接收发ipv4数据包
+    fsocket_type_tun = 254, // 类似 Linux TUN，前后端直接收发 IPv4 包
 } fsocket_type_t;
 
 static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)

@@ -12,16 +12,18 @@ fi
 
 echo "**********AUTO TEST start with: $test_count tests, $round_count rounds ********"
 
-# 运行10次测试
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+
+cd "${REPO_ROOT}"
+
 for i in $(seq 1 $test_count); do
-  # 创建随机文件
-  ./create-randfile.sh $size
+  "${SCRIPT_DIR}/create-randfile.sh" $size
   md5_1=$(md5sum "output/input.dat" | awk '{ print $1 }')
   echo "md5 of input.dat: $md5_1"
-  # 运行测试脚本
   for j in $(seq 1 $round_count); do
     echo "Test $i with file size $size KB, round $j"
-    ./send2dpdk.sh
+    "${SCRIPT_DIR}/send2dpdk.sh"
     md5_2=$(md5sum "output/nc.dat" | awk '{ print $1 }')
     if [ "$md5_1" != "$md5_2" ]; then
       if [ "$md5_2" == "d41d8cd98f00b204e9800998ecf8427e" ]; then
@@ -34,11 +36,7 @@ for i in $(seq 1 $test_count); do
     fi
   done
 
-  # 记录测试结果
   echo "Test $i with file size $size KB, round $j finished."
-#  ./check-md5.sh
-
-  # 修改文件大小
   size=$((size * 10))
 done
 

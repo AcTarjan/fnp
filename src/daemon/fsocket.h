@@ -22,14 +22,22 @@ static inline void fsocket_notify_frontend(fsocket_t* socket)
 // 应用层收到一个mbuf
 static inline bool fsocket_enqueue_for_app(fsocket_t* socket, void* data)
 {
-    if (fnp_ring_enqueue(socket->rx, data) == 0)
+    if (unlikely(fnp_ring_enqueue(socket->rx, data) == 0))
     {
         return false;
     }
 
-    if (fsocket_frontend_eventfd_enabled(socket) &&
-        !fsocket_frontend_polling_enabled(socket) &&
-        fnp_ring_count(socket->rx) == 1)
+    if (likely(!fsocket_frontend_eventfd_enabled(socket) || fsocket_frontend_polling_enabled(socket)))
+    {
+        return true;
+    }
+
+    if (likely(fnp_ring_count(socket->rx) != 1))
+    {
+        return true;
+    }
+
+    if (likely(socket->rx_efd_in_backend >= 0))
     {
         fsocket_notify_frontend(socket);
     }

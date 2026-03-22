@@ -58,42 +58,15 @@ static void recv_data_from_nic()
 static void send_data_to_net()
 {
     fnp_worker_t* worker = get_local_worker();
-    static struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
-
-    while (1)
+    for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
     {
-        u32 txNum = fnp_ring_dequeue_burst(worker->tx_ring, (void**)mbufs, MBUF_BURST_SIZE);
-        if (txNum > 0)
+        fnp_device_t* dev = get_fnp_device(dev_index);
+        if (unlikely(dev == NULL || !is_ethernet_device(dev)))
         {
-            u32 offset = 0;
-            while (offset < txNum)
-            {
-                u16 port_id = mbufs[offset]->port;
-                u32 burst = 1;
-                while (offset + burst < txNum && mbufs[offset + burst]->port == port_id)
-                {
-                    ++burst;
-                }
-
-                fnp_device_t* dev = lookup_device_by_port(port_id);
-                if (dev == NULL || dev->ops == NULL || dev->ops->send == NULL)
-                {
-                    rte_pktmbuf_free_bulk(&mbufs[offset], burst);
-                    offset += burst;
-                    continue;
-                }
-
-                i32 sent = dev->ops->send(dev, worker->queue_id, &mbufs[offset], burst);
-                if (sent < (i32)burst)
-                {
-                    printf("device tx warning! port=%u, txNum=%u, tx_burst=%d\n", port_id, burst, sent);
-                    rte_pktmbuf_free_bulk(&mbufs[offset + sent], burst - sent);
-                }
-                offset += burst;
-            }
+            continue;
         }
-        if (txNum < MBUF_BURST_SIZE) // 说明没有数据了
-            break;
+
+        fnp_device_flush_tx(dev, worker->queue_id, MBUF_BURST_SIZE);
     }
 }
 
@@ -248,13 +221,6 @@ int init_fnp_worker(worker_config* conf)
             return FNP_ERR_CREATE_MBUFPOOL;
         }
 
-        worker->tx_ring = fnp_ring_create(conf->tx_ring_size, false, false);
-        if (worker->tx_ring == NULL)
-        {
-            printf("create tx_queue error! tx_ring_size=%d, fnp_ring_create requires a power-of-two size\n",
-                   conf->tx_ring_size);
-            return FNP_ERR_CREATE_RING;
-        }
     }
 
     FNP_INFO("fnp_worker init successfully\n");

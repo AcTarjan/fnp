@@ -23,6 +23,36 @@ static void ipv4_ignore_local_deliver(struct rte_mbuf *m)
     (void)m;
 }
 
+// 校验一个以 IPv4 头起始的 mbuf：
+// 1. 必须是 IPv4 报文
+// 2. total_length 不能越界
+// 3. 如果 mbuf 比 IPv4 total_length 更长，则裁剪到真实长度
+static struct rte_ipv4_hdr *ipv4_validate_packet(struct rte_mbuf *m)
+{
+    if (unlikely(m == NULL || m->pkt_len < sizeof(struct rte_ipv4_hdr)))
+    {
+        return NULL;
+    }
+
+    struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    u16 header_len = rte_ipv4_hdr_len(hdr);
+    u16 total_len = rte_be_to_cpu_16(hdr->total_length);
+    if (unlikely((hdr->version_ihl >> 4) != 4 ||
+                 header_len < sizeof(struct rte_ipv4_hdr) ||
+                 total_len < header_len ||
+                 total_len > m->pkt_len))
+    {
+        return NULL;
+    }
+
+    if (unlikely(total_len < m->pkt_len))
+    {
+        rte_pktmbuf_trim(m, m->pkt_len - total_len);
+    }
+
+    return hdr;
+}
+
 static inline bool ipv4_is_local_packet(const struct rte_ipv4_hdr *hdr)
 {
     return hdr != NULL && route_lookup_local(hdr->dst_addr) != NULL;
@@ -82,6 +112,17 @@ void ipv4_recv_mbuf(struct rte_mbuf *m)
     ip_local_deliver(m);
 }
 
+void ipv4_tun_input(struct rte_mbuf *m)
+{
+    if (unlikely(ipv4_validate_packet(m) == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    ipv4_recv_mbuf(m);
+}
+
 static inline void compute_cksum(struct rte_ipv4_hdr *hdr, struct rte_mbuf *m)
 {
     u16 l3_len = rte_ipv4_hdr_len(hdr);
@@ -100,77 +141,240 @@ static inline void compute_cksum(struct rte_ipv4_hdr *hdr, struct rte_mbuf *m)
     hdr->hdr_checksum = rte_ipv4_cksum(hdr);
 }
 
-// ipv4_send_mbuf
-// 目前不存在iface为NULL的情况，如果为NULL，需要根据目的ip进行路由
-void ipv4_send_mbuf(struct rte_mbuf *m, u8 proto, u32 rip)
+static inline void ipv4_fill_hdr(struct rte_mbuf *m, u8 proto, u32 src_ip_be, u32 dst_ip_be)
 {
-    fnp_route_result_t route_result;
-    if (unlikely(route_lookup(rip, &route_result) != FNP_OK || route_result.ifaddr == NULL))
-    {
-        free_mbuf(m);
-        return;
-    }
-
-    m->port = route_result.ifaddr->dev->port_id;
-
     struct rte_ipv4_hdr *hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_prepend(m, IPV4_HDR_LEN);
     hdr->version_ihl = 0x45;
     hdr->type_of_service = 0;
     hdr->total_length = rte_cpu_to_be_16(m->pkt_len);
     hdr->packet_id = 0;
-    hdr->fragment_offset = 0; // 禁止分片
+    hdr->fragment_offset = 0;
     hdr->time_to_live = 64;
     hdr->next_proto_id = proto;
-    hdr->src_addr = route_result.pref_src_be;
-    hdr->dst_addr = rip;
-    hdr->hdr_checksum = 0; // 硬件计算
+    hdr->src_addr = src_ip_be;
+    hdr->dst_addr = dst_ip_be;
+    hdr->hdr_checksum = 0;
+}
 
-    if (1)
+static inline void ipv4_prepare_tx_offload(struct rte_mbuf *m, struct rte_ipv4_hdr *hdr, u8 proto)
+{
+    m->ol_flags = (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4);
+    m->l3_len = IPV4_HDR_LEN;
+    if (likely(proto == IPPROTO_UDP))
     {
-        // 硬件计算IPv4和UDP校验和
-        m->ol_flags = (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4);
-        m->l3_len = IPV4_HDR_LEN;
-
-        // 部分网卡需要软件计算伪首部
-        if (likely(proto == IPPROTO_UDP))
-        {
-            m->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
-            struct rte_udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *, IPV4_HDR_LEN);
-            udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(hdr, m->ol_flags);
-        }
+        m->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
+        struct rte_udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *, IPV4_HDR_LEN);
+        udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(hdr, m->ol_flags);
     }
-    else
-    {
-        // 注意：如果使用软件计算校验和，禁止配置开启网卡的硬件校验功能
-        // 已知的问题: 软件计算校验和，但是却配置了m->ol_flags = RTE_MBUF_F_TX_UDP_CKSUM
-        // 会导致ipv4首部的fragment_offset乱码，导致对端识别到异常分段
-        compute_cksum(hdr, m);
-    }
+}
 
-    arp_entry_t *e = arp_lookup(route_result.ifaddr, route_result.next_hop_be);
-    if (unlikely(e == NULL))
+static inline void ipv4_prepare_tx_by_dev(struct rte_mbuf *m,
+                                          struct rte_ipv4_hdr *hdr,
+                                          u8 proto,
+                                          const fnp_device_t *dev)
+{
+    if (is_ethernet_device(dev))
     {
-        arp_pend_mbuf(route_result.ifaddr, route_result.next_hop_be, m);
+        ipv4_prepare_tx_offload(m, hdr, proto);
         return;
     }
 
-    ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
+    compute_cksum(hdr, m);
 }
 
-void ipv4_send_raw_mbuf(struct rte_mbuf *m)
+static inline void ipv4_send_dev(struct rte_mbuf *m,
+                                 fnp_ifaddr_t *ifaddr,
+                                 u32 next_hop_be,
+                                 const struct rte_ether_addr *dmac)
 {
-    struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-    u16 total_len = rte_be_to_cpu_16(hdr->total_length);
-    u16 header_len = rte_ipv4_hdr_len(hdr);
-    if (unlikely(total_len < header_len || total_len > m->pkt_len))
+    fnp_device_t *dev = ifaddr == NULL ? NULL : ifaddr->dev;
+    if (unlikely(dev == NULL || dev->ops == NULL || dev->ops->send == NULL))
     {
         free_mbuf(m);
         return;
     }
 
-    if (unlikely(total_len < m->pkt_len))
+    if (is_tun_device(dev))
     {
-        rte_pktmbuf_trim(m, m->pkt_len - total_len);
+        dev->ops->send(dev, m, NULL);
+        return;
+    }
+
+    if (likely(dmac != NULL))
+    {
+        dev->ops->send(dev, m, dmac);
+        return;
+    }
+
+    arp_entry_t *arp_entry = arp_lookup(ifaddr, next_hop_be);
+    if (unlikely(arp_entry == NULL))
+    {
+        arp_pend_mbuf(ifaddr, next_hop_be, m);
+        return;
+    }
+
+    dev->ops->send(dev, m, &arp_entry->mac);
+}
+
+static inline void ipv4_local_send_packet(struct rte_mbuf *m, u8 proto, u32 src_ip_be, u32 dst_ip_be)
+{
+    struct rte_ipv4_hdr *hdr;
+
+    ipv4_fill_hdr(m, proto, src_ip_be, dst_ip_be);
+    hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    compute_cksum(hdr, m);
+    ip_local_deliver(m);
+}
+
+// connected socket 的快速发送路径：
+// - 已经缓存了出口 ifaddr、next hop 和 dmac
+// - 直接补 IPv4 头后发送，避免再次查路由和 ARP
+static void ipv4_tx_send_fast(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
+                              const fsockaddr_t *local, const fsockaddr_t *remote)
+{
+    (void)local;
+    (void)remote;
+    if (unlikely(cache == NULL || cache->ifaddr == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    ipv4_fill_hdr(m, proto, cache->local.ip, cache->remote.ip);
+    struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    ipv4_prepare_tx_by_dev(m, hdr, proto, cache->ifaddr->dev);
+    ipv4_send_dev(m, cache->ifaddr, cache->next_hop_be, cache->dmac_ready ? &cache->dmac : NULL);
+}
+
+static void ipv4_tx_send_local(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
+                               const fsockaddr_t *local, const fsockaddr_t *remote)
+{
+    if (cache != NULL)
+    {
+        local = &cache->local;
+        remote = &cache->remote;
+    }
+
+    if (unlikely(local == NULL || remote == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    ipv4_local_send_packet(m, proto, local->ip, remote->ip);
+}
+
+static void ipv4_tx_send_default(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
+                                 const fsockaddr_t *local, const fsockaddr_t *remote)
+{
+    if (unlikely(remote == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    u32 remote_ip_be = remote->ip;
+    u32 local_ip_be = local == NULL ? 0 : local->ip;
+    if (unlikely(remote_ip_be == 0))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    if (unlikely(is_local_ipaddr(remote_ip_be)))
+    {
+        if (cache != NULL && local != NULL)
+        {
+            fsockaddr_copy(&cache->local, local);
+            fsockaddr_copy(&cache->remote, remote);
+            cache->send = ipv4_tx_send_local;
+        }
+
+        ipv4_local_send_packet(m, proto, local_ip_be, remote_ip_be);
+        return;
+    }
+
+    fnp_ifaddr_t *preferred_ifaddr = local_ip_be == 0 ? NULL : lookup_ifaddr(local_ip_be);
+    fnp_route_result_t route_result;
+    int ret = preferred_ifaddr == NULL ? route_lookup(remote_ip_be, &route_result) : route_lookup_with_ifaddr(preferred_ifaddr, remote_ip_be, &route_result);
+    if (unlikely(ret != FNP_OK || route_result.ifaddr == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    u32 src_ip_be = local_ip_be == 0 ? route_result.pref_src_be : local_ip_be;
+    ipv4_fill_hdr(m, proto, src_ip_be, remote_ip_be);
+    struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
+    ipv4_prepare_tx_by_dev(m, hdr, proto, route_result.ifaddr->dev);
+
+    if (cache != NULL && local != NULL)
+    {
+        fsockaddr_copy(&cache->local, local);
+        fsockaddr_copy(&cache->remote, remote);
+        cache->ifaddr = route_result.ifaddr;
+        cache->next_hop_be = route_result.next_hop_be;
+        cache->dmac_ready = false;
+        if (route_result.ifaddr->dev != NULL &&
+            !is_tun_device(route_result.ifaddr->dev))
+        {
+            arp_entry_t *arp_entry = arp_lookup(route_result.ifaddr, route_result.next_hop_be);
+            if (arp_entry != NULL)
+            {
+                rte_ether_addr_copy(&arp_entry->mac, &cache->dmac);
+                cache->dmac_ready = true;
+            }
+        }
+        cache->send = ipv4_tx_send_fast;
+    }
+
+    ipv4_send_dev(m, route_result.ifaddr, route_result.next_hop_be, cache != NULL && cache->dmac_ready ? &cache->dmac : NULL);
+}
+
+void ipv4_send_default(struct rte_mbuf *m, u8 proto, const fsockaddr_t *local, const fsockaddr_t *remote)
+{
+    ipv4_tx_send_default(NULL, m, proto, local, remote);
+}
+
+void ipv4_tx_cache_init(ipv4_tx_cache_t *cache)
+{
+    if (cache == NULL)
+    {
+        return;
+    }
+
+    memset(cache, 0, sizeof(*cache));
+    cache->send = ipv4_tx_send_default;
+}
+
+void ipv4_tx_cache_send(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
+                        const fsockaddr_t *local, const fsockaddr_t *remote)
+{
+    if (unlikely(cache == NULL))
+    {
+        ipv4_send_default(m, proto, local, remote);
+        return;
+    }
+
+    cache->send(cache, m, proto, local, remote);
+}
+
+void ipv4_send_mbuf(struct rte_mbuf *m, u8 proto, u32 rip)
+{
+    fsockaddr_t remote = {
+        .family = FSOCKADDR_IPV4,
+        .ip = rip,
+    };
+    ipv4_send_default(m, proto, NULL, &remote);
+}
+
+void ipv4_send_raw_mbuf(struct rte_mbuf *m)
+{
+    struct rte_ipv4_hdr *hdr = ipv4_validate_packet(m);
+    if (unlikely(hdr == NULL))
+    {
+        free_mbuf(m);
+        return;
     }
 
     fnp_ifaddr_t *preferred_ifaddr = NULL;
@@ -197,42 +401,13 @@ void ipv4_send_raw_mbuf(struct rte_mbuf *m)
         hdr->src_addr = route_result.pref_src_be;
     }
 
-    m->port = route_result.ifaddr->dev->port_id;
-    compute_cksum(hdr, m);
-
-    arp_entry_t *e = arp_lookup(route_result.ifaddr, route_result.next_hop_be);
-    if (unlikely(e == NULL))
+    if (unlikely(route_result.is_local))
     {
-        arp_pend_mbuf(route_result.ifaddr, route_result.next_hop_be, m);
+        compute_cksum(hdr, m);
+        ip_local_deliver(m);
         return;
     }
 
-    ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
-}
-
-// ipv4_fast_send_mbuf
-// 用于已知目的ip情况，加速连接的数据发送
-void ipv4_fast_send_mbuf(struct rte_mbuf *m, const fsockaddr_t *local, const fsockaddr_t *remote)
-{
-    if (unlikely(local == NULL || remote == NULL))
-    {
-        free_mbuf(m);
-        return;
-    }
-
-    struct rte_ipv4_hdr *hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_prepend(m, IPV4_HDR_LEN);
-    hdr->version_ihl = 0x45;
-    hdr->type_of_service = 0;
-    hdr->total_length = rte_cpu_to_be_16(m->pkt_len);
-    hdr->packet_id = 0;
-    hdr->fragment_offset = 0;
-    hdr->time_to_live = 64;
-    hdr->next_proto_id = IPPROTO_UDP;
-    hdr->src_addr = local->ip;
-    hdr->dst_addr = remote->ip;
-    hdr->hdr_checksum = 0; // 硬件计算
-    compute_cksum(hdr, m);
-
-    // m->port = socket->iface->port;
-    // ether_send_mbuf(m, &socket->next_mac, RTE_ETHER_TYPE_IPV4);
+    ipv4_prepare_tx_by_dev(m, hdr, hdr->next_proto_id, route_result.ifaddr->dev);
+    ipv4_send_dev(m, route_result.ifaddr, route_result.next_hop_be, NULL);
 }

@@ -17,8 +17,9 @@ dpdk:
 network:
   devices: # 底层网络设备列表, 在DPDK中的port编号按声明顺序从0开始
     - name: "eth0"
-      type: "physical" # 设备类型: physical表示物理网卡, tap表示DPDK TAP vdev
-      pci: "0000:03:00.0" # physical类型必填, 会根据此构造DPDK白名单参数; tap类型忽略
+      type: "ethernet" # 设备语义: ethernet表示FNP底层以太网设备
+      driver: "physical" # 底层驱动: physical表示物理网卡, dpdk_tap表示DPDK TAP vdev
+      pci: "0000:03:00.0" # physical驱动必填, 会根据此构造DPDK白名单参数; dpdk_tap驱动忽略
       mac: "" # 可选MAC地址, 留空表示使用设备默认MAC
       promiscuous: true
       nb_rx_desc: 2048 #接收描述符数

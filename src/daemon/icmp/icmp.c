@@ -49,7 +49,11 @@ static void icmp_echo_reply(struct rte_mbuf* orig_mbuf, u32 dip)
     }
     hdr->icmp_cksum = checksum((u16*)hdr, ICMP_HDR_LEN + data_len, 0);
 
-    ipv4_send_mbuf(m, IPPROTO_ICMP, dip);
+    fsockaddr_t remote = {
+        .family = FSOCKADDR_IPV4,
+        .ip = dip,
+    };
+    ipv4_send_default(m, IPPROTO_ICMP, NULL, &remote);
 }
 
 static void icmp_recv_mbuf(struct rte_mbuf* m)
@@ -107,7 +111,11 @@ void icmp_send_port_unreachable(struct rte_mbuf* orig_mbuf)
     hdr->icmp_cksum = checksum((u16*)hdr, ICMP_HDR_LEN + copy_len, 0);
 
     u32 dst_ip = orig_ipv4_hdr->src_addr;
-    ipv4_send_mbuf(m, IPPROTO_ICMP, dst_ip);
+    fsockaddr_t remote = {
+        .family = FSOCKADDR_IPV4,
+        .ip = dst_ip,
+    };
+    ipv4_send_default(m, IPPROTO_ICMP, NULL, &remote);
 }
 
 int icmp_module_init(void)

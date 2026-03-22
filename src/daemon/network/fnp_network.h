@@ -2,6 +2,7 @@
 #define FNP_NETWORK_H
 
 #include "fnp_common.h"
+#include "fnp_ring.h"
 #include "libfnp-conf.h"
 
 #include <rte_ether.h>
@@ -13,34 +14,46 @@
 
 typedef enum fnp_device_type
 {
-    fnp_device_type_physical = 1,
-    fnp_device_type_tap,
+    fnp_device_type_ethernet = 1, // 以太网设备，收发二层帧
+    fnp_device_type_tap,          // 用户态二层虚拟设备，直接收发以太网帧
+    fnp_device_type_tun,          // 用户态三层虚拟设备，直接收发 IPv4 包
 } fnp_device_type_t;
+
+typedef enum fnp_device_driver
+{
+    fnp_device_driver_none = 0,   // tap/tun 等非 DPDK 后端设备使用
+    fnp_device_driver_physical,   // DPDK 物理网卡
+    fnp_device_driver_dpdk_tap,   // DPDK TAP vdev，作为 ethernet 的一种后端驱动
+} fnp_device_driver_t;
 
 typedef struct fnp_device fnp_device_t;
 typedef struct fnp_ifaddr fnp_ifaddr_t;
 
 typedef int (*fnp_device_init_func)(fnp_device_t* dev, const fnp_device_config* conf, int nb_queues);
 typedef u16 (*fnp_device_recv_func)(fnp_device_t* dev, u16 queue_id, u16 budget);
-typedef u16 (*fnp_device_send_func)(fnp_device_t* dev, u16 queue_id, struct rte_mbuf** mbufs, u16 count);
+typedef void (*fnp_device_send_func)(fnp_device_t* dev,
+                                     struct rte_mbuf* m,
+                                     const struct rte_ether_addr* dmac);
 
 typedef struct fnp_device_ops
 {
-    fnp_device_init_func init;
-    fnp_device_recv_func recv;
-    fnp_device_send_func send;
+    fnp_device_init_func init;   // 设备初始化，仅底层承载设备使用
+    fnp_device_recv_func recv;   // worker 轮询接收入口
+    fnp_device_send_func send;   // 协议栈输出完整 IPv4 包到指定 device，ethernet/tap 在这里做二层封装，tun 直接递交 IP 包
 } fnp_device_ops_t;
 
 struct fnp_device
 {
     u16 id;
-    u16 port_id; // DPDK分配的port编号，从0开始
+    u16 port_id; // 仅对 ethernet 设备有效，表示 DPDK 分配的 port 编号，从0开始
     char name[32];
     fnp_device_type_t type;
+    fnp_device_driver_t driver;
     bool promiscuous;
     u16 nb_rx_desc;
     u16 nb_tx_desc;
     struct rte_ether_addr mac;
+    fnp_ring_t* tx_rings[FNP_MAX_WORKER_NUM];
     const fnp_device_ops_t* ops;
 };
 
@@ -93,6 +106,39 @@ fnp_ifaddr_t* find_ifaddr_on_device(fnp_device_t* dev, u32 local_ip_be);
 fnp_ifaddr_t* find_ifaddr_on_device_for_remote(fnp_device_t* dev, u32 remote_ip_be);
 
 fnp_ifaddr_t* add_dynamic_ifaddr(fnp_device_t* dev, u32 local_ip_be);
+
+// worker 发送阶段真正把 ethernet 设备 tx ring 里的完整二层帧刷到 DPDK 网卡。
+u16 fnp_device_flush_tx(fnp_device_t* dev, u16 queue_id, u16 budget);
+
+static inline fnp_ring_t* get_device_tx_ring(const fnp_device_t* dev, u16 queue_id)
+{
+    if (dev == NULL || queue_id >= FNP_MAX_WORKER_NUM)
+    {
+        return NULL;
+    }
+
+    return dev->tx_rings[queue_id];
+}
+
+static inline bool is_ethernet_device(const fnp_device_t* dev)
+{
+    return dev != NULL && dev->type == fnp_device_type_ethernet;
+}
+
+static inline bool is_dpdk_tap_driver(const fnp_device_t* dev)
+{
+    return dev != NULL && dev->driver == fnp_device_driver_dpdk_tap;
+}
+
+static inline bool is_tun_device(const fnp_device_t* dev)
+{
+    return dev != NULL && dev->type == fnp_device_type_tun;
+}
+
+static inline bool is_tap_device(const fnp_device_t* dev)
+{
+    return dev != NULL && dev->type == fnp_device_type_tap;
+}
 
 static inline bool is_local_ipaddr(u32 ip)
 {

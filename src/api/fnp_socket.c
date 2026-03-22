@@ -18,8 +18,12 @@ static int socket_conf_size(fsocket_type_t type)
             return (int)sizeof(fnp_udp_socket_conf_t);
         case fsocket_type_tcp:
             return (int)sizeof(fnp_tcp_socket_conf_t);
+        case fsocket_type_tap:
+            return (int)sizeof(fnp_tap_socket_conf_t);
         case fsocket_type_raw:
             return (int)sizeof(fnp_raw_socket_conf_t);
+        case fsocket_type_tun:
+            return (int)sizeof(fnp_tun_socket_conf_t);
         default:
             return -1;
     }
@@ -204,7 +208,7 @@ int fnp_socket_send(fnp_socket_t* socket, fnp_mbuf_t* m)
         return fnp_socket_sendto(socket, m, &udp_conf->remote);
     }
 
-    if (!is_raw_socket(socket->shared))
+    if (!is_raw_socket(socket->shared) && !is_tun_socket(socket->shared) && !is_tap_socket(socket->shared))
     {
         return FNP_ERR_NOT_SUPPORTED;
     }

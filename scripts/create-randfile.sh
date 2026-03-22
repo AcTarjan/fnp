@@ -6,4 +6,3 @@ if [ $# -gt 0 ]; then
 fi
 
 dd if=/dev/urandom bs=1KB count=$count | base64 > output/input.dat
-

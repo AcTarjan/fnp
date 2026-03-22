@@ -29,7 +29,6 @@ typedef struct fnp_worker
     struct rte_mempool* rx_pool; //接收内存池, 用于网卡接收数据包
     struct rte_mempool* clone_pool; //间接内存池, 用于clone
     fnp_ring_t* fmsg_ring; //当前worker的消息监听器
-    fnp_ring_t* tx_ring; // 暂存待发送的mbuf, 由worker按mbuf->port分发到对应device
     rte_hash* arp_table; //等待arp结果的待发送的mbuf列表, key为tip
 } fnp_worker_t;
 

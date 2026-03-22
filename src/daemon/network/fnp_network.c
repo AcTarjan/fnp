@@ -2,6 +2,8 @@
 
 #include "fnp_context.h"
 #include "ether.h"
+#include "tap.h"
+#include "tun.h"
 #include "fnp_error.h"
 #include "fnp_worker.h"
 #include "flow_table.h"
@@ -15,8 +17,9 @@
 #define network_context (get_fnp_context()->net)
 
 #define MBUF_BURST_SIZE 64
+#define DEVICE_TX_BURST_SIZE 128
 
-static bool is_tap_driver_name(const char* driver_name)
+static bool is_tap_driver_name(const char *driver_name)
 {
     return driver_name != NULL && strstr(driver_name, "net_tap") != NULL;
 }
@@ -45,7 +48,7 @@ static u8 ipv4_mask_prefix_len(u32 mask_be)
     return prefix_len;
 }
 
-static bool parse_mac_addr(const char* text, struct rte_ether_addr* mac)
+static bool parse_mac_addr(const char *text, struct rte_ether_addr *mac)
 {
     unsigned int bytes[RTE_ETHER_ADDR_LEN];
     if (text == NULL || mac == NULL)
@@ -68,19 +71,94 @@ static bool parse_mac_addr(const char* text, struct rte_ether_addr* mac)
     return true;
 }
 
-static fnp_device_type_t parse_device_type(const char* type)
+static void init_virtual_tap_mac(fnp_device_t *dev, const fnp_device_config *conf)
 {
-    if (type != NULL && strcmp(type, "tap") == 0)
+    if (dev == NULL)
+    {
+        return;
+    }
+
+    memset(&dev->mac, 0, sizeof(dev->mac));
+    if (conf != NULL && conf->mac != NULL && conf->mac[0] != '\0')
+    {
+        if (parse_mac_addr(conf->mac, &dev->mac))
+        {
+            return;
+        }
+
+        printf("invalid mac address on tap device %s: %s\n", dev->name, conf->mac);
+    }
+
+    dev->mac.addr_bytes[0] = 0x02;
+    dev->mac.addr_bytes[1] = 0x00;
+    dev->mac.addr_bytes[2] = 0x00;
+    dev->mac.addr_bytes[3] = 0x00;
+    dev->mac.addr_bytes[4] = (u8)((dev->id >> 8) & 0xff);
+    dev->mac.addr_bytes[5] = (u8)(dev->id & 0xff);
+}
+
+static fnp_device_type_t parse_device_type(const char *type)
+{
+    if (type == NULL || type[0] == '\0' || strcmp(type, "ethernet") == 0)
+    {
+        return fnp_device_type_ethernet;
+    }
+
+    if (strcmp(type, "tap") == 0)
     {
         return fnp_device_type_tap;
     }
 
-    return fnp_device_type_physical;
+    if (strcmp(type, "tun") == 0)
+    {
+        return fnp_device_type_tun;
+    }
+
+    return 0;
 }
 
-static int dpdk_device_init(fnp_device_t* dev, const fnp_device_config* conf, int nb_queues)
+static fnp_device_driver_t parse_device_driver(const char *driver)
+{
+    if (driver == NULL || driver[0] == '\0')
+    {
+        return fnp_device_driver_none;
+    }
+
+    if (strcmp(driver, "physical") == 0)
+    {
+        return fnp_device_driver_physical;
+    }
+
+    if (strcmp(driver, "dpdk_tap") == 0)
+    {
+        return fnp_device_driver_dpdk_tap;
+    }
+
+    return 0;
+}
+
+static bool validate_device_type_driver(fnp_device_type_t type, fnp_device_driver_t driver)
+{
+    switch (type)
+    {
+    case fnp_device_type_ethernet:
+        return driver == fnp_device_driver_physical || driver == fnp_device_driver_dpdk_tap;
+    case fnp_device_type_tap:
+    case fnp_device_type_tun:
+        return driver == fnp_device_driver_none;
+    default:
+        return false;
+    }
+}
+
+static int dpdk_device_init(fnp_device_t *dev, const fnp_device_config *conf, int nb_queues)
 {
     if (dev == NULL || conf == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (unlikely(!is_ethernet_device(dev)))
     {
         return FNP_ERR_PARAM;
     }
@@ -104,9 +182,9 @@ static int dpdk_device_init(fnp_device_t* dev, const fnp_device_config* conf, in
     struct rte_eth_conf port_conf = {
         .txmode = {
             .offloads =
-            RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
-            RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
-            RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+                RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+                RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+                RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
         },
     };
 
@@ -165,7 +243,7 @@ static int dpdk_device_init(fnp_device_t* dev, const fnp_device_config* conf, in
             return ret;
         }
 
-        fnp_worker_t* worker = get_fnp_worker(i);
+        fnp_worker_t *worker = get_fnp_worker(i);
         ret = rte_eth_rx_queue_setup(port, i, nb_rxd, socket_id, &rxq_conf, worker->rx_pool);
         if (ret < 0)
         {
@@ -187,7 +265,7 @@ static int dpdk_device_init(fnp_device_t* dev, const fnp_device_config* conf, in
 
     if (nb_queues > 1)
     {
-        if (dev->type == fnp_device_type_tap)
+        if (is_dpdk_tap_driver(dev))
         {
             printf("skip flow table init on TAP port %u, use a single worker queue for test mode\n", port);
         }
@@ -201,9 +279,9 @@ static int dpdk_device_init(fnp_device_t* dev, const fnp_device_config* conf, in
     return FNP_OK;
 }
 
-static u16 dpdk_device_recv(fnp_device_t* dev, u16 queue_id, u16 budget)
+static u16 dpdk_device_recv(fnp_device_t *dev, u16 queue_id, u16 budget)
 {
-    struct rte_mbuf* mbufs[MBUF_BURST_SIZE] = {0};
+    struct rte_mbuf *mbufs[MBUF_BURST_SIZE] = {0};
     u16 rx_num = rte_eth_rx_burst(dev->port_id, queue_id, mbufs, RTE_MIN(budget, (u16)MBUF_BURST_SIZE));
     for (u16 i = 0; i < rx_num; ++i)
     {
@@ -219,15 +297,44 @@ static u16 dpdk_device_recv(fnp_device_t* dev, u16 queue_id, u16 budget)
     return rx_num;
 }
 
-static u16 dpdk_device_send(fnp_device_t* dev, u16 queue_id, struct rte_mbuf** mbufs, u16 count)
+u16 fnp_device_flush_tx(fnp_device_t *dev, u16 queue_id, u16 budget)
 {
-    return rte_eth_tx_burst(dev->port_id, queue_id, mbufs, count);
+    fnp_ring_t *tx_ring = get_device_tx_ring(dev, queue_id);
+    struct rte_mbuf *mbufs[DEVICE_TX_BURST_SIZE] = {0};
+
+    if (unlikely(dev == NULL || !is_ethernet_device(dev) || tx_ring == NULL))
+    {
+        return 0;
+    }
+
+    u16 burst_size = RTE_MIN(budget, (u16)DEVICE_TX_BURST_SIZE);
+    u16 tx_num = fnp_ring_dequeue_burst(tx_ring, (void **)mbufs, burst_size);
+    if (unlikely(tx_num == 0))
+    {
+        return 0;
+    }
+
+    u16 sent = rte_eth_tx_burst(dev->port_id, queue_id, mbufs, tx_num);
+    if (unlikely(sent < tx_num))
+    {
+        rte_pktmbuf_free_bulk(&mbufs[sent], tx_num - sent);
+    }
+
+    return tx_num;
 }
 
 static const fnp_device_ops_t dpdk_device_ops = {
     .init = dpdk_device_init,
     .recv = dpdk_device_recv,
-    .send = dpdk_device_send,
+    .send = ether_device_send,
+};
+
+static const fnp_device_ops_t virtual_tap_device_ops = {
+    .send = ether_device_send,
+};
+
+static const fnp_device_ops_t virtual_tun_device_ops = {
+    .send = tun_device_send,
 };
 
 int get_fnp_device_count(void)
@@ -235,7 +342,7 @@ int get_fnp_device_count(void)
     return network_context.device_count;
 }
 
-fnp_device_t* get_fnp_device(int index)
+fnp_device_t *get_fnp_device(int index)
 {
     if (index < 0 || index >= network_context.device_count)
     {
@@ -245,7 +352,7 @@ fnp_device_t* get_fnp_device(int index)
     return &network_context.devices[index];
 }
 
-fnp_device_t* lookup_device_by_id(u16 device_id)
+fnp_device_t *lookup_device_by_id(u16 device_id)
 {
     for (int i = 0; i < network_context.device_count; ++i)
     {
@@ -258,7 +365,7 @@ fnp_device_t* lookup_device_by_id(u16 device_id)
     return NULL;
 }
 
-fnp_device_t* lookup_device_by_name(const char* name)
+fnp_device_t *lookup_device_by_name(const char *name)
 {
     if (name == NULL)
     {
@@ -276,7 +383,7 @@ fnp_device_t* lookup_device_by_name(const char* name)
     return NULL;
 }
 
-fnp_device_t* lookup_device_by_port(u16 port_id)
+fnp_device_t *lookup_device_by_port(u16 port_id)
 {
     for (int i = 0; i < network_context.device_count; ++i)
     {
@@ -289,9 +396,9 @@ fnp_device_t* lookup_device_by_port(u16 port_id)
     return NULL;
 }
 
-const struct rte_ether_addr* get_device_mac(const fnp_device_t* dev)
+const struct rte_ether_addr *get_device_mac(const fnp_device_t *dev)
 {
-    return dev == NULL ? NULL : &dev->mac;
+    return (is_ethernet_device(dev) || is_tap_device(dev)) ? &dev->mac : NULL;
 }
 
 int get_fnp_ifaddr_count(void)
@@ -299,7 +406,7 @@ int get_fnp_ifaddr_count(void)
     return network_context.ifaddr_count;
 }
 
-fnp_ifaddr_t* get_fnp_ifaddr(int index)
+fnp_ifaddr_t *get_fnp_ifaddr(int index)
 {
     if (index < 0 || index >= network_context.ifaddr_count)
     {
@@ -309,19 +416,19 @@ fnp_ifaddr_t* get_fnp_ifaddr(int index)
     return &network_context.ifaddrs[index];
 }
 
-fnp_ifaddr_t* lookup_ifaddr(u32 local_ip_be)
+fnp_ifaddr_t *lookup_ifaddr(u32 local_ip_be)
 {
-    fnp_ifaddr_t* ifaddr = NULL;
+    fnp_ifaddr_t *ifaddr = NULL;
     if (local_ip_be == 0 || network_context.ifaddr_tbl == NULL)
     {
         return NULL;
     }
 
-    hash_lookup(network_context.ifaddr_tbl, &local_ip_be, (void**)&ifaddr);
+    hash_lookup(network_context.ifaddr_tbl, &local_ip_be, (void **)&ifaddr);
     return ifaddr;
 }
 
-fnp_ifaddr_t* lookup_ifaddr_by_id(u16 ifaddr_id)
+fnp_ifaddr_t *lookup_ifaddr_by_id(u16 ifaddr_id)
 {
     for (int i = 0; i < network_context.ifaddr_count; ++i)
     {
@@ -334,7 +441,7 @@ fnp_ifaddr_t* lookup_ifaddr_by_id(u16 ifaddr_id)
     return NULL;
 }
 
-fnp_ifaddr_t* find_ifaddr_on_device(fnp_device_t* dev, u32 local_ip_be)
+fnp_ifaddr_t *find_ifaddr_on_device(fnp_device_t *dev, u32 local_ip_be)
 {
     if (dev == NULL)
     {
@@ -343,7 +450,7 @@ fnp_ifaddr_t* find_ifaddr_on_device(fnp_device_t* dev, u32 local_ip_be)
 
     for (int i = 0; i < network_context.ifaddr_count; ++i)
     {
-        fnp_ifaddr_t* ifaddr = &network_context.ifaddrs[i];
+        fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[i];
         if (ifaddr->dev == dev && ifaddr->local_ip_be == local_ip_be)
         {
             return ifaddr;
@@ -353,9 +460,9 @@ fnp_ifaddr_t* find_ifaddr_on_device(fnp_device_t* dev, u32 local_ip_be)
     return NULL;
 }
 
-fnp_ifaddr_t* find_ifaddr_on_device_for_remote(fnp_device_t* dev, u32 remote_ip_be)
+fnp_ifaddr_t *find_ifaddr_on_device_for_remote(fnp_device_t *dev, u32 remote_ip_be)
 {
-    fnp_ifaddr_t* first = NULL;
+    fnp_ifaddr_t *first = NULL;
     if (dev == NULL)
     {
         return NULL;
@@ -363,7 +470,7 @@ fnp_ifaddr_t* find_ifaddr_on_device_for_remote(fnp_device_t* dev, u32 remote_ip_
 
     for (int i = 0; i < network_context.ifaddr_count; ++i)
     {
-        fnp_ifaddr_t* ifaddr = &network_context.ifaddrs[i];
+        fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[i];
         if (ifaddr->dev != dev)
         {
             continue;
@@ -383,7 +490,7 @@ fnp_ifaddr_t* find_ifaddr_on_device_for_remote(fnp_device_t* dev, u32 remote_ip_
     return first;
 }
 
-static int register_ifaddr(fnp_ifaddr_t* ifaddr)
+static int register_ifaddr(fnp_ifaddr_t *ifaddr)
 {
     if (hash_add(network_context.ifaddr_tbl, &ifaddr->local_ip_be, ifaddr))
     {
@@ -393,14 +500,14 @@ static int register_ifaddr(fnp_ifaddr_t* ifaddr)
     return FNP_ERR_ADD_HASH;
 }
 
-fnp_ifaddr_t* add_dynamic_ifaddr(fnp_device_t* dev, u32 local_ip_be)
+fnp_ifaddr_t *add_dynamic_ifaddr(fnp_device_t *dev, u32 local_ip_be)
 {
     if (dev == NULL || local_ip_be == 0)
     {
         return NULL;
     }
 
-    fnp_ifaddr_t* existing = lookup_ifaddr(local_ip_be);
+    fnp_ifaddr_t *existing = lookup_ifaddr(local_ip_be);
     if (existing != NULL)
     {
         return existing->dev == dev ? existing : NULL;
@@ -411,7 +518,7 @@ fnp_ifaddr_t* add_dynamic_ifaddr(fnp_device_t* dev, u32 local_ip_be)
         return NULL;
     }
 
-    fnp_ifaddr_t* ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
+    fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
     memset(ifaddr, 0, sizeof(*ifaddr));
     ifaddr->id = (u16)network_context.ifaddr_count;
     ifaddr->dev = dev;
@@ -432,7 +539,7 @@ fnp_ifaddr_t* add_dynamic_ifaddr(fnp_device_t* dev, u32 local_ip_be)
     return ifaddr;
 }
 
-int init_fnp_device_layer(fnp_config* conf)
+int init_fnp_device_layer(fnp_config *conf)
 {
     if (conf == NULL)
     {
@@ -440,8 +547,17 @@ int init_fnp_device_layer(fnp_config* conf)
     }
 
     const int device_count = conf->network.devices_count;
+    int dpdk_device_count = 0;
+    for (int i = 0; i < device_count; ++i)
+    {
+        if (parse_device_type(conf->network.devices[i].device_type) == fnp_device_type_ethernet)
+        {
+            ++dpdk_device_count;
+        }
+    }
+
     const u16 avail_ports = rte_eth_dev_count_avail();
-    if (avail_ports < device_count)
+    if (avail_ports < dpdk_device_count)
     {
         printf("dpdk has %u avail ports found\n", avail_ports);
         return FNP_ERR_PARAM;
@@ -449,20 +565,71 @@ int init_fnp_device_layer(fnp_config* conf)
 
     memset(&network_context, 0, sizeof(network_context));
     network_context.device_count = device_count;
+    u16 next_dpdk_port_id = 0;
     for (int i = 0; i < device_count; ++i)
     {
-        const fnp_device_config* device_conf = &conf->network.devices[i];
-        fnp_device_t* dev = &network_context.devices[i];
+        const fnp_device_config *device_conf = &conf->network.devices[i];
+        fnp_device_t *dev = &network_context.devices[i];
+        fnp_device_type_t device_type = parse_device_type(device_conf->device_type);
+        fnp_device_driver_t device_driver = parse_device_driver(device_conf->driver);
+        if (device_type == fnp_device_type_ethernet && device_driver == fnp_device_driver_none)
+        {
+            device_driver = fnp_device_driver_physical;
+        }
 
         memset(dev, 0, sizeof(*dev));
         dev->id = device_conf->id;
-        dev->port_id = (u16)i;
-        dev->type = parse_device_type(device_conf->type);
+        dev->port_id = UINT16_MAX;
+        dev->type = device_type;
+        dev->driver = device_driver;
         dev->promiscuous = device_conf->promiscuous;
         dev->nb_rx_desc = (u16)device_conf->nb_rx_desc;
         dev->nb_tx_desc = (u16)device_conf->nb_tx_desc;
-        dev->ops = &dpdk_device_ops;
         snprintf(dev->name, sizeof(dev->name), "%s", device_conf->name == NULL ? "" : device_conf->name);
+
+        if (unlikely(!validate_device_type_driver(dev->type, dev->driver)))
+        {
+            printf("unsupported device type/driver: name=%s type=%s driver=%s\n",
+                   dev->name,
+                   device_conf->device_type == NULL ? "" : device_conf->device_type,
+                   device_conf->driver == NULL ? "" : device_conf->driver);
+            return FNP_ERR_PARAM;
+        }
+
+        if (dev->type == fnp_device_type_tun)
+        {
+            dev->ops = &virtual_tun_device_ops;
+            continue;
+        }
+
+        if (dev->type == fnp_device_type_tap)
+        {
+            init_virtual_tap_mac(dev, device_conf);
+            dev->ops = &virtual_tap_device_ops;
+            continue;
+        }
+
+        if (dev->type != fnp_device_type_ethernet)
+        {
+            printf("device type %s is not implemented yet: %s\n",
+                   device_conf->device_type == NULL ? "" : device_conf->device_type,
+                   dev->name);
+            return FNP_ERR_PARAM;
+        }
+
+        dev->port_id = next_dpdk_port_id++;
+        dev->ops = &dpdk_device_ops;
+
+        for (int q = 0; q < conf->worker.lcores_count; ++q)
+        {
+            dev->tx_rings[q] = fnp_ring_create(conf->worker.tx_ring_size, false, false);
+            if (dev->tx_rings[q] == NULL)
+            {
+                printf("create device tx ring failed: device=%s queue=%d size=%d\n",
+                       dev->name, q, conf->worker.tx_ring_size);
+                return FNP_ERR_CREATE_RING;
+            }
+        }
 
         int ret = dev->ops->init(dev, device_conf, conf->worker.lcores_count);
         CHECK_RET(ret);
@@ -471,7 +638,7 @@ int init_fnp_device_layer(fnp_config* conf)
     return FNP_OK;
 }
 
-int init_fnp_ifaddr_layer(fnp_config* conf)
+int init_fnp_ifaddr_layer(fnp_config *conf)
 {
     if (conf == NULL)
     {
@@ -487,8 +654,8 @@ int init_fnp_ifaddr_layer(fnp_config* conf)
     network_context.ifaddr_count = 0;
     for (int i = 0; i < conf->network.devices_count; ++i)
     {
-        const fnp_device_config* device_conf = &conf->network.devices[i];
-        fnp_device_t* dev = lookup_device_by_id(device_conf->id);
+        const fnp_device_config *device_conf = &conf->network.devices[i];
+        fnp_device_t *dev = lookup_device_by_id(device_conf->id);
         if (dev == NULL)
         {
             return FNP_ERR_PARAM;
@@ -501,8 +668,8 @@ int init_fnp_ifaddr_layer(fnp_config* conf)
                 return FNP_ERR_PARAM;
             }
 
-            const fnp_ifaddr_config* ifaddr_conf = &device_conf->ifaddrs[j];
-            fnp_ifaddr_t* ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
+            const fnp_ifaddr_config *ifaddr_conf = &device_conf->ifaddrs[j];
+            fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
             memset(ifaddr, 0, sizeof(*ifaddr));
             ifaddr->id = (u16)network_context.ifaddr_count;
             ifaddr->dev = dev;

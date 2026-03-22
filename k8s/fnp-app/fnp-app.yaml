@@ -1,40 +1,34 @@
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  annotations: { }
   labels:
-    k8s.kuboard.cn/name: dpdk-slave-deployment
-  name: dpdk-slave-deployment
+    app: fnp-app
+  name: fnp-app
   namespace: default
 spec:
-  progressDeadlineSeconds: 600
   replicas: 0
   revisionHistoryLimit: 10
   selector:
     matchLabels:
-      k8s.kuboard.cn/name: dpdk-slave-deployment
+      app: fnp-app
   template:
     metadata:
-      creationTimestamp: null
       labels:
-        k8s.kuboard.cn/name: dpdk-slave-deployment
+        app: fnp-app
     spec:
       containers:
-        - image: 'dpdk-slave:v1'
+        - image: fnp-app:v1
           imagePullPolicy: IfNotPresent
-          name: dpdk-slave
+          name: fnp-app
           resources:
             requests:
-              cpu: "2"    # 必须是整数
+              cpu: "2"
               memory: "4Gi"
             limits:
-              cpu: "2"    # 必须与 requests 相等
+              cpu: "2"
               memory: "4Gi"
           securityContext:
             privileged: true
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
           volumeMounts:
             - mountPath: /root/k8s
               name: k8s
@@ -47,12 +41,10 @@ spec:
               name: hugepages
       dnsPolicy: ClusterFirst
       restartPolicy: Always
-      schedulerName: default-scheduler
-      securityContext: { }
       terminationGracePeriodSeconds: 30
       volumes:
         - hostPath:
-            path: /root/fnp/deploy/k8s
+            path: /root/fnp/k8s
             type: Directory
           name: k8s
         - hostPath:
@@ -61,7 +53,7 @@ spec:
           name: dpdk
         - hostPath:
             path: /var/run/dpdk
-            type: Directory
+            type: DirectoryOrCreate
           name: var-dpdk
         - hostPath:
             path: /dev/hugepages

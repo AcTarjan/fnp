@@ -11,6 +11,8 @@
 #include "icmp.h"
 #include "udp.h"
 #include "raw.h"
+#include "tun.h"
+#include "tap.h"
 #include "ether.h"
 
 #include <rte_pdump.h>
@@ -86,6 +88,12 @@ i32 init_fnp_daemon(char* path)
     CHECK_RET(ret);
 
     ret = raw_module_init();
+    CHECK_RET(ret);
+
+    ret = tun_module_init();
+    CHECK_RET(ret);
+
+    ret = tap_module_init();
     CHECK_RET(ret);
 
     ret = init_fnp_master();

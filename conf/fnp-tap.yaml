@@ -17,7 +17,8 @@ dpdk:
 network:
   devices: # 底层网络设备列表, 在DPDK中的port编号按声明顺序从0开始
     - name: "fnp-tap0"
-      type: "tap" # 设备类型: physical表示物理网卡, tap表示DPDK TAP vdev
+      type: "ethernet" # 设备语义: ethernet表示FNP底层以太网设备
+      driver: "dpdk_tap" # 底层驱动: dpdk_tap表示通过DPDK TAP vdev接入宿主机网络
       mac: "" # 可选MAC地址, 留空表示使用设备默认MAC
       promiscuous: true
       nb_rx_desc: 2048 #接收描述符数

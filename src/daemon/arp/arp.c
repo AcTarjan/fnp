@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <rte_arp.h>
+#include <rte_hash_crc.h>
 #include <rte_malloc.h>
 
 #include "fnp_worker.h"
@@ -33,7 +34,17 @@ static inline void arp_init_key(arp_key_t* key, const fnp_ifaddr_t* ifaddr, u32 
 
 static int arp_init_context(void)
 {
-    arp_context.arp_tbl = hash_create("ArpSocketTable", ARP_TABLE_SIZE, sizeof(arp_key_t));
+    struct rte_hash_parameters params = {
+        .name = "ArpSocketTable",
+        .entries = ARP_TABLE_SIZE,
+        .key_len = sizeof(arp_key_t),
+        .hash_func = rte_hash_crc,
+        .hash_func_init_val = 0,
+        .socket_id = (int)rte_socket_id(),
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY,
+    };
+
+    arp_context.arp_tbl = rte_hash_create(&params);
     if (unlikely(arp_context.arp_tbl == NULL))
     {
         printf("alloc arp table error!\n");
@@ -130,7 +141,7 @@ void arp_send_request(fnp_ifaddr_t* ifaddr, u32 tip)
     memset(&arp_data->arp_tha, 0, RTE_ETHER_ADDR_LEN);
     arp_data->arp_tip = tip;
 
-    ether_send_mbuf(mbuf, &broadcast, RTE_ETHER_TYPE_ARP);
+    ether_send_mbuf(mbuf, ifaddr->dev, &broadcast, RTE_ETHER_TYPE_ARP);
 }
 
 static void arp_send_reply(fnp_ifaddr_t* ifaddr, struct rte_arp_hdr* req)
@@ -155,7 +166,7 @@ static void arp_send_reply(fnp_ifaddr_t* ifaddr, struct rte_arp_hdr* req)
     rte_ether_addr_copy(&req->arp_data.arp_sha, &arp_data->arp_tha);
     arp_data->arp_tip = req->arp_data.arp_sip;
 
-    ether_send_mbuf(mbuf, &arp_data->arp_tha, RTE_ETHER_TYPE_ARP);
+    ether_send_mbuf(mbuf, ifaddr->dev, &arp_data->arp_tha, RTE_ETHER_TYPE_ARP);
 }
 
 static void arp_recv_mbuf(struct rte_mbuf* m)
@@ -229,7 +240,7 @@ static void arp_handle_local_pending(struct rte_timer* timer, void* arg)
     {
         struct rte_mbuf* m = node->value;
         fnp_list_node_t* next = node->next;
-        ether_send_mbuf(m, &e->mac, RTE_ETHER_TYPE_IPV4);
+        ether_send_mbuf(m, pe->ifaddr->dev, &e->mac, RTE_ETHER_TYPE_IPV4);
         fnp_free(node);
         node = next;
     }

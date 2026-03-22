@@ -4,14 +4,14 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  deploy/set-tap.sh start [tap_name] [kernel_ip/cidr]
-  deploy/set-tap.sh stop [tap_name]
-  deploy/set-tap.sh delete [tap_name]
-  deploy/set-tap.sh show [tap_name]
+  scripts/set-tap.sh start [tap_name] [kernel_ip/cidr]
+  scripts/set-tap.sh stop [tap_name]
+  scripts/set-tap.sh delete [tap_name]
+  scripts/set-tap.sh show [tap_name]
 
 Examples:
-  sudo deploy/set-tap.sh start fnp-tap0 192.168.66.66/24
-  sudo deploy/set-tap.sh show fnp-tap0
+  sudo scripts/set-tap.sh start fnp-tap0 192.168.66.66/24
+  sudo scripts/set-tap.sh show fnp-tap0
 EOF
 }
 

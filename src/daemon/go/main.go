@@ -36,7 +36,8 @@ typedef struct {
 	uint16_t id;
 	int32_t port;
 	char* name;
-	char* type;
+	char* device_type;
+	char* driver;
 	char* pci;
 	char* mac;
 	bool promiscuous;
@@ -110,6 +111,7 @@ type DpdkConfig struct {
 type DeviceConfig struct {
 	Name        string   `yaml:"name"`
 	Type        string   `yaml:"type"`
+	Driver      string   `yaml:"driver"`
 	PCI         string   `yaml:"pci"`
 	MAC         string   `yaml:"mac"`
 	Promiscuous bool     `yaml:"promiscuous"`
@@ -227,28 +229,43 @@ func buildDpdkArgs(goConf *FnpConfig) ([]string, error) {
 	args = append(args, fmt.Sprintf("--log-level=%d", goConf.Dpdk.LogLevel))
 
 	hasPhysical := false
-	hasTap := false
 	for i, device := range goConf.Network.Devices {
 		deviceType := strings.ToLower(strings.TrimSpace(device.Type))
+		deviceDriver := strings.ToLower(strings.TrimSpace(device.Driver))
+
+		if deviceType == "" {
+			deviceType = "ethernet"
+		}
+
 		switch deviceType {
-		case "", "physical":
-			if strings.TrimSpace(device.PCI) == "" {
-				return nil, fmt.Errorf("network.devices[%d].pci is required for physical devices", i)
+		case "ethernet":
+			if deviceDriver == "" {
+				deviceDriver = "physical"
 			}
-			hasPhysical = true
-			args = append(args, "-a", device.PCI)
-		case "tap":
-			if strings.TrimSpace(device.Name) == "" {
-				return nil, fmt.Errorf("network.devices[%d].name is required for tap devices", i)
+
+			switch deviceDriver {
+			case "physical":
+				if strings.TrimSpace(device.PCI) == "" {
+					return nil, fmt.Errorf("network.devices[%d].pci is required for ethernet physical devices", i)
+				}
+				hasPhysical = true
+				args = append(args, "-a", device.PCI)
+			case "dpdk_tap":
+				if strings.TrimSpace(device.Name) == "" {
+					return nil, fmt.Errorf("network.devices[%d].name is required for ethernet dpdk_tap devices", i)
+				}
+				args = append(args, buildTapVdevArg(device, i))
+			default:
+				return nil, fmt.Errorf("unsupported device driver %q at network.devices[%d]", device.Driver, i)
 			}
-			hasTap = true
-			args = append(args, buildTapVdevArg(device, i))
+		case "tap", "tun":
+			continue
 		default:
 			return nil, fmt.Errorf("unsupported device type %q at network.devices[%d]", device.Type, i)
 		}
 	}
 
-	if hasTap && !hasPhysical {
+	if !hasPhysical {
 		args = appendUniqueArg(args, "--no-pci")
 	}
 
@@ -322,7 +339,10 @@ func setupNetwork(goConf *FnpConfig, conf *C.fnp_config) C.int {
 
 		conf.network.devices[i].id = C.uint16_t(i)
 		conf.network.devices[i].name = C.CString(device.Name)
-		conf.network.devices[i]._type = C.CString(device.Type)
+		conf.network.devices[i].device_type = C.CString(device.Type)
+		if strings.TrimSpace(device.Driver) != "" {
+			conf.network.devices[i].driver = C.CString(device.Driver)
+		}
 		if strings.TrimSpace(device.PCI) != "" {
 			conf.network.devices[i].pci = C.CString(device.PCI)
 		}

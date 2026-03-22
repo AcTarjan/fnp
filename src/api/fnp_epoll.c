@@ -13,7 +13,7 @@ int fnp_epoll_create(void)
     return epoll_create1(0);
 }
 
-int fnp_epoll_add(int epfd, fnp_socket_t* socket, fnp_handler_func handler, void* arg)
+int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void *arg)
 {
     if (epfd < 0 || socket == NULL || socket->shared == NULL || handler == NULL)
     {
@@ -48,7 +48,7 @@ int fnp_epoll_add(int epfd, fnp_socket_t* socket, fnp_handler_func handler, void
     return FNP_OK;
 }
 
-int fnp_epoll_del(int epfd, fnp_socket_t* socket)
+int fnp_epoll_del(int epfd, fnp_socket_t *socket)
 {
     if (epfd < 0 || socket == NULL || socket->shared == NULL)
     {
@@ -80,7 +80,7 @@ int fnp_epoll_wait(int epfd, int timeout_ms, int budget)
     int total = 0;
     for (int i = 0; i < ready; ++i)
     {
-        fnp_socket_t* socket = (fnp_socket_t*)events[i].data.ptr;
+        fnp_socket_t *socket = (fnp_socket_t *)events[i].data.ptr;
         if (socket == NULL || socket->shared == NULL || socket->wait_epfd != epfd || socket->handler == NULL)
         {
             continue;
@@ -109,7 +109,7 @@ void fnp_epoll_destroy(int epfd)
 
     for (u32 i = 0; i < frontend_local.capacity; ++i)
     {
-        fnp_socket_t* socket = frontend_get_fsocket(i);
+        fnp_socket_t *socket = frontend_get_fsocket(i);
         if (socket == NULL || socket->wait_epfd != epfd)
         {
             continue;

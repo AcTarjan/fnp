@@ -1,0 +1,28 @@
+# DPDK相关配置
+dpdk:
+  mbuf_pool_size: 4096
+  lcores: [2, 3]
+  app_id: "fnp"
+  log_level: 8
+  other_argv:
+
+# 网络配置
+network:
+  devices:
+    - name: "tun0"
+      type: "tun" # 用户态三层虚拟设备，前后端直接收发 IPv4 包
+      ifaddrs:
+        - "10.66.0.1/24"
+  routes:
+    - dst: "10.77.0.0/24" # 发往 10.77.0.0/24 的流量从 tun0 输出给前端应用
+      via: "10.66.0.2" # 仅用于记录下一跳语义，TUN 不做 ARP
+      dev: "tun0"
+      src: "10.66.0.1"
+
+# 工作线程配置
+worker:
+  mbuf_pool_size: 4095
+  clone_pool_size: 4095
+  rx_pool_size: 4095
+  tx_ring_size: 8192
+  lcores: [3]

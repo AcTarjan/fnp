@@ -7,7 +7,7 @@
 
 typedef struct fnp_socket fnp_socket_t;
 
-typedef int (*fnp_handler_func)(fnp_socket_t* socket, fnp_mbuf_t* m, void* arg);
+typedef void (*fnp_handler_func)(fnp_socket_t* socket, fnp_mbuf_t* m, void* arg);
 typedef int (*fnp_lcore_func_t)(void* arg);
 
 /*
@@ -39,13 +39,25 @@ typedef struct fnp_raw_socket_conf
     u32 local_ip; // 网络序，0表示不按本地IP过滤，仅按protocol匹配
 } fnp_raw_socket_conf_t;
 
+typedef struct fnp_tap_socket_conf
+{
+    char dev_name[32]; // 绑定到哪个 tap device
+} fnp_tap_socket_conf_t;
+
+typedef struct fnp_tun_socket_conf
+{
+    char dev_name[32]; // 绑定到哪个 tun device
+} fnp_tun_socket_conf_t;
+
 /*
  创建一个socket，全部为网络序
- type: socket类型, 取值: fsocket_type_udp / fsocket_type_tcp / fsocket_type_raw
+ type: socket类型, 取值: fsocket_type_udp / fsocket_type_tcp / fsocket_type_tap / fsocket_type_raw / fsocket_type_tun
  conf:
    UDP: 传 fnp_udp_socket_conf_t*
    TCP: 传 fnp_tcp_socket_conf_t*
+   TAP: 传 fnp_tap_socket_conf_t*
    RAW: 传 fnp_raw_socket_conf_t*，protocol和local_ip至少要指定一个
+   TUN: 传 fnp_tun_socket_conf_t*
  out:
    返回对应用层可见的fnp_socket_t句柄
  */

@@ -40,7 +40,9 @@ typedef struct fsocket
 #define is_tcp_socket(socket)   ((socket)->type == fsocket_type_tcp)
 #define is_udp_socket(socket)   ((socket)->type == fsocket_type_udp)
 #define is_quic_socket(socket)   ((socket)->type == fsocket_type_quic)
+#define is_tap_socket(socket)   ((socket)->type == fsocket_type_tap)
 #define is_raw_socket(socket)   ((socket)->type == fsocket_type_raw)
+#define is_tun_socket(socket)   ((socket)->type == fsocket_type_tun)
 
 static inline u32 fsocket_frontend_flags_load(const fsocket_t* socket)
 {

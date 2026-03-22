@@ -22,7 +22,9 @@ typedef struct udp_socket
     fsocket_t socket;
     fsockaddr_t local;
     fsockaddr_t remote;
+    ipv4_tx_cache_t tx_cache;
     bool is_registered;
+    void (*send_func)(struct udp_socket *udp_socket, struct rte_mbuf *m, fmbuf_info_t *info);
 } udp_socket_t;
 
 typedef struct udp_socket_key_4tuple
@@ -49,6 +51,9 @@ typedef struct udp_context
 static udp_context_t udp_context;
 
 static void udp_socket_close(fsocket_t *socket);
+
+static void udp_socket_send_connected(udp_socket_t *udp_socket, struct rte_mbuf *m, fmbuf_info_t *info);
+static void udp_socket_send_unconnected(udp_socket_t *udp_socket, struct rte_mbuf *m, fmbuf_info_t *info);
 
 static inline const udp_socket_t *udp_socket_const(const fsocket_t *socket)
 {
@@ -79,6 +84,21 @@ static inline bool udp_socket_is_connected(const fsocket_t *socket)
 static inline bool udp_remote_matches(const fsocket_t *socket, const fsockaddr_t *remote)
 {
     return fsockaddr_compare(udp_socket_remote_addr_const(socket), remote);
+}
+
+// 在socket创建时确定“连接态发送”还是“非连接态发送”。
+// 真正的本地/快速/普通路径由IPv4层内部通过函数指针自动切换。
+static void udp_socket_init_send_func(udp_socket_t *udp_socket)
+{
+    udp_socket->send_func = udp_socket_send_unconnected;
+    ipv4_tx_cache_init(&udp_socket->tx_cache);
+
+    if (udp_socket == NULL || !udp_socket_is_connected(&udp_socket->socket))
+    {
+        return;
+    }
+
+    udp_socket->send_func = udp_socket_send_connected;
 }
 
 static inline void udp_init_4tuple_key(udp_socket_key_4tuple_t *key,
@@ -298,36 +318,47 @@ static void udp_socket_unregister(fsocket_t *socket)
     rte_hash_del_key(udp_context.socket_2tuple_tbl, &key_2tuple);
 }
 
-static inline void local_forward_path(fsockaddr_t *local, fsockaddr_t *remote, struct rte_mbuf *m)
+static inline void udp_prepend_hdr(struct rte_mbuf *m, u16 src_port, u16 dst_port)
 {
-    fsocket_t *dst_socket = udp_socket_lookup(remote, local);
-    if (unlikely(dst_socket == NULL))
+    struct rte_udp_hdr *hdr = (struct rte_udp_hdr *)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
+    hdr->src_port = src_port;
+    hdr->dst_port = dst_port;
+    hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
+    hdr->dgram_cksum = 0;
+}
+
+// 无连接UDP每次发送的目的地址都可能变化，因此直接走IPv4默认路径。
+static void udp_socket_send_unconnected(udp_socket_t *udp_socket, struct rte_mbuf *m, fmbuf_info_t *info)
+{
+    if (unlikely(udp_socket == NULL || info == NULL))
     {
         free_mbuf(m);
         return;
     }
 
-    get_fsocket_ops(dst_socket->type)->recv(dst_socket, m);
+    udp_prepend_hdr(m, info->local.port, info->remote.port);
+    ipv4_send_default(m, IPPROTO_UDP, &info->local, &info->remote);
+}
+
+// connected UDP的local/remote固定，IPv4层可以在首次发送后把默认实现切到快速实现。
+static void udp_socket_send_connected(udp_socket_t *udp_socket, struct rte_mbuf *m, fmbuf_info_t *info)
+{
+    (void)info;
+    if (unlikely(udp_socket == NULL))
+    {
+        free_mbuf(m);
+        return;
+    }
+
+    udp_prepend_hdr(m, udp_socket->local.port, udp_socket->remote.port);
+    ipv4_tx_cache_send(&udp_socket->tx_cache, m, IPPROTO_UDP, &udp_socket->local, &udp_socket->remote);
 }
 
 static void udp_socket_send_one(fsocket_t *socket, struct rte_mbuf *m)
 {
+    udp_socket_t *udp_socket = udp_socket_cast(socket);
     fmbuf_info_t *info = get_fmbuf_info(m);
-    const fsockaddr_t *local = udp_socket_local_addr_const(socket);
-
-    if (is_local_ipaddr(info->remote.ip))
-    {
-        local_forward_path(&info->local, &info->remote, m);
-        return;
-    }
-
-    struct rte_udp_hdr *hdr = (struct rte_udp_hdr *)rte_pktmbuf_prepend(m, FNP_UDP_HDR_LEN);
-    hdr->src_port = local->port;
-    hdr->dst_port = info->remote.port;
-    hdr->dgram_len = rte_cpu_to_be_16(m->pkt_len);
-    hdr->dgram_cksum = 0;
-
-    ipv4_send_mbuf(m, IPPROTO_UDP, info->remote.ip);
+    udp_socket->send_func(udp_socket, m, info);
 }
 
 static void udp_socket_send(fsocket_t *socket, u64 tsc)
@@ -415,7 +446,7 @@ static fsocket_t *udp_socket_create(void *conf)
 
     if (udp_conf->local.ip != 0 && lookup_ifaddr(udp_conf->local.ip) == NULL)
     {
-        char* local_ip = fnp_ipv4_ntos(udp_conf->local.ip);
+        char *local_ip = fnp_ipv4_ntos(udp_conf->local.ip);
         printf("udp_socket_create: local ip %s is not configured on daemon\n", local_ip);
         fnp_string_free(local_ip);
         return NULL;
@@ -435,6 +466,7 @@ static fsocket_t *udp_socket_create(void *conf)
     udp_socket->local.family = FSOCKADDR_IPV4;
     udp_socket->remote.family = FSOCKADDR_IPV4;
     fsocket_format_transport_name(socket, "UDP", &udp_socket->local, &udp_socket->remote);
+    udp_socket_init_send_func(udp_socket);
 
     if (udp_socket_register(socket) != FNP_OK)
     {

@@ -1,0 +1,25 @@
+# DPDK相关配置
+dpdk:
+  mbuf_pool_size: 4096
+  lcores: [2, 3]
+  app_id: "fnp"
+  log_level: 8
+  other_argv:
+
+# 网络配置
+network:
+  devices:
+    - name: "tap0"
+      type: "tap" # 用户态二层虚拟设备，前后端直接收发以太网帧
+      mac: "02:00:00:00:10:01" # FNP 在该虚拟设备上的二层地址
+      ifaddrs:
+        - "10.88.0.1/24"
+  routes:
+
+# 工作线程配置
+worker:
+  mbuf_pool_size: 4095
+  clone_pool_size: 4095
+  rx_pool_size: 4095
+  tx_ring_size: 8192
+  lcores: [3]

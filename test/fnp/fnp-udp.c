@@ -71,7 +71,7 @@ static void usage(const char *prog)
             prog, prog);
 }
 
-static int udp_server_handler(fnp_socket_t *socket, fnp_mbuf_t *m, void *arg)
+static void udp_server_handler(fnp_socket_t *socket, fnp_mbuf_t *m, void *arg)
 {
     (void)arg;
 
@@ -92,7 +92,7 @@ static int udp_server_handler(fnp_socket_t *socket, fnp_mbuf_t *m, void *arg)
     if (reply == NULL)
     {
         fprintf(stderr, "fail to alloc reply mbuf\n");
-        return FNP_ERR_MBUF_ALLOC;
+        return;
     }
 
     memcpy(fnp_mbuf_data(reply), data, (size_t)len);
@@ -103,10 +103,8 @@ static int udp_server_handler(fnp_socket_t *socket, fnp_mbuf_t *m, void *arg)
     {
         fprintf(stderr, "fail to send echo reply: %d\n", ret);
         fnp_free_mbuf(reply);
-        return ret;
+        return;
     }
-
-    return FNP_OK;
 }
 
 static int run_server(const char *local_ip, int local_port)

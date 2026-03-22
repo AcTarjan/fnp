@@ -44,16 +44,40 @@ function(fnp_find_local_library out_var lib_name search_dir)
     set(${out_var} "${_library_path}" PARENT_SCOPE)
 endfunction()
 
+function(fnp_find_local_archive out_var lib_name search_dir)
+    unset(_library_path CACHE)
+    unset(_library_path)
+    set(_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    find_library(_library_path
+            NAMES ${lib_name}
+            PATHS "${search_dir}"
+            NO_DEFAULT_PATH
+            REQUIRED)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES "${_saved_suffixes}")
+    set(${out_var} "${_library_path}" PARENT_SCOPE)
+endfunction()
+
 fnp_find_local_library(DPDK_LIB_EAL rte_eal "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_RING rte_ring "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_MEMPOOL rte_mempool "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_MEMPOOL_RING rte_mempool_ring "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_MBUF rte_mbuf "${DPDK_LIB_DIR}")
+fnp_find_local_library(DPDK_LIB_KVARGS rte_kvargs "${DPDK_LIB_DIR}")
+fnp_find_local_library(DPDK_LIB_TELEMETRY rte_telemetry "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_HASH rte_hash "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_TIMER rte_timer "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_ETHDEV rte_ethdev "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_PDUMP rte_pdump "${DPDK_LIB_DIR}")
 fnp_find_local_library(DPDK_LIB_NET_TAP rte_net_tap "${DPDK_LIB_DIR}")
+
+fnp_find_local_archive(DPDK_LIB_EAL_A rte_eal "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_RING_A rte_ring "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_MEMPOOL_A rte_mempool "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_MEMPOOL_RING_A rte_mempool_ring "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_MBUF_A rte_mbuf "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_KVARGS_A rte_kvargs "${DPDK_LIB_DIR}")
+fnp_find_local_archive(DPDK_LIB_TELEMETRY_A rte_telemetry "${DPDK_LIB_DIR}")
 
 set(FNP_API_DPDK_LIBRARIES
         ${DPDK_LIB_EAL}
@@ -61,6 +85,16 @@ set(FNP_API_DPDK_LIBRARIES
         ${DPDK_LIB_MEMPOOL}
         ${DPDK_LIB_MEMPOOL_RING}
         ${DPDK_LIB_MBUF}
+        ${DPDK_LIB_KVARGS}
+        ${DPDK_LIB_TELEMETRY}
+)
+
+set(FNP_API_SOURCES
+        src/common/fnp_ring.c
+        src/common/fnp_list.c
+        src/api/fnp_frontend.c
+        src/api/fnp_socket.c
+        src/api/fnp_epoll.c
 )
 
 set(FNP_DAEMON_DPDK_LIBRARIES
@@ -127,6 +161,8 @@ set(FNP_DAEMON_SOURCES
         src/daemon/network/flow_table.c
         src/daemon/fsocket.c
         src/daemon/raw.c
+        src/daemon/tun.c
+        src/daemon/tap.c
         src/daemon/fnp_worker.c
         src/common/fnp_msg.c
         src/daemon/fnp_context.c
@@ -177,12 +213,22 @@ target_link_libraries(fnp-daemon PRIVATE
 )
 target_link_options(fnp-daemon PRIVATE ${FNP_DPDK_LINK_OPTIONS})
 
+add_library(fnp-api-obj OBJECT
+        ${FNP_API_SOURCES}
+)
+set_target_properties(fnp-api-obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_include_directories(fnp-api-obj
+        PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${DPDK_INCLUDE_DIR}"
+        PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/api"
+)
+
 add_library(fnp-api SHARED
-        src/common/fnp_ring.c
-        src/common/fnp_list.c
-        src/api/fnp_frontend.c
-        src/api/fnp_socket.c
-        src/api/fnp_epoll.c
+        $<TARGET_OBJECTS:fnp-api-obj>
 )
 
 target_include_directories(fnp-api
@@ -207,3 +253,45 @@ target_link_options(fnp-api PRIVATE
         ${FNP_DPDK_LINK_OPTIONS}
         "-Wl,--no-as-needed"
 )
+
+set(FNP_API_DPDK_BUNDLE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fnp_api_dpdk_bundle.o")
+set(FNP_API_FAT_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libfnp-api.a")
+
+add_custom_command(
+        OUTPUT "${FNP_API_DPDK_BUNDLE_OBJ}"
+        COMMAND ${CMAKE_LINKER} -r -o "${FNP_API_DPDK_BUNDLE_OBJ}"
+                --whole-archive
+                "${DPDK_LIB_EAL_A}"
+                "${DPDK_LIB_RING_A}"
+                "${DPDK_LIB_MEMPOOL_A}"
+                "${DPDK_LIB_MEMPOOL_RING_A}"
+                "${DPDK_LIB_MBUF_A}"
+                "${DPDK_LIB_KVARGS_A}"
+                "${DPDK_LIB_TELEMETRY_A}"
+                --no-whole-archive
+        DEPENDS
+        ${DPDK_LIB_EAL_A}
+        ${DPDK_LIB_RING_A}
+        ${DPDK_LIB_MEMPOOL_A}
+        ${DPDK_LIB_MEMPOOL_RING_A}
+        ${DPDK_LIB_MBUF_A}
+        ${DPDK_LIB_KVARGS_A}
+        ${DPDK_LIB_TELEMETRY_A}
+        COMMENT "Bundling required DPDK static objects for fnp-api"
+        VERBATIM
+)
+
+add_custom_command(
+        OUTPUT "${FNP_API_FAT_ARCHIVE}"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${FNP_API_FAT_ARCHIVE}"
+        COMMAND ${CMAKE_AR} qc "${FNP_API_FAT_ARCHIVE}" $<TARGET_OBJECTS:fnp-api-obj> "${FNP_API_DPDK_BUNDLE_OBJ}"
+        COMMAND ${CMAKE_RANLIB} "${FNP_API_FAT_ARCHIVE}"
+        DEPENDS
+        $<TARGET_OBJECTS:fnp-api-obj>
+        "${FNP_API_DPDK_BUNDLE_OBJ}"
+        COMMAND_EXPAND_LISTS
+        COMMENT "Creating self-contained fnp-api static library"
+        VERBATIM
+)
+
+add_custom_target(fnp-api-static ALL DEPENDS "${FNP_API_FAT_ARCHIVE}")

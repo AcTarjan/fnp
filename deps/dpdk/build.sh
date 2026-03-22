@@ -42,7 +42,7 @@ cd "${SRC_DIR}"
 python -m venv venv
 source venv/bin/activate
 pip install --upgrade pip 
-pip install pyelftools
+pip install pyelftools meson ninja
 
 if [ -d "${BUILD_DIR}" ]; then
     meson setup --prefix="${INSTALL_PREFIX}" --reconfigure "${BUILD_DIR}"

@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fnp-daemon
+  namespace: default
+  labels:
+    app: fnp-daemon
+spec:
+  selector:
+    matchLabels:
+      app: fnp-daemon
+  template:
+    metadata:
+      labels:
+        app: fnp-daemon
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: fnp-daemon
+          image: fnp-daemon:v1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: FNP_ROOT
+              value: /root/fnp
+            - name: FNP_CONFIG
+              value: /root/fnp.yaml
+          volumeMounts:
+            - name: fnp-root
+              mountPath: /root/fnp
+            - name: hugepages
+              mountPath: /dev/hugepages
+            - name: var-run-dpdk
+              mountPath: /var/run/dpdk
+            - name: vfio
+              mountPath: /dev/vfio
+            - name: sys-bus-pci
+              mountPath: /sys/bus/pci
+              readOnly: true
+      volumes:
+        - name: fnp-root
+          hostPath:
+            path: /var/run/fnp
+            type: DirectoryOrCreate
+        - name: hugepages
+          hostPath:
+            path: /dev/hugepages
+            type: Directory
+        - name: var-run-dpdk
+          hostPath:
+            path: /var/run/dpdk
+            type: DirectoryOrCreate
+        - name: vfio
+          hostPath:
+            path: /dev/vfio
+            type: DirectoryOrCreate
+        - name: sys-bus-pci
+          hostPath:
+            path: /sys/bus/pci
+            type: Directory

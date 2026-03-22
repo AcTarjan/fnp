@@ -9,19 +9,22 @@
 
 typedef struct route_context
 {
-    int count;
-    route_entry_t entries[FNP_ROUTE_TABLE_MAX];
+    int count;                              // 当前有效路由项数量
+    route_entry_t entries[FNP_ROUTE_TABLE_MAX]; // 简单内存路由表，当前按顺序线性扫描做最长前缀匹配
 } route_context_t;
 
 static route_context_t route_context;
 
-// 判断目标IP是否命中某条路由项的前缀。
+// 判断目标IP是否命中某条路由项。
+// 命中条件是：(dst & mask) == prefix。
 static bool route_ip_match(u32 dst_ip_be, const route_entry_t* entry)
 {
     return entry != NULL && (dst_ip_be & entry->mask_be) == entry->prefix_be;
 }
 
-// 向当前内存路由表中插入一条路由，并预先计算前缀长度，便于后续最长前缀匹配。
+// 向内存路由表中插入一条路由项。
+// 这里会把 prefix 先和 mask 归一化，并预先计算 prefix_len，
+// 这样后续查表时只需要做最长前缀匹配即可。
 static int route_add_entry(u32 prefix_be, u32 mask_be, u32 next_hop_be,
                            fnp_route_type_t type, fnp_ifaddr_t* ifaddr)
 {
@@ -53,13 +56,18 @@ static int route_add_connected(fnp_ifaddr_t* ifaddr)
     return route_add_entry(ifaddr->network_be, ifaddr->netmask_be, 0, fnp_route_type_connected, ifaddr);
 }
 
-// 根据配置生成默认路由，next hop 指向网关地址。
+// 生成默认路由。
+// 默认路由的前缀是 0.0.0.0/0，下一跳是配置中的网关地址。
 static int route_add_default(fnp_ifaddr_t* ifaddr, u32 gateway_be)
 {
     return route_add_entry(0, 0, gateway_be, fnp_route_type_gateway, ifaddr);
 }
 
-// 根据 routes 配置中的 dev/src/via，解析出这条路由实际绑定的出口本地地址。
+// 根据 routes 配置中的 dev/src/via，解析这条路由应绑定到哪个本地 ifaddr。
+// 规则：
+// 1. 如果显式配置了 src，则优先用该 src；
+// 2. 否则如果配置了 via，则在指定 device 上找一个和 via 同网段的 ifaddr；
+// 3. 否则按目的地址 dst 去找指定 device 上最合适的 ifaddr。
 static fnp_ifaddr_t* route_resolve_ifaddr(const fnp_route_config* route_conf)
 {
     fnp_device_t* dev = lookup_device_by_name(route_conf->dev);
@@ -86,7 +94,9 @@ static fnp_ifaddr_t* route_resolve_ifaddr(const fnp_route_config* route_conf)
     return find_ifaddr_on_device_for_remote(dev, route_conf->dst_ip_be);
 }
 
-// 执行最长前缀匹配；如果给定 preferred_ifaddr，则仅在同一 device 上挑选路由。
+// 执行最长前缀匹配。
+// 如果给定 preferred_ifaddr，则仅在同一 device 上挑选路由，
+// 这样 connected socket 可以固定从预期出口发送，而不是被默认路由切走。
 static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_ip_be)
 {
     route_entry_t* best = NULL;
@@ -113,8 +123,13 @@ static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_
 }
 
 // 初始化路由模块：
-// 1. 先根据所有 ifaddr 自动生成直连路由；
+// 1. 先根据所有本地 ifaddr 自动生成直连路由；
 // 2. 再加载配置中的静态路由和默认路由。
+//
+// 当前实现是一个简单的内存数组：
+// - 路由项数量不大时足够直接
+// - 查找时做线性扫描 + 最长前缀匹配
+// 后续如果路由项增多，再考虑替换为 LPM/Trie。
 int init_route_layer(fnp_config* conf)
 {
     memset(&route_context, 0, sizeof(route_context));
@@ -158,15 +173,19 @@ int init_route_layer(fnp_config* conf)
 }
 
 // 本地地址查询，只判断目标IP是否属于本机。
+// 命中时返回对应的 ifaddr，供 IPv4 本地递交使用。
 fnp_ifaddr_t* route_lookup_local(u32 local_ip_be)
 {
     return lookup_ifaddr(local_ip_be);
 }
 
 // 路由查找主流程：
-// 1. 先查本地地址；
-// 2. 未命中则按最长前缀匹配查找出口路由；
-// 3. 返回出口 ifaddr、next hop 和建议源地址。
+// 1. 先判断目标是否是本机地址；
+// 2. 如果不是本机地址，再按最长前缀匹配查路由；
+// 3. 输出发送所需的三个关键信息：
+//    - ifaddr：从哪个本地地址发
+//    - next_hop_be：下一跳IP是谁
+//    - pref_src_be：源IP应该填什么
 int route_lookup_with_ifaddr(fnp_ifaddr_t* preferred_ifaddr, u32 dst_ip_be, fnp_route_result_t* result)
 {
     if (result == NULL)
