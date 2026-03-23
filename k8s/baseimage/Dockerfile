@@ -35,7 +35,8 @@ RUN apt-get update \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-COPY deps/dpdk /tmp/fnp/deps/dpdk
+COPY deps/dpdk/build.sh /tmp/fnp/deps/dpdk/build.sh
+COPY deps/dpdk/dpdk-22.11.8.tar.xz /tmp/fnp/deps/dpdk/dpdk-22.11.8.tar.xz
 
 RUN bash /tmp/fnp/deps/dpdk/build.sh \
     && rm -rf /tmp/fnp

@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SRC_DIR="${SCRIPT_DIR}/dpdk-stable-22.11.8"
 BUILD_DIR="${SRC_DIR}/build"
 VENV_DIR="${SRC_DIR}/venv"
+DPDK_TARBALL="${SCRIPT_DIR}/dpdk-22.11.8.tar.xz"
 INSTALL_PREFIX="${DPDK_INSTALL_PREFIX:-/opt/dpdk}"
 LD_CONF_FILE="${DPDK_LD_CONF_FILE:-/etc/ld.so.conf.d/dpdk.conf}"
 
@@ -33,14 +34,20 @@ echo "current dir: ${SCRIPT_DIR}"
 echo "start build dpdk..."
 echo "install prefix: ${INSTALL_PREFIX}"
 
+if [ ! -f "${DPDK_TARBALL}" ]; then
+    echo "missing DPDK tarball: ${DPDK_TARBALL}"
+    exit 1
+fi
+
 if [ ! -d "${SRC_DIR}" ]; then
-    tar -xf "${SCRIPT_DIR}/dpdk-22.11.8.tar.xz" -C "${SCRIPT_DIR}"
+    tar -xf "${DPDK_TARBALL}" -C "${SCRIPT_DIR}"
 fi
 
 cd "${SRC_DIR}"
 
 # 用独立 venv 安装 meson/ninja/pyelftools，避免依赖宿主机 python 环境。
 rm -rf "${VENV_DIR}"
+rm -rf "${BUILD_DIR}"
 python3 -m venv "${VENV_DIR}"
 
 if [ -x "${VENV_DIR}/bin/python3" ]; then
@@ -53,11 +60,7 @@ export PATH="${VENV_DIR}/bin:${PATH}"
 "${VENV_PYTHON}" -m pip install --upgrade pip
 "${VENV_PYTHON}" -m pip install pyelftools meson ninja
 
-if [ -d "${BUILD_DIR}" ]; then
-    meson setup --prefix="${INSTALL_PREFIX}" --reconfigure "${BUILD_DIR}"
-else
-    meson setup --prefix="${INSTALL_PREFIX}" "${BUILD_DIR}"
-fi
+meson setup --prefix="${INSTALL_PREFIX}" "${BUILD_DIR}"
 
 ninja -C "${BUILD_DIR}" -j"$(nproc)"
 ninja -C "${BUILD_DIR}" install
