@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SRC_DIR="${SCRIPT_DIR}/dpdk-stable-22.11.8"
 BUILD_DIR="${SRC_DIR}/build"
+VENV_DIR="${SRC_DIR}/venv"
 INSTALL_PREFIX="${DPDK_INSTALL_PREFIX:-/opt/dpdk}"
 LD_CONF_FILE="${DPDK_LD_CONF_FILE:-/etc/ld.so.conf.d/dpdk.conf}"
 
@@ -38,11 +39,19 @@ fi
 
 cd "${SRC_DIR}"
 
-# 安装pyelftools依赖
-python -m venv venv
-source venv/bin/activate
-pip install --upgrade pip 
-pip install pyelftools meson ninja
+# 用独立 venv 安装 meson/ninja/pyelftools，避免依赖宿主机 python 环境。
+rm -rf "${VENV_DIR}"
+python3 -m venv "${VENV_DIR}"
+
+if [ -x "${VENV_DIR}/bin/python3" ]; then
+    VENV_PYTHON="${VENV_DIR}/bin/python3"
+else
+    VENV_PYTHON="${VENV_DIR}/bin/python"
+fi
+export PATH="${VENV_DIR}/bin:${PATH}"
+
+"${VENV_PYTHON}" -m pip install --upgrade pip
+"${VENV_PYTHON}" -m pip install pyelftools meson ninja
 
 if [ -d "${BUILD_DIR}" ]; then
     meson setup --prefix="${INSTALL_PREFIX}" --reconfigure "${BUILD_DIR}"
