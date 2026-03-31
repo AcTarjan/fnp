@@ -1,7 +1,4 @@
 build/
-lib/libfnp-api.a
-lib/libfnp-api.so
-k8s/fnp-daemon
 
 # 依赖库，可能与本地环境相关，不需要提交。
 src/daemon/go/go.sum
