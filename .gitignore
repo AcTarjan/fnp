@@ -1,4 +1,7 @@
 build/
+lib/libfnp-api.a
+lib/libfnp-api.so
+k8s/fnp-daemon
 
 # 依赖库，可能与本地环境相关，不需要提交。
 src/daemon/go/go.sum
@@ -10,4 +13,3 @@ deps/dpdk/dpdk-stable-22.11.8/
 deps/picotls/picotls-src/
 deps/picotls/include/
 deps/picotls/lib/
-

@@ -23,13 +23,9 @@ spec:
           securityContext:
             privileged: true
           env:
-            - name: FNP_ROOT
-              value: /root/fnp
             - name: FNP_CONFIG
               value: /root/fnp.yaml
           volumeMounts:
-            - name: fnp-root
-              mountPath: /root/fnp
             - name: hugepages
               mountPath: /dev/hugepages
             - name: var-run-dpdk
@@ -40,10 +36,6 @@ spec:
               mountPath: /sys/bus/pci
               readOnly: true
       volumes:
-        - name: fnp-root
-          hostPath:
-            path: /var/run/fnp
-            type: DirectoryOrCreate
         - name: hugepages
           hostPath:
             path: /dev/hugepages

@@ -8,6 +8,7 @@ set(CMAKE_SKIP_RPATH TRUE)
 add_compile_options(-mssse3)
 
 set(DPDK_DIR "/opt/dpdk" CACHE PATH "DPDK installation prefix")
+option(FNP_DAEMON_STATIC_DPDK "Link fnp-daemon with bundled static DPDK libraries for TAP + ixgbe" ON)
 set(DPDK_INCLUDE_DIR "${DPDK_DIR}/include")
 set(DPDK_LIB_DIR "${DPDK_DIR}/lib")
 if(DEFINED CMAKE_LIBRARY_ARCHITECTURE AND EXISTS "${DPDK_DIR}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
@@ -30,64 +31,9 @@ set(FNP_CONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/conf")
 message(STATUS "DPDK_DIR: ${DPDK_DIR}")
 message(STATUS "DPDK_INCLUDE_DIR: ${DPDK_INCLUDE_DIR}")
 message(STATUS "DPDK_LIB_DIR: ${DPDK_LIB_DIR}")
+message(STATUS "FNP_DAEMON_STATIC_DPDK: ${FNP_DAEMON_STATIC_DPDK}")
 message(STATUS "FNP_CONF_DIR: ${FNP_CONF_DIR}")
 message(STATUS "FNP_CONFIG_DIR: ${FNP_CONFIG_DIR}")
-
-function(fnp_find_local_library out_var lib_name search_dir)
-    unset(_library_path CACHE)
-    unset(_library_path)
-    find_library(_library_path
-            NAMES ${lib_name}
-            PATHS "${search_dir}"
-            NO_DEFAULT_PATH
-            REQUIRED)
-    set(${out_var} "${_library_path}" PARENT_SCOPE)
-endfunction()
-
-function(fnp_find_local_archive out_var lib_name search_dir)
-    unset(_library_path CACHE)
-    unset(_library_path)
-    set(_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
-    find_library(_library_path
-            NAMES ${lib_name}
-            PATHS "${search_dir}"
-            NO_DEFAULT_PATH
-            REQUIRED)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES "${_saved_suffixes}")
-    set(${out_var} "${_library_path}" PARENT_SCOPE)
-endfunction()
-
-fnp_find_local_library(DPDK_LIB_EAL rte_eal "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_RING rte_ring "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_MEMPOOL rte_mempool "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_MEMPOOL_RING rte_mempool_ring "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_MBUF rte_mbuf "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_KVARGS rte_kvargs "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_TELEMETRY rte_telemetry "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_HASH rte_hash "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_TIMER rte_timer "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_ETHDEV rte_ethdev "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_PDUMP rte_pdump "${DPDK_LIB_DIR}")
-fnp_find_local_library(DPDK_LIB_NET_TAP rte_net_tap "${DPDK_LIB_DIR}")
-
-fnp_find_local_archive(DPDK_LIB_EAL_A rte_eal "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_RING_A rte_ring "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_MEMPOOL_A rte_mempool "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_MEMPOOL_RING_A rte_mempool_ring "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_MBUF_A rte_mbuf "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_KVARGS_A rte_kvargs "${DPDK_LIB_DIR}")
-fnp_find_local_archive(DPDK_LIB_TELEMETRY_A rte_telemetry "${DPDK_LIB_DIR}")
-
-set(FNP_API_DPDK_LIBRARIES
-        ${DPDK_LIB_EAL}
-        ${DPDK_LIB_RING}
-        ${DPDK_LIB_MEMPOOL}
-        ${DPDK_LIB_MEMPOOL_RING}
-        ${DPDK_LIB_MBUF}
-        ${DPDK_LIB_KVARGS}
-        ${DPDK_LIB_TELEMETRY}
-)
 
 set(FNP_API_SOURCES
         src/common/fnp_ring.c
@@ -97,19 +43,7 @@ set(FNP_API_SOURCES
         src/api/fnp_epoll.c
 )
 
-set(FNP_DAEMON_DPDK_LIBRARIES
-        ${DPDK_LIB_PDUMP}
-        ${DPDK_LIB_TIMER}
-        ${DPDK_LIB_HASH}
-        ${DPDK_LIB_ETHDEV}
-        ${DPDK_LIB_NET_TAP}
-        ${DPDK_LIB_MEMPOOL_RING}
-        ${FNP_API_DPDK_LIBRARIES}
-)
-
-set(FNP_DPDK_LINK_OPTIONS
-        "-Wl,-rpath-link,${DPDK_LIB_DIR}"
-)
+set(FNP_DAEMON_DPDK_BUNDLE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fnp_daemon_dpdk_bundle.o")
 
 set(FNP_CONF_LIBRARY "${FNP_CONF_DIR}/libfnp-conf.a")
 set(FNP_CONF_HEADER "${FNP_CONF_DIR}/libfnp-conf.h")
@@ -186,19 +120,6 @@ set(FNP_DAEMON_INCLUDE_DIRS
         "${FNP_CONF_DIR}"
 )
 
-set(FNP_DAEMON_LINK_LIBRARIES
-        ${FNP_CONF_LIBRARY}
-        "-Wl,--no-as-needed"
-        ${FNP_DAEMON_DPDK_LIBRARIES}
-        "-Wl,--as-needed"
-        pthread
-        ${CMAKE_DL_LIBS}
-        m
-        numa
-        pcap
-        atomic
-)
-
 add_executable(fnp-daemon
         ${FNP_DAEMON_SOURCES}
 )
@@ -208,10 +129,123 @@ target_include_directories(fnp-daemon PRIVATE
         ${FNP_DAEMON_INCLUDE_DIRS}
 )
 
-target_link_libraries(fnp-daemon PRIVATE
-        ${FNP_DAEMON_LINK_LIBRARIES}
-)
-target_link_options(fnp-daemon PRIVATE ${FNP_DPDK_LINK_OPTIONS})
+if(FNP_DAEMON_STATIC_DPDK)
+    add_custom_command(
+            OUTPUT "${FNP_DAEMON_DPDK_BUNDLE_OBJ}"
+            COMMAND ${CMAKE_LINKER} -r -o "${FNP_DAEMON_DPDK_BUNDLE_OBJ}"
+                    --whole-archive
+                    "${DPDK_LIB_DIR}/librte_pdump.a"
+                    "${DPDK_LIB_DIR}/librte_timer.a"
+                    "${DPDK_LIB_DIR}/librte_hash.a"
+                    "${DPDK_LIB_DIR}/librte_ethdev.a"
+                    "${DPDK_LIB_DIR}/librte_net_tap.a"
+                    "${DPDK_LIB_DIR}/librte_net_ixgbe.a"
+                    "${DPDK_LIB_DIR}/librte_bus_vdev.a"
+                    "${DPDK_LIB_DIR}/librte_bus_pci.a"
+                    "${DPDK_LIB_DIR}/librte_pci.a"
+                    "${DPDK_LIB_DIR}/librte_net.a"
+                    "${DPDK_LIB_DIR}/librte_meter.a"
+                    "${DPDK_LIB_DIR}/librte_bpf.a"
+                    "${DPDK_LIB_DIR}/librte_pcapng.a"
+                    "${DPDK_LIB_DIR}/librte_gso.a"
+                    "${DPDK_LIB_DIR}/librte_rcu.a"
+                    "${DPDK_LIB_DIR}/librte_security.a"
+                    "${DPDK_LIB_DIR}/librte_cryptodev.a"
+                    "${DPDK_LIB_DIR}/librte_mempool_ring.a"
+                    "${DPDK_LIB_DIR}/librte_eal.a"
+                    "${DPDK_LIB_DIR}/librte_ring.a"
+                    "${DPDK_LIB_DIR}/librte_mempool.a"
+                    "${DPDK_LIB_DIR}/librte_mbuf.a"
+                    "${DPDK_LIB_DIR}/librte_kvargs.a"
+                    "${DPDK_LIB_DIR}/librte_telemetry.a"
+                    --no-whole-archive
+            DEPENDS
+                    "${DPDK_LIB_DIR}/librte_pdump.a"
+                    "${DPDK_LIB_DIR}/librte_timer.a"
+                    "${DPDK_LIB_DIR}/librte_hash.a"
+                    "${DPDK_LIB_DIR}/librte_ethdev.a"
+                    "${DPDK_LIB_DIR}/librte_net_tap.a"
+                    "${DPDK_LIB_DIR}/librte_net_ixgbe.a"
+                    "${DPDK_LIB_DIR}/librte_bus_vdev.a"
+                    "${DPDK_LIB_DIR}/librte_bus_pci.a"
+                    "${DPDK_LIB_DIR}/librte_pci.a"
+                    "${DPDK_LIB_DIR}/librte_net.a"
+                    "${DPDK_LIB_DIR}/librte_meter.a"
+                    "${DPDK_LIB_DIR}/librte_bpf.a"
+                    "${DPDK_LIB_DIR}/librte_pcapng.a"
+                    "${DPDK_LIB_DIR}/librte_gso.a"
+                    "${DPDK_LIB_DIR}/librte_rcu.a"
+                    "${DPDK_LIB_DIR}/librte_security.a"
+                    "${DPDK_LIB_DIR}/librte_cryptodev.a"
+                    "${DPDK_LIB_DIR}/librte_mempool_ring.a"
+                    "${DPDK_LIB_DIR}/librte_eal.a"
+                    "${DPDK_LIB_DIR}/librte_ring.a"
+                    "${DPDK_LIB_DIR}/librte_mempool.a"
+                    "${DPDK_LIB_DIR}/librte_mbuf.a"
+                    "${DPDK_LIB_DIR}/librte_kvargs.a"
+                    "${DPDK_LIB_DIR}/librte_telemetry.a"
+            COMMAND_EXPAND_LISTS
+            COMMENT "Bundling required static DPDK objects for fnp-daemon (tap + ixgbe)"
+            VERBATIM
+    )
+
+    add_custom_target(fnp-daemon-dpdk-bundle
+            DEPENDS "${FNP_DAEMON_DPDK_BUNDLE_OBJ}"
+    )
+    add_dependencies(fnp-daemon fnp-daemon-dpdk-bundle)
+
+    target_link_libraries(fnp-daemon PRIVATE
+            ${FNP_CONF_LIBRARY}
+            ${FNP_DAEMON_DPDK_BUNDLE_OBJ}
+            pthread
+            ${CMAKE_DL_LIBS}
+            m
+            numa
+            pcap
+            nl-3
+            nl-route-3
+            dbus-1
+            atomic
+    )
+    target_link_options(fnp-daemon PRIVATE
+            "-Wl,--export-dynamic"
+    )
+else()
+    target_link_libraries(fnp-daemon PRIVATE
+            ${FNP_CONF_LIBRARY}
+            "-Wl,--no-as-needed"
+            "${DPDK_LIB_DIR}/librte_pdump.so"
+            "${DPDK_LIB_DIR}/librte_timer.so"
+            "${DPDK_LIB_DIR}/librte_hash.so"
+            "${DPDK_LIB_DIR}/librte_ethdev.so"
+            "${DPDK_LIB_DIR}/librte_net_tap.so"
+            "${DPDK_LIB_DIR}/librte_net_ixgbe.so"
+            "${DPDK_LIB_DIR}/librte_bus_vdev.so"
+            "${DPDK_LIB_DIR}/librte_bus_pci.so"
+            "${DPDK_LIB_DIR}/librte_pci.so"
+            "${DPDK_LIB_DIR}/librte_security.so"
+            "${DPDK_LIB_DIR}/librte_cryptodev.so"
+            "${DPDK_LIB_DIR}/librte_net.so"
+            "${DPDK_LIB_DIR}/librte_meter.so"
+            "${DPDK_LIB_DIR}/librte_mempool_ring.so"
+            "${DPDK_LIB_DIR}/librte_eal.so"
+            "${DPDK_LIB_DIR}/librte_ring.so"
+            "${DPDK_LIB_DIR}/librte_mempool.so"
+            "${DPDK_LIB_DIR}/librte_mbuf.so"
+            "${DPDK_LIB_DIR}/librte_kvargs.so"
+            "${DPDK_LIB_DIR}/librte_telemetry.so"
+            "-Wl,--as-needed"
+            pthread
+            ${CMAKE_DL_LIBS}
+            m
+            numa
+            pcap
+            atomic
+    )
+    target_link_options(fnp-daemon PRIVATE
+            "-Wl,-rpath-link,${DPDK_LIB_DIR}"
+    )
+endif()
 
 add_library(fnp-api-obj OBJECT
         ${FNP_API_SOURCES}
@@ -242,7 +276,13 @@ target_include_directories(fnp-api
 
 target_link_libraries(fnp-api
         PUBLIC
-        ${FNP_API_DPDK_LIBRARIES}
+        "${DPDK_LIB_DIR}/librte_eal.so"
+        "${DPDK_LIB_DIR}/librte_ring.so"
+        "${DPDK_LIB_DIR}/librte_mempool.so"
+        "${DPDK_LIB_DIR}/librte_mempool_ring.so"
+        "${DPDK_LIB_DIR}/librte_mbuf.so"
+        "${DPDK_LIB_DIR}/librte_kvargs.so"
+        "${DPDK_LIB_DIR}/librte_telemetry.so"
         PRIVATE
         pthread
         ${CMAKE_DL_LIBS}
@@ -250,7 +290,7 @@ target_link_libraries(fnp-api
         numa
 )
 target_link_options(fnp-api PRIVATE
-        ${FNP_DPDK_LINK_OPTIONS}
+        "-Wl,-rpath-link,${DPDK_LIB_DIR}"
         "-Wl,--no-as-needed"
 )
 
@@ -261,22 +301,22 @@ add_custom_command(
         OUTPUT "${FNP_API_DPDK_BUNDLE_OBJ}"
         COMMAND ${CMAKE_LINKER} -r -o "${FNP_API_DPDK_BUNDLE_OBJ}"
                 --whole-archive
-                "${DPDK_LIB_EAL_A}"
-                "${DPDK_LIB_RING_A}"
-                "${DPDK_LIB_MEMPOOL_A}"
-                "${DPDK_LIB_MEMPOOL_RING_A}"
-                "${DPDK_LIB_MBUF_A}"
-                "${DPDK_LIB_KVARGS_A}"
-                "${DPDK_LIB_TELEMETRY_A}"
+                "${DPDK_LIB_DIR}/librte_eal.a"
+                "${DPDK_LIB_DIR}/librte_ring.a"
+                "${DPDK_LIB_DIR}/librte_mempool.a"
+                "${DPDK_LIB_DIR}/librte_mempool_ring.a"
+                "${DPDK_LIB_DIR}/librte_mbuf.a"
+                "${DPDK_LIB_DIR}/librte_kvargs.a"
+                "${DPDK_LIB_DIR}/librte_telemetry.a"
                 --no-whole-archive
         DEPENDS
-        ${DPDK_LIB_EAL_A}
-        ${DPDK_LIB_RING_A}
-        ${DPDK_LIB_MEMPOOL_A}
-        ${DPDK_LIB_MEMPOOL_RING_A}
-        ${DPDK_LIB_MBUF_A}
-        ${DPDK_LIB_KVARGS_A}
-        ${DPDK_LIB_TELEMETRY_A}
+        "${DPDK_LIB_DIR}/librte_eal.a"
+        "${DPDK_LIB_DIR}/librte_ring.a"
+        "${DPDK_LIB_DIR}/librte_mempool.a"
+        "${DPDK_LIB_DIR}/librte_mempool_ring.a"
+        "${DPDK_LIB_DIR}/librte_mbuf.a"
+        "${DPDK_LIB_DIR}/librte_kvargs.a"
+        "${DPDK_LIB_DIR}/librte_telemetry.a"
         COMMENT "Bundling required DPDK static objects for fnp-api"
         VERBATIM
 )
