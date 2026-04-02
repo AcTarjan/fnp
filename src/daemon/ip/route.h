@@ -17,6 +17,7 @@ typedef struct route_entry
     u8 prefix_len;              // 前缀长度，便于最长前缀匹配
     u8 reserved0;
     u16 reserved1;
+    i32 priority;               // 同前缀长度下按 priority 选路；数值越大优先级越高
     u32 next_hop_be;            // 下一跳IP（网络序）；直连路由时为0，表示目的IP本身就是下一跳
     fnp_route_type_t type;      // 路由类型：直连或网关
     fnp_ifaddr_t* ifaddr;       // 命中这条路由时使用的本地出口地址

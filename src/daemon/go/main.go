@@ -52,6 +52,7 @@ typedef struct {
 	char* via;
 	char* dev;
 	char* src;
+	int priority;
 	uint32_t dst_ip_be;
 	uint32_t dst_mask_be;
 	uint32_t via_be;
@@ -99,6 +100,7 @@ const maxLcores = 8
 const maxDevices = 8
 const maxDeviceIfaddrs = 8
 const maxRoutes = 32
+const defaultStaticRoutePriority = 100
 
 type DpdkConfig struct {
 	MbufPoolSize int      `yaml:"mbuf_pool_size"`
@@ -121,10 +123,11 @@ type DeviceConfig struct {
 }
 
 type RouteConfig struct {
-	Dst string `yaml:"dst"`
-	Via string `yaml:"via"`
-	Dev string `yaml:"dev"`
-	Src string `yaml:"src"`
+	Dst      string `yaml:"dst"`
+	Via      string `yaml:"via"`
+	Dev      string `yaml:"dev"`
+	Src      string `yaml:"src"`
+	Priority *int   `yaml:"priority"`
 }
 
 type NetworkSection struct {
@@ -404,6 +407,11 @@ func setupNetwork(goConf *FnpConfig, conf *C.fnp_config) C.int {
 		conf.network.routes[i].dst = C.CString(route.Dst)
 		conf.network.routes[i].dst_ip_be = dstIPUint32
 		conf.network.routes[i].dst_mask_be = dstMaskUint32
+		priority := defaultStaticRoutePriority
+		if route.Priority != nil {
+			priority = *route.Priority
+		}
+		conf.network.routes[i].priority = C.int(priority)
 		if strings.TrimSpace(route.Dev) != "" {
 			conf.network.routes[i].dev = C.CString(route.Dev)
 		}
@@ -477,7 +485,7 @@ func parse_fnp_config(path *C.char, conf *C.fnp_config) C.int {
 }
 
 func main() {
-	path := "conf/fnp.yaml"
+	path := "k8s/conf/fnp-nic.yaml"
 	if len(os.Args) > 1 {
 		path = os.Args[1]
 	}

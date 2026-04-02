@@ -4,43 +4,60 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./build.sh [--build-dir DIR] [--dpdk-dir DIR] [--build-type TYPE] [--daemon-dpdk-link MODE]
+  ./build.sh [build|publish] [--tag TAG] [--daemon-dpdk-link MODE]
+
+Actions:
+  build                 Build fnp-daemon and static libfnp-api.a (default)
+  publish               Build, package, and publish the archive to GitHub Release
 
 Options:
-  --build-dir DIR    CMake build directory. Default: ./build
-  --dpdk-dir DIR     DPDK install prefix. Default: /opt/dpdk
-  --build-type TYPE  CMake build type. Default: Release
-  --daemon-dpdk-link MODE
-                    fnp-daemon DPDK link mode: static or dynamic. Default: static
-  -h, --help         Show this help message
+  --tag TAG             Package / release tag. Default: latest
+  --daemon-dpdk-link    fnp-daemon DPDK link mode: static or dynamic. Default: static
+  -h, --help            Show this help message
+
+Notes:
+  - GitHub repository defaults to: AcTarjan/fnp-dist
+  - publish uploads the generated archive in ./build rather than source code
+  - publish only keeps a fixed-name archive: fnp-linux-amd64.tar.gz
+  - Advanced paths can still be overridden via env:
+      BUILD_DIR, DPDK_DIR, CMAKE_BUILD_TYPE, FNP_DAEMON_DPDK_LINK_MODE, GITHUB_REPO
 EOF
 }
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT="${SCRIPT_DIR}"
 
-BUILD_DIR="${REPO_ROOT}/build"
+ACTION="build"
+if [[ $# -gt 0 && "${1}" != --* && "${1}" != "-h" ]]; then
+    ACTION="$1"
+    shift
+fi
+
+case "${ACTION}" in
+    build|publish)
+        ;;
+    *)
+        echo "unknown action: ${ACTION}" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
+
+BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build}"
 DPDK_DIR="${DPDK_DIR:-/opt/dpdk}"
 BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 DAEMON_DPDK_LINK_MODE="${FNP_DAEMON_DPDK_LINK_MODE:-static}"
+GITHUB_REPO="${GITHUB_REPO:-AcTarjan/fnp-dist}"
 OUTPUT_BIN="${REPO_ROOT}/k8s/fnp-daemon"
 OUTPUT_LIB_DIR="${REPO_ROOT}/lib"
+OUTPUT_STATIC_LIB="${BUILD_DIR}/libfnp-api.a"
+TAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --build-dir)
-            [[ $# -ge 2 ]] || { echo "missing value for --build-dir" >&2; exit 1; }
-            BUILD_DIR="$2"
-            shift 2
-            ;;
-        --dpdk-dir)
-            [[ $# -ge 2 ]] || { echo "missing value for --dpdk-dir" >&2; exit 1; }
-            DPDK_DIR="$2"
-            shift 2
-            ;;
-        --build-type)
-            [[ $# -ge 2 ]] || { echo "missing value for --build-type" >&2; exit 1; }
-            BUILD_TYPE="$2"
+        --tag)
+            [[ $# -ge 2 ]] || { echo "missing value for --tag" >&2; exit 1; }
+            TAG="$2"
             shift 2
             ;;
         --daemon-dpdk-link)
@@ -74,19 +91,84 @@ case "${DAEMON_DPDK_LINK_MODE}" in
         ;;
 esac
 
-cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
-    -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-    -DDPDK_DIR="${DPDK_DIR}" \
-    -DFNP_DAEMON_STATIC_DPDK="${FNP_DAEMON_STATIC_DPDK}"
-cmake --build "${BUILD_DIR}" -j"$(nproc)"
+if [[ -z "${TAG}" ]]; then
+    TAG="latest"
+fi
 
-install -d "${OUTPUT_LIB_DIR}" "${REPO_ROOT}/k8s"
-install -m 0755 "${BUILD_DIR}/fnp-daemon" "${OUTPUT_BIN}"
-install -m 0644 "${BUILD_DIR}/libfnp-api.so" "${OUTPUT_LIB_DIR}/libfnp-api.so"
-install -m 0644 "${BUILD_DIR}/libfnp-api.a" "${OUTPUT_LIB_DIR}/libfnp-api.a"
+PACKAGE_NAME="fnp-${TAG}-linux-amd64"
+PACKAGE_ROOT_DIR="${BUILD_DIR}/${PACKAGE_NAME}"
+LATEST_ARCHIVE_NAME="fnp-linux-amd64.tar.gz"
+LATEST_ARCHIVE="${BUILD_DIR}/${LATEST_ARCHIVE_NAME}"
 
-echo "built fnp-daemon: ${OUTPUT_BIN}"
-echo "fnp-daemon DPDK link mode: ${DAEMON_DPDK_LINK_MODE}"
-echo "built fnp libraries:"
-echo "  ${OUTPUT_LIB_DIR}/libfnp-api.so"
-echo "  ${OUTPUT_LIB_DIR}/libfnp-api.a"
+build_outputs() {
+    cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+        -DDPDK_DIR="${DPDK_DIR}" \
+        -DFNP_DAEMON_STATIC_DPDK="${FNP_DAEMON_STATIC_DPDK}"
+
+    # Avoid Makefile ordering issues around the custom fnp-api static archive rule by
+    # building only the required targets in a stable order.
+    cmake --build "${BUILD_DIR}" --target fnp-api-obj -j1
+    cmake --build "${BUILD_DIR}" --target fnp-api-static -j1
+    cmake --build "${BUILD_DIR}" --target fnp-daemon -j"$(nproc)"
+
+    rm -rf "${BUILD_DIR}/conf"
+    cp -a "${REPO_ROOT}/k8s/conf" "${BUILD_DIR}/conf"
+
+    echo "built fnp-daemon: ${BUILD_DIR}/fnp-daemon"
+    echo "fnp-daemon DPDK link mode: ${DAEMON_DPDK_LINK_MODE}"
+    echo "built static library:"
+    echo "  ${OUTPUT_STATIC_LIB}"
+    echo "copied config directory:"
+    echo "  ${BUILD_DIR}/conf"
+}
+
+create_package() {
+    local include_dir="${PACKAGE_ROOT_DIR}/inc"
+    local lib_dir="${PACKAGE_ROOT_DIR}/lib"
+    local k8s_dir="${PACKAGE_ROOT_DIR}/k8s"
+
+    rm -rf "${PACKAGE_ROOT_DIR}"
+    install -d "${include_dir}" "${lib_dir}" "${k8s_dir}"
+
+    cp -a "${REPO_ROOT}/inc/." "${include_dir}/"
+    install -m 0644 "${OUTPUT_STATIC_LIB}" "${lib_dir}/libfnp-api.a"
+    cp -a "${REPO_ROOT}/k8s/." "${k8s_dir}/"
+    install -m 0755 "${BUILD_DIR}/fnp-daemon" "${k8s_dir}/fnp-daemon"
+
+    rm -f "${LATEST_ARCHIVE}"
+    install -d "${BUILD_DIR}"
+    tar -C "${BUILD_DIR}" -czf "${LATEST_ARCHIVE}" "${PACKAGE_NAME}"
+
+    echo "created package directory: ${PACKAGE_ROOT_DIR}"
+    echo "created package archive: ${LATEST_ARCHIVE}"
+}
+
+publish_package() {
+    command -v gh >/dev/null 2>&1 || { echo "gh CLI is required for publish" >&2; exit 1; }
+    gh auth status >/dev/null 2>&1 || {
+        echo "gh is not authenticated; run: gh auth login" >&2
+        exit 1
+    }
+
+    if gh release view "${TAG}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+        gh release upload "${TAG}" "${LATEST_ARCHIVE}" --repo "${GITHUB_REPO}" --clobber
+        echo "uploaded asset to existing release: ${GITHUB_REPO} ${TAG}"
+    else
+        gh release create "${TAG}" "${LATEST_ARCHIVE}" \
+            --repo "${GITHUB_REPO}" \
+            --title "${TAG}" \
+            --generate-notes
+        echo "created release and uploaded asset: ${GITHUB_REPO} ${TAG}"
+    fi
+
+    echo "latest package URL:"
+    echo "  https://github.com/${GITHUB_REPO}/releases/latest/download/${LATEST_ARCHIVE_NAME}"
+}
+
+build_outputs
+
+if [[ "${ACTION}" == "publish" ]]; then
+    create_package
+    publish_package
+fi

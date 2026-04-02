@@ -4,7 +4,7 @@
 
 int main(int argc, char* argv[])
 {
-    const char* config_path = "conf/fnp.yaml";
+    const char* config_path = "k8s/conf/fnp-nic.yaml";
     if (argc > 2)
     {
         fprintf(stderr, "Usage: %s [config_path]\n", argv[0]);

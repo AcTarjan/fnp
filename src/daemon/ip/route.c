@@ -6,6 +6,7 @@
 #include <string.h>
 
 #define FNP_ROUTE_TABLE_MAX 64
+#define FNP_ROUTE_PRIORITY_AUTO 0
 
 typedef struct route_context
 {
@@ -26,7 +27,7 @@ static bool route_ip_match(u32 dst_ip_be, const route_entry_t* entry)
 // 这里会把 prefix 先和 mask 归一化，并预先计算 prefix_len，
 // 这样后续查表时只需要做最长前缀匹配即可。
 static int route_add_entry(u32 prefix_be, u32 mask_be, u32 next_hop_be,
-                           fnp_route_type_t type, fnp_ifaddr_t* ifaddr)
+                           fnp_route_type_t type, i32 priority, fnp_ifaddr_t* ifaddr)
 {
     if (route_context.count >= FNP_ROUTE_TABLE_MAX || ifaddr == NULL)
     {
@@ -44,6 +45,7 @@ static int route_add_entry(u32 prefix_be, u32 mask_be, u32 next_hop_be,
         ++entry->prefix_len;
         mask <<= 1;
     }
+    entry->priority = priority;
     entry->next_hop_be = next_hop_be;
     entry->type = type;
     entry->ifaddr = ifaddr;
@@ -53,14 +55,15 @@ static int route_add_entry(u32 prefix_be, u32 mask_be, u32 next_hop_be,
 // 为每个本地地址自动生成一条直连路由。
 static int route_add_connected(fnp_ifaddr_t* ifaddr)
 {
-    return route_add_entry(ifaddr->network_be, ifaddr->netmask_be, 0, fnp_route_type_connected, ifaddr);
+    return route_add_entry(ifaddr->network_be, ifaddr->netmask_be, 0,
+                           fnp_route_type_connected, FNP_ROUTE_PRIORITY_AUTO, ifaddr);
 }
 
 // 生成默认路由。
 // 默认路由的前缀是 0.0.0.0/0，下一跳是配置中的网关地址。
-static int route_add_default(fnp_ifaddr_t* ifaddr, u32 gateway_be)
+static int route_add_default(fnp_ifaddr_t* ifaddr, u32 gateway_be, i32 priority)
 {
-    return route_add_entry(0, 0, gateway_be, fnp_route_type_gateway, ifaddr);
+    return route_add_entry(0, 0, gateway_be, fnp_route_type_gateway, priority, ifaddr);
 }
 
 // 根据 routes 配置中的 dev/src/via，解析这条路由应绑定到哪个本地 ifaddr。
@@ -97,6 +100,7 @@ static fnp_ifaddr_t* route_resolve_ifaddr(const fnp_route_config* route_conf)
 // 执行最长前缀匹配。
 // 如果给定 preferred_ifaddr，则仅在同一 device 上挑选路由，
 // 这样 connected socket 可以固定从预期出口发送，而不是被默认路由切走。
+// 同前缀长度下，priority 更高的路由优先；如果 priority 也相同，则保留先入表的路由。
 static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_ip_be)
 {
     route_entry_t* best = NULL;
@@ -113,7 +117,9 @@ static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_
             continue;
         }
 
-        if (best == NULL || entry->prefix_len > best->prefix_len)
+        if (best == NULL ||
+            entry->prefix_len > best->prefix_len ||
+            (entry->prefix_len == best->prefix_len && entry->priority > best->priority))
         {
             best = entry;
         }
@@ -155,7 +161,7 @@ int init_route_layer(fnp_config* conf)
             int ret;
             if (route_conf->dst_mask_be == 0 && route_conf->via_be != 0)
             {
-                ret = route_add_default(ifaddr, route_conf->via_be);
+                ret = route_add_default(ifaddr, route_conf->via_be, route_conf->priority);
             }
             else
             {
@@ -163,6 +169,7 @@ int init_route_layer(fnp_config* conf)
                                       route_conf->dst_mask_be,
                                       route_conf->via_be,
                                       route_conf->via_be == 0 ? fnp_route_type_connected : fnp_route_type_gateway,
+                                      route_conf->priority,
                                       ifaddr);
             }
             CHECK_RET(ret);
