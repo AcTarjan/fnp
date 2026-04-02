@@ -84,6 +84,8 @@ void fnp_worker_add_fsocket(fsocket_t* socket)
     rte_spinlock_lock(&worker->polling_lock);
     worker->polling_table[worker->polling_count++] = socket;
     rte_spinlock_unlock(&worker->polling_lock);
+    FNP_INFO("fnp_worker_add_fsocket: worker=%d socket=%s type=%d polling_count=%d\n",
+             worker_id, socket->name, socket->type, worker->polling_count);
 }
 
 static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
@@ -96,6 +98,12 @@ static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
         fsocket_send_func send = ops == NULL ? NULL : ops->send;
         if (likely(send != NULL))
         {
+            u32 pending = socket->tx == NULL ? 0 : fnp_ring_count(socket->tx);
+            if (pending > 0)
+            {
+                FNP_INFO("worker_handle_polling: worker=%d socket=%s type=%d pending_tx=%u\n",
+                         worker->id, socket->name, socket->type, pending);
+            }
             send(socket, tsc); // 执行发送轮询
         }
         if (unlikely(tsc - socket->polling_tsc > RTE_PER_LCORE(tsc_cycles))) // 长时间没有数据, 不再polling

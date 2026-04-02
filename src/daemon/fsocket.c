@@ -22,16 +22,38 @@ static const fsocket_ops_t fsocket_unsupported_ops = {
 
 static const fsocket_ops_t* fsocket_ops_table[FSOCKET_OPS_TABLE_SIZE];
 
+static const char* fsocket_type_name(fsocket_type_t type)
+{
+    switch (type)
+    {
+    case fsocket_type_udp:
+        return "UDP";
+    case fsocket_type_tcp:
+        return "TCP";
+    case fsocket_type_tun:
+        return "TUN";
+    case fsocket_type_tap:
+        return "TAP";
+    case fsocket_type_raw:
+        return "RAW";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket)
 {
     const fsocket_ops_t* ops = get_fsocket_ops(type);
     if (socket == NULL)
     {
+        FNP_WARN("create_fsocket_register: type=%s(%d) create returned NULL\n", fsocket_type_name(type), type);
         return NULL;
     }
 
     if (fnp_master_add_fsocket(socket) != FNP_OK)
     {
+        FNP_ERR("create_fsocket_register: fail to add fsocket %s type=%s(%d) into master table\n",
+                socket->name, fsocket_type_name(type), type);
         if (ops != NULL && ops->close != NULL)
         {
             ops->close(socket);
@@ -39,6 +61,8 @@ static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket
         return NULL;
     }
 
+    FNP_INFO("create_fsocket_register: added fsocket name=%s type=%s(%d)\n",
+             socket->name, fsocket_type_name(type), type);
     return socket;
 }
 
@@ -174,13 +198,20 @@ void fsocket_cleanup(fsocket_t* socket)
 fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
 {
     const fsocket_ops_t* ops = get_fsocket_ops(type);
+    FNP_INFO("create_fsocket: type=%s(%d) begin\n", fsocket_type_name(type), type);
     if (ops == NULL || ops->create == NULL)
     {
         printf("socket type %d is not enabled in this build\n", type);
         return NULL;
     }
 
-    return create_fsocket_register(type, ops->create(conf));
+    fsocket_t* socket = create_fsocket_register(type, ops->create(conf));
+    if (socket != NULL)
+    {
+        FNP_INFO("create_fsocket: type=%s(%d) success name=%s\n",
+                 fsocket_type_name(type), type, socket->name);
+    }
+    return socket;
 }
 
 void close_fsocket(fsocket_t* socket)

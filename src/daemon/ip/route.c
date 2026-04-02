@@ -16,6 +16,12 @@ typedef struct route_context
 
 static route_context_t route_context;
 
+static bool route_entry_matches_preferred(const route_entry_t* entry, const fnp_ifaddr_t* preferred_ifaddr)
+{
+    return entry != NULL && preferred_ifaddr != NULL && entry->ifaddr != NULL &&
+           entry->ifaddr->dev == preferred_ifaddr->dev;
+}
+
 // 判断目标IP是否命中某条路由项。
 // 命中条件是：(dst & mask) == prefix。
 static bool route_ip_match(u32 dst_ip_be, const route_entry_t* entry)
@@ -98,9 +104,12 @@ static fnp_ifaddr_t* route_resolve_ifaddr(const fnp_route_config* route_conf)
 }
 
 // 执行最长前缀匹配。
-// 如果给定 preferred_ifaddr，则仅在同一 device 上挑选路由，
-// 这样 connected socket 可以固定从预期出口发送，而不是被默认路由切走。
-// 同前缀长度下，priority 更高的路由优先；如果 priority 也相同，则保留先入表的路由。
+// 选路首先只看目标地址：
+// 1. 更长前缀优先；
+// 2. 同前缀长度下，priority 更高的路由优先；
+// 3. 如果 prefix/priority 都相同，再把 preferred_ifaddr 当作软偏好，
+//    仅用于在同等级路由之间优先选择同一 device；
+// 4. 若仍然完全相同，则保留先入表的路由。
 static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_ip_be)
 {
     route_entry_t* best = NULL;
@@ -112,14 +121,13 @@ static route_entry_t* route_lookup_best(fnp_ifaddr_t* preferred_ifaddr, u32 dst_
             continue;
         }
 
-        if (preferred_ifaddr != NULL && entry->ifaddr->dev != preferred_ifaddr->dev)
-        {
-            continue;
-        }
-
         if (best == NULL ||
             entry->prefix_len > best->prefix_len ||
-            (entry->prefix_len == best->prefix_len && entry->priority > best->priority))
+            (entry->prefix_len == best->prefix_len && entry->priority > best->priority) ||
+            (entry->prefix_len == best->prefix_len &&
+             entry->priority == best->priority &&
+             route_entry_matches_preferred(entry, preferred_ifaddr) &&
+             !route_entry_matches_preferred(best, preferred_ifaddr)))
         {
             best = entry;
         }
@@ -189,7 +197,8 @@ fnp_ifaddr_t* route_lookup_local(u32 local_ip_be)
 // 路由查找主流程：
 // 1. 先判断目标是否是本机地址；
 // 2. 如果不是本机地址，再按最长前缀匹配查路由；
-// 3. 输出发送所需的三个关键信息：
+// 3. preferred_ifaddr 只作为同等级路由之间的软偏好，不直接决定出口；
+// 4. 输出发送所需的三个关键信息：
 //    - ifaddr：从哪个本地地址发
 //    - next_hop_be：下一跳IP是谁
 //    - pref_src_be：源IP应该填什么
@@ -218,7 +227,7 @@ int route_lookup_with_ifaddr(fnp_ifaddr_t* preferred_ifaddr, u32 dst_ip_be, fnp_
     }
 
     result->is_local = false;
-    result->ifaddr = preferred_ifaddr != NULL ? preferred_ifaddr : entry->ifaddr;
+    result->ifaddr = entry->ifaddr;
     result->next_hop_be = entry->next_hop_be != 0 ? entry->next_hop_be : dst_ip_be;
     result->pref_src_be = result->ifaddr->local_ip_be;
     return FNP_OK;
