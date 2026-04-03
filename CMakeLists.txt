@@ -7,6 +7,16 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_SKIP_RPATH TRUE)
 add_compile_options(-mssse3)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+
+set(FNP_ENABLE_DEBUG_LOGS 0)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(FNP_ENABLE_DEBUG_LOGS 1)
+endif()
+
 set(DPDK_DIR "/opt/dpdk" CACHE PATH "DPDK installation prefix")
 option(FNP_DAEMON_STATIC_DPDK "Link fnp-daemon with bundled static DPDK libraries for TAP + ixgbe" ON)
 set(DPDK_INCLUDE_DIR "${DPDK_DIR}/include")
@@ -31,6 +41,8 @@ set(FNP_CONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/k8s/conf")
 message(STATUS "DPDK_DIR: ${DPDK_DIR}")
 message(STATUS "DPDK_INCLUDE_DIR: ${DPDK_INCLUDE_DIR}")
 message(STATUS "DPDK_LIB_DIR: ${DPDK_LIB_DIR}")
+message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
+message(STATUS "FNP_ENABLE_DEBUG_LOGS: ${FNP_ENABLE_DEBUG_LOGS}")
 message(STATUS "FNP_DAEMON_STATIC_DPDK: ${FNP_DAEMON_STATIC_DPDK}")
 message(STATUS "FNP_CONF_DIR: ${FNP_CONF_DIR}")
 message(STATUS "FNP_CONFIG_DIR: ${FNP_CONFIG_DIR}")
@@ -127,6 +139,9 @@ add_dependencies(fnp-daemon fnp-conf-go)
 
 target_include_directories(fnp-daemon PRIVATE
         ${FNP_DAEMON_INCLUDE_DIRS}
+)
+target_compile_definitions(fnp-daemon PRIVATE
+        FNP_ENABLE_DEBUG_LOGS=${FNP_ENABLE_DEBUG_LOGS}
 )
 
 if(FNP_DAEMON_STATIC_DPDK)
@@ -259,6 +274,9 @@ target_include_directories(fnp-api-obj
         PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/api"
+)
+target_compile_definitions(fnp-api-obj PRIVATE
+        FNP_ENABLE_DEBUG_LOGS=${FNP_ENABLE_DEBUG_LOGS}
 )
 
 add_library(fnp-api SHARED

@@ -123,11 +123,11 @@ void ipv4_tun_input(struct rte_mbuf *m)
     struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
     char *src_ip = fnp_ipv4_ntos(hdr->src_addr);
     char *dst_ip = fnp_ipv4_ntos(hdr->dst_addr);
-    FNP_INFO("ipv4_tun_input: inject proto=%u src=%s dst=%s pkt_len=%u\n",
-             hdr->next_proto_id,
-             src_ip == NULL ? "0.0.0.0" : src_ip,
-             dst_ip == NULL ? "0.0.0.0" : dst_ip,
-             m->pkt_len);
+    FNP_DEBUG("ipv4_tun_input: inject proto=%u src=%s dst=%s pkt_len=%u\n",
+              hdr->next_proto_id,
+              src_ip == NULL ? "0.0.0.0" : src_ip,
+              dst_ip == NULL ? "0.0.0.0" : dst_ip,
+              m->pkt_len);
     fnp_string_free(src_ip);
     fnp_string_free(dst_ip);
     ipv4_recv_mbuf(m);
@@ -205,12 +205,12 @@ static inline void ipv4_send_dev(struct rte_mbuf *m,
     }
 
     char *next_hop = fnp_ipv4_ntos(next_hop_be);
-    FNP_INFO("ipv4_send_dev: dev=%s ifaddr=%s next_hop=%s is_tun=%d pkt_len=%u\n",
-             dev->name,
-             ifaddr != NULL && ifaddr->ip != NULL ? ifaddr->ip : "unknown",
-             next_hop == NULL ? "0.0.0.0" : next_hop,
-             is_tun_device(dev),
-             m->pkt_len);
+    FNP_DEBUG("ipv4_send_dev: dev=%s ifaddr=%s next_hop=%s is_tun=%d pkt_len=%u\n",
+              dev->name,
+              ifaddr != NULL && ifaddr->ip != NULL ? ifaddr->ip : "unknown",
+              next_hop == NULL ? "0.0.0.0" : next_hop,
+              is_tun_device(dev),
+              m->pkt_len);
     fnp_string_free(next_hop);
 
     if (is_tun_device(dev))
@@ -336,14 +336,14 @@ static void ipv4_tx_send_default(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 
         char *src_ip = fnp_ipv4_ntos(src_ip_be);
         char *pref_ip = fnp_ipv4_ntos(local_ip_be);
         char *next_hop = fnp_ipv4_ntos(route_result.next_hop_be);
-        FNP_INFO("ipv4_tx_send_default: preferred_src=%s final_src=%s dst=%s route_dev=%s route_ifaddr=%s next_hop=%s is_local=%d\n",
-                 pref_ip == NULL ? "0.0.0.0" : pref_ip,
-                 src_ip == NULL ? "0.0.0.0" : src_ip,
-                 dst_ip == NULL ? "0.0.0.0" : dst_ip,
-                 route_result.ifaddr->dev == NULL ? "unknown" : route_result.ifaddr->dev->name,
-                 route_result.ifaddr->ip == NULL ? "unknown" : route_result.ifaddr->ip,
-                 next_hop == NULL ? "0.0.0.0" : next_hop,
-                 route_result.is_local);
+        FNP_DEBUG("ipv4_tx_send_default: preferred_src=%s final_src=%s dst=%s route_dev=%s route_ifaddr=%s next_hop=%s is_local=%d\n",
+                  pref_ip == NULL ? "0.0.0.0" : pref_ip,
+                  src_ip == NULL ? "0.0.0.0" : src_ip,
+                  dst_ip == NULL ? "0.0.0.0" : dst_ip,
+                  route_result.ifaddr->dev == NULL ? "unknown" : route_result.ifaddr->dev->name,
+                  route_result.ifaddr->ip == NULL ? "unknown" : route_result.ifaddr->ip,
+                  next_hop == NULL ? "0.0.0.0" : next_hop,
+                  route_result.is_local);
         fnp_string_free(dst_ip);
         fnp_string_free(src_ip);
         fnp_string_free(pref_ip);

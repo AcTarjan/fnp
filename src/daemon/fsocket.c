@@ -61,8 +61,8 @@ static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket
         return NULL;
     }
 
-    FNP_INFO("create_fsocket_register: added fsocket name=%s type=%s(%d)\n",
-             socket->name, fsocket_type_name(type), type);
+    FNP_DEBUG("create_fsocket_register: added fsocket name=%s type=%s(%d)\n",
+              socket->name, fsocket_type_name(type), type);
     return socket;
 }
 
@@ -198,7 +198,7 @@ void fsocket_cleanup(fsocket_t* socket)
 fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
 {
     const fsocket_ops_t* ops = get_fsocket_ops(type);
-    FNP_INFO("create_fsocket: type=%s(%d) begin\n", fsocket_type_name(type), type);
+    FNP_DEBUG("create_fsocket: type=%s(%d) begin\n", fsocket_type_name(type), type);
     if (ops == NULL || ops->create == NULL)
     {
         printf("socket type %d is not enabled in this build\n", type);
@@ -208,8 +208,8 @@ fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
     fsocket_t* socket = create_fsocket_register(type, ops->create(conf));
     if (socket != NULL)
     {
-        FNP_INFO("create_fsocket: type=%s(%d) success name=%s\n",
-                 fsocket_type_name(type), type, socket->name);
+        FNP_DEBUG("create_fsocket: type=%s(%d) success name=%s\n",
+                  fsocket_type_name(type), type, socket->name);
     }
     return socket;
 }

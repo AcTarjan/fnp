@@ -91,12 +91,12 @@ static void tun_fsocket_recv(fsocket_t* socket, struct rte_mbuf* m)
     struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
     char *src_ip = fnp_ipv4_ntos(hdr->src_addr);
     char *dst_ip = fnp_ipv4_ntos(hdr->dst_addr);
-    FNP_INFO("tun_fsocket_recv: socket=%s proto=%u src=%s dst=%s pkt_len=%u\n",
-             socket->name,
-             hdr->next_proto_id,
-             src_ip == NULL ? "0.0.0.0" : src_ip,
-             dst_ip == NULL ? "0.0.0.0" : dst_ip,
-             m->pkt_len);
+    FNP_DEBUG("tun_fsocket_recv: socket=%s proto=%u src=%s dst=%s pkt_len=%u\n",
+              socket->name,
+              hdr->next_proto_id,
+              src_ip == NULL ? "0.0.0.0" : src_ip,
+              dst_ip == NULL ? "0.0.0.0" : dst_ip,
+              m->pkt_len);
     fnp_string_free(src_ip);
     fnp_string_free(dst_ip);
     fmbuf_info_t* info = get_fmbuf_info(m);
@@ -132,13 +132,13 @@ void tun_device_send(fnp_device_t* dev,
         struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
         char *src_ip = fnp_ipv4_ntos(hdr->src_addr);
         char *dst_ip = fnp_ipv4_ntos(hdr->dst_addr);
-        FNP_INFO("tun_device_send: dev=%s socket=%s proto=%u src=%s dst=%s pkt_len=%u\n",
-                 dev->name,
-                 socket->socket.name,
-                 hdr->next_proto_id,
-                 src_ip == NULL ? "0.0.0.0" : src_ip,
-                 dst_ip == NULL ? "0.0.0.0" : dst_ip,
-                 m->pkt_len);
+        FNP_DEBUG("tun_device_send: dev=%s socket=%s proto=%u src=%s dst=%s pkt_len=%u\n",
+                  dev->name,
+                  socket->socket.name,
+                  hdr->next_proto_id,
+                  src_ip == NULL ? "0.0.0.0" : src_ip,
+                  dst_ip == NULL ? "0.0.0.0" : dst_ip,
+                  m->pkt_len);
         fnp_string_free(src_ip);
         fnp_string_free(dst_ip);
         get_fsocket_ops(socket->socket.type)->recv(&socket->socket, m);
@@ -155,12 +155,12 @@ static void tun_socket_send_one(fsocket_t* socket, struct rte_mbuf* m)
     struct rte_ipv4_hdr* hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr*);
     char *src_ip = fnp_ipv4_ntos(hdr->src_addr);
     char *dst_ip = fnp_ipv4_ntos(hdr->dst_addr);
-    FNP_INFO("tun_socket_send_one: socket=%s inject proto=%u src=%s dst=%s pkt_len=%u\n",
-             socket->name,
-             hdr->next_proto_id,
-             src_ip == NULL ? "0.0.0.0" : src_ip,
-             dst_ip == NULL ? "0.0.0.0" : dst_ip,
-             m->pkt_len);
+    FNP_DEBUG("tun_socket_send_one: socket=%s inject proto=%u src=%s dst=%s pkt_len=%u\n",
+              socket->name,
+              hdr->next_proto_id,
+              src_ip == NULL ? "0.0.0.0" : src_ip,
+              dst_ip == NULL ? "0.0.0.0" : dst_ip,
+              m->pkt_len);
     fnp_string_free(src_ip);
     fnp_string_free(dst_ip);
     ipv4_tun_input(m);
@@ -172,7 +172,7 @@ static void tun_socket_send(fsocket_t* socket, u64 tsc)
     u32 n = fnp_ring_dequeue_burst(socket->tx, (void**)mbufs, TUN_SOCKET_BURST_SIZE);
     if (n > 0)
     {
-        FNP_INFO("tun_socket_send: socket=%s burst=%u\n", socket->name, n);
+        FNP_DEBUG("tun_socket_send: socket=%s burst=%u\n", socket->name, n);
     }
     for (u32 i = 0; i < n; ++i)
     {

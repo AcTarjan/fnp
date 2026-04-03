@@ -360,13 +360,13 @@ static void udp_socket_send_one(fsocket_t *socket, struct rte_mbuf *m)
     fmbuf_info_t *info = get_fmbuf_info(m);
     char *local_ip = fnp_ipv4_ntos(info->local.ip);
     char *remote_ip = fnp_ipv4_ntos(info->remote.ip);
-    FNP_INFO("udp_socket_send_one: socket=%s len=%u local=%s:%u remote=%s:%u\n",
-             socket->name,
-             rte_pktmbuf_data_len(m),
-             local_ip == NULL ? "0.0.0.0" : local_ip,
-             rte_be_to_cpu_16(info->local.port),
-             remote_ip == NULL ? "0.0.0.0" : remote_ip,
-             rte_be_to_cpu_16(info->remote.port));
+    FNP_DEBUG("udp_socket_send_one: socket=%s len=%u local=%s:%u remote=%s:%u\n",
+              socket->name,
+              rte_pktmbuf_data_len(m),
+              local_ip == NULL ? "0.0.0.0" : local_ip,
+              rte_be_to_cpu_16(info->local.port),
+              remote_ip == NULL ? "0.0.0.0" : remote_ip,
+              rte_be_to_cpu_16(info->remote.port));
     fnp_string_free(local_ip);
     fnp_string_free(remote_ip);
     udp_socket->send_func(udp_socket, m, info);
@@ -380,7 +380,7 @@ static void udp_socket_send(fsocket_t *socket, u64 tsc)
     u32 n = fnp_ring_dequeue_burst(socket->tx, (void **)mbufs, UDP_BURST_SIZE);
     if (n > 0)
     {
-        FNP_INFO("udp_socket_send: socket=%s burst=%u\n", socket->name, n);
+        FNP_DEBUG("udp_socket_send: socket=%s burst=%u\n", socket->name, n);
     }
     for (u32 i = 0; i < n; ++i)
     {

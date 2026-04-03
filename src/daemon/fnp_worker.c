@@ -84,8 +84,8 @@ void fnp_worker_add_fsocket(fsocket_t* socket)
     rte_spinlock_lock(&worker->polling_lock);
     worker->polling_table[worker->polling_count++] = socket;
     rte_spinlock_unlock(&worker->polling_lock);
-    FNP_INFO("fnp_worker_add_fsocket: worker=%d socket=%s type=%d polling_count=%d\n",
-             worker_id, socket->name, socket->type, worker->polling_count);
+    FNP_DEBUG("fnp_worker_add_fsocket: worker=%d socket=%s type=%d polling_count=%d\n",
+              worker_id, socket->name, socket->type, worker->polling_count);
 }
 
 static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
@@ -101,8 +101,8 @@ static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
             u32 pending = socket->tx == NULL ? 0 : fnp_ring_count(socket->tx);
             if (pending > 0)
             {
-                FNP_INFO("worker_handle_polling: worker=%d socket=%s type=%d pending_tx=%u\n",
-                         worker->id, socket->name, socket->type, pending);
+                FNP_DEBUG("worker_handle_polling: worker=%d socket=%s type=%d pending_tx=%u\n",
+                          worker->id, socket->name, socket->type, pending);
             }
             send(socket, tsc); // 执行发送轮询
         }

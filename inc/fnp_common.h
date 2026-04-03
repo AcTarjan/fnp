@@ -21,6 +21,10 @@ typedef long long int i64;
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
 
+#ifndef FNP_ENABLE_DEBUG_LOGS
+#define FNP_ENABLE_DEBUG_LOGS 0
+#endif
+
 #define fnp_malloc(size) rte_malloc(NULL, (size), 0)
 #define fnp_zmalloc(size) rte_zmalloc(NULL, (size), 0)
 #define fnp_memcpy(dst, src, len) memcpy((dst), (src), (len))
@@ -83,6 +87,16 @@ static inline char* fnp_ipv4_ntos(uint32_t ip)
     RTE_LOG(WARNING, USER1, fmt, ##args);
 #define FNP_ERR(fmt, args...) \
     RTE_LOG(ERR, USER1, fmt, ##args);
+
+#if FNP_ENABLE_DEBUG_LOGS
+#define FNP_DEBUG(fmt, args...) \
+    RTE_LOG(INFO, USER1, fmt, ##args);
+#else
+#define FNP_DEBUG(fmt, args...) \
+    do                          \
+    {                           \
+    } while (0)
+#endif
 
 #define FNP_MIN(a, b)       \
     __extension__({         \

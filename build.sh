@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./build.sh [build|publish] [--tag TAG] [--daemon-dpdk-link MODE]
+  ./build.sh [build|publish] [--tag TAG] [--mode MODE] [--daemon-dpdk-link MODE]
 
 Actions:
   build                 Build fnp-daemon and static libfnp-api.a (default)
@@ -12,6 +12,7 @@ Actions:
 
 Options:
   --tag TAG             Package / release tag. Default: latest
+  --mode MODE           Build mode: release or debug. Default: release
   --daemon-dpdk-link    fnp-daemon DPDK link mode: static or dynamic. Default: static
   -h, --help            Show this help message
 
@@ -20,7 +21,7 @@ Notes:
   - publish uploads the generated archive in ./build rather than source code
   - publish only keeps a fixed-name archive: fnp-linux-amd64.tar.gz
   - Advanced paths can still be overridden via env:
-      BUILD_DIR, DPDK_DIR, CMAKE_BUILD_TYPE, FNP_DAEMON_DPDK_LINK_MODE, GITHUB_REPO
+      BUILD_DIR, DPDK_DIR, FNP_BUILD_MODE, FNP_DAEMON_DPDK_LINK_MODE, GITHUB_REPO
 EOF
 }
 
@@ -45,11 +46,10 @@ esac
 
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build}"
 DPDK_DIR="${DPDK_DIR:-/opt/dpdk}"
+BUILD_MODE="${FNP_BUILD_MODE:-release}"
 BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 DAEMON_DPDK_LINK_MODE="${FNP_DAEMON_DPDK_LINK_MODE:-static}"
 GITHUB_REPO="${GITHUB_REPO:-AcTarjan/fnp-dist}"
-OUTPUT_BIN="${REPO_ROOT}/k8s/fnp-daemon"
-OUTPUT_LIB_DIR="${REPO_ROOT}/lib"
 OUTPUT_STATIC_LIB="${BUILD_DIR}/libfnp-api.a"
 TAG=""
 
@@ -58,6 +58,11 @@ while [[ $# -gt 0 ]]; do
         --tag)
             [[ $# -ge 2 ]] || { echo "missing value for --tag" >&2; exit 1; }
             TAG="$2"
+            shift 2
+            ;;
+        --mode)
+            [[ $# -ge 2 ]] || { echo "missing value for --mode" >&2; exit 1; }
+            BUILD_MODE="$2"
             shift 2
             ;;
         --daemon-dpdk-link)
@@ -76,6 +81,20 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "${BUILD_MODE}" in
+    release)
+        BUILD_TYPE="Release"
+        ;;
+    debug)
+        BUILD_TYPE="Debug"
+        ;;
+    *)
+        echo "invalid --mode value: ${BUILD_MODE}" >&2
+        echo "expected: release or debug" >&2
+        exit 1
+        ;;
+esac
 
 case "${DAEMON_DPDK_LINK_MODE}" in
     static)
@@ -116,6 +135,7 @@ build_outputs() {
     cp -a "${REPO_ROOT}/k8s/conf" "${BUILD_DIR}/conf"
 
     echo "built fnp-daemon: ${BUILD_DIR}/fnp-daemon"
+    echo "build mode: ${BUILD_MODE}"
     echo "fnp-daemon DPDK link mode: ${DAEMON_DPDK_LINK_MODE}"
     echo "built static library:"
     echo "  ${OUTPUT_STATIC_LIB}"
