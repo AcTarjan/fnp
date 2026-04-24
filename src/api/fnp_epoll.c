@@ -15,10 +15,12 @@ int fnp_epoll_create(void)
 
 int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void *arg)
 {
-    if (epfd < 0 || socket == NULL || socket->shared == NULL || handler == NULL)
+    if (unlikely(epfd < 0 || socket == NULL || socket->shared == NULL || handler == NULL))
     {
         return FNP_ERR_PARAM;
     }
+
+    fsocket_t *shared_socket = socket->shared;
 
     if (socket->wait_epfd >= 0)
     {
@@ -26,7 +28,7 @@ int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void
         {
             socket->handler = handler;
             socket->handler_arg = arg;
-            fsocket_frontend_flags_set(socket->shared, FSOCKET_FRONTEND_FLAG_EVENTFD);
+            fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD);
             return FNP_OK;
         }
         return FNP_ERR_OCCUPIED;
@@ -36,7 +38,7 @@ int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void
     ev.events = EPOLLIN | EPOLLET;
     ev.data.ptr = socket;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, socket->shared->rx_efd_in_frontend, &ev) != 0)
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, shared_socket->rx_efd_in_frontend, &ev) != 0)
     {
         return FNP_ERR_EPOLL_ADD;
     }
@@ -44,57 +46,98 @@ int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void
     socket->wait_epfd = epfd;
     socket->handler = handler;
     socket->handler_arg = arg;
-    fsocket_frontend_flags_set(socket->shared, FSOCKET_FRONTEND_FLAG_EVENTFD);
+    fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD);
     return FNP_OK;
 }
 
 int fnp_epoll_del(int epfd, fnp_socket_t *socket)
 {
-    if (epfd < 0 || socket == NULL || socket->shared == NULL)
+    if (unlikely(epfd < 0 || socket == NULL || socket->shared == NULL))
     {
         return FNP_ERR_PARAM;
     }
+
+    fsocket_t *shared_socket = socket->shared;
 
     if (socket->wait_epfd != epfd)
     {
         return FNP_ERR_BAD_FD;
     }
 
-    epoll_ctl(epfd, EPOLL_CTL_DEL, socket->shared->rx_efd_in_frontend, NULL);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, shared_socket->rx_efd_in_frontend, NULL);
     socket->wait_epfd = -1;
     socket->handler = NULL;
     socket->handler_arg = NULL;
-    fsocket_frontend_flags_clear(socket->shared, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
+    fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
     return FNP_OK;
 }
 
 int fnp_epoll_wait(int epfd, int timeout_ms, int budget)
 {
+    if (unlikely(epfd < 0))
+    {
+        return FNP_ERR_PARAM;
+    }
+
     struct epoll_event events[FNP_EPOLL_MAX_EVENTS];
     int ready = epoll_wait(epfd, events, FNP_EPOLL_MAX_EVENTS, timeout_ms);
-    if (ready < 0)
+    if (unlikely(ready < 0))
     {
-        return FNP_ERR_EPOLL_ADD;
+        return FNP_ERR_EPOLL_WAIT;
     }
 
     int total = 0;
+    int dequeue_budget = budget;
+    if (dequeue_budget <= 0 || dequeue_budget > RECV_BATCH_SIZE)
+    {
+        dequeue_budget = RECV_BATCH_SIZE;
+    }
+
     for (int i = 0; i < ready; ++i)
     {
         fnp_socket_t *socket = (fnp_socket_t *)events[i].data.ptr;
-        if (socket == NULL || socket->shared == NULL || socket->wait_epfd != epfd || socket->handler == NULL)
+        if (unlikely(socket == NULL || socket->handler == NULL || socket->wait_epfd != epfd))
+        {
+            continue;
+        }
+
+        fsocket_t *shared_socket = socket->shared;
+        if (unlikely(shared_socket == NULL))
         {
             continue;
         }
 
         eventfd_t value = 0;
-        eventfd_read(socket->shared->rx_efd_in_frontend, &value);
-
-        int ret = frontend_drain_socket(socket, budget);
-        if (ret < 0)
+        while (eventfd_read(shared_socket->rx_efd_in_frontend, &value) == 0)
         {
-            return ret;
         }
-        total += ret;
+
+        struct rte_mbuf *mbufs[RECV_BATCH_SIZE] = {0};
+        fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
+        u32 burst = fnp_ring_dequeue_burst(shared_socket->rx, (void **)mbufs, (u32)dequeue_budget);
+        if (unlikely(burst == 0))
+        {
+            fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
+            if (fnp_ring_count(shared_socket->rx) > 0 && fsocket_frontend_eventfd_enabled(shared_socket))
+            {
+                eventfd_write(shared_socket->rx_efd_in_frontend, 1);
+            }
+            continue;
+        }
+
+        for (u32 j = 0; j < burst; ++j)
+        {
+            socket->handler(socket, mbufs[j], socket->handler_arg);
+            fnp_free_mbuf(mbufs[j]);
+        }
+
+        fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
+        if (fnp_ring_count(shared_socket->rx) > 0 && fsocket_frontend_eventfd_enabled(shared_socket))
+        {
+            eventfd_write(shared_socket->rx_efd_in_frontend, 1);
+        }
+
+        total += (int)burst;
     }
 
     return total;
@@ -115,10 +158,19 @@ void fnp_epoll_destroy(int epfd)
             continue;
         }
 
+        fsocket_t *shared_socket = socket->shared;
+        if (shared_socket == NULL)
+        {
+            socket->wait_epfd = -1;
+            socket->handler = NULL;
+            socket->handler_arg = NULL;
+            continue;
+        }
+
         socket->wait_epfd = -1;
         socket->handler = NULL;
         socket->handler_arg = NULL;
-        fsocket_frontend_flags_clear(socket->shared, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
+        fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
     }
 
     close(epfd);

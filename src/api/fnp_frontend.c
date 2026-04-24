@@ -17,18 +17,17 @@
 fnp_frontend_t *frontend = NULL;
 fnp_frontend_local_t frontend_local = {0};
 
-typedef struct fnp_tls_mbuf_cache
+static int frontend_apply_init_conf(fnp_frontend_t *shared_frontend, const fnp_init_conf_t *conf)
 {
-    struct rte_mbuf *alloc_mbufs[8];
-    u16 alloc_idx;
-    struct rte_mbuf *free_mbufs[8];
-    u16 free_cnt;
-} fnp_tls_mbuf_cache_t;
+    if (shared_frontend == NULL || conf == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
 
-static __thread fnp_tls_mbuf_cache_t frontend_tls_cache = {
-    .alloc_idx = 8,
-    .free_cnt = 0,
-};
+    shared_frontend->id = conf->id;
+    snprintf(shared_frontend->name, sizeof(shared_frontend->name), "%s", conf->name);
+    return FNP_OK;
+}
 
 static int frontend_reserve_tables(u32 min_capacity)
 {
@@ -88,6 +87,62 @@ void frontend_cleanup_local_state(void)
     memset(&frontend_local, 0, sizeof(frontend_local));
 }
 
+void frontend_release_direct_notify_fd(fsocket_t *shared_socket)
+{
+    if (shared_socket == NULL)
+    {
+        return;
+    }
+
+    if (shared_socket->direct_rx_efd_in_frontend >= 0)
+    {
+        close(shared_socket->direct_rx_efd_in_frontend);
+        shared_socket->direct_rx_efd_in_frontend = -1;
+    }
+
+    shared_socket->direct_notify_peer = NULL;
+}
+
+int frontend_prepare_direct_notify_fd(fsocket_t *shared_socket)
+{
+    if (shared_socket == NULL || shared_socket->direct_peer == NULL)
+    {
+        frontend_release_direct_notify_fd(shared_socket);
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    if (fsocket_direct_notify_ready(shared_socket))
+    {
+        return FNP_OK;
+    }
+
+    frontend_release_direct_notify_fd(shared_socket);
+
+    struct rte_mp_msg msg = {0};
+    struct rte_mp_reply reply = {0};
+    struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
+    sprintf(msg.name, FAPI_GTPU_LDP_ATTACH_ACTION_NAME);
+    msg.len_param = sizeof(fapi_common_req_t);
+    ((fapi_common_req_t *)msg.param)->ptr = shared_socket;
+
+    if (!(rte_mp_request_sync(&msg, &reply, &ts) == 0 && reply.nb_received == 1))
+    {
+        return FNP_ERR_TIMEOUT;
+    }
+
+    struct rte_mp_msg *reply_msg = &reply.msgs[0];
+    fapi_common_resp_t *resp = (fapi_common_resp_t *)reply_msg->param;
+    int ret = resp->code;
+    if (ret == FNP_OK && reply_msg->num_fds == 1)
+    {
+        shared_socket->direct_rx_efd_in_frontend = reply_msg->fds[0];
+        shared_socket->direct_notify_peer = resp->ptr;
+    }
+
+    free(reply.msgs);
+    return ret;
+}
+
 fnp_socket_t *frontend_add_fsocket(fsocket_t *shared_socket, const void *conf, u16 conf_len)
 {
     if (shared_socket == NULL || conf_len > FAPI_SOCKET_CONF_MAX_LEN)
@@ -139,7 +194,7 @@ fnp_socket_t *frontend_add_fsocket(fsocket_t *shared_socket, const void *conf, u
     }
 
     socket->slot_index = slot_index;
-    shared_socket->frontend_id = frontend->pid;
+    fsocket_attach_frontend(shared_socket, frontend->pid);
     frontend->sockets[slot_index] = shared_socket;
     frontend_local.sockets[slot_index] = socket;
     frontend->socket_num++;
@@ -162,7 +217,7 @@ void frontend_remove_fsocket(fnp_socket_t *socket)
     }
 
     fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
-    shared_socket->frontend_id = 0;
+    frontend_release_direct_notify_fd(shared_socket);
 
     if (shared_socket->rx_efd_in_frontend >= 0)
     {
@@ -185,6 +240,8 @@ void frontend_remove_fsocket(fnp_socket_t *socket)
         frontend->socket_num--;
     }
     rte_spinlock_unlock(&frontend->lock);
+
+    fsocket_detach_frontend(shared_socket);
 
     free(socket);
 }
@@ -214,48 +271,6 @@ int frontend_try_dequeue_mbuf(fnp_socket_t *socket, struct rte_mbuf **m)
     return FNP_OK;
 }
 
-int frontend_drain_socket(fnp_socket_t *socket, int budget)
-{
-    if (socket == NULL || socket->shared == NULL || socket->handler == NULL)
-    {
-        return FNP_ERR_PARAM;
-    }
-
-    if (budget <= 0 || budget > RECV_BATCH_SIZE)
-    {
-        budget = RECV_BATCH_SIZE;
-    }
-
-    fsocket_t *shared_socket = socket->shared;
-    struct rte_mbuf *mbufs[RECV_BATCH_SIZE] = {0};
-
-    fsocket_frontend_flags_set(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-    u32 burst = fnp_ring_dequeue_burst(shared_socket->rx, (void **)mbufs, (u32)budget);
-    if (unlikely(burst == 0))
-    {
-        fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-        if (fnp_ring_count(shared_socket->rx) > 0 && fsocket_frontend_eventfd_enabled(shared_socket))
-        {
-            eventfd_write(shared_socket->rx_efd_in_frontend, 1);
-        }
-        return 0;
-    }
-
-    for (u32 i = 0; i < burst; ++i)
-    {
-        socket->handler(socket, mbufs[i], socket->handler_arg);
-        fnp_free_mbuf(mbufs[i]);
-    }
-
-    fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_POLLING);
-    if (fsocket_frontend_eventfd_enabled(shared_socket))
-    {
-        eventfd_write(shared_socket->rx_efd_in_frontend, 1);
-    }
-
-    return (int)burst;
-}
-
 fnp_mbuf_t *fnp_alloc_mbuf()
 {
     if (unlikely(frontend == NULL || frontend->pool == NULL))
@@ -263,19 +278,7 @@ fnp_mbuf_t *fnp_alloc_mbuf()
         return NULL;
     }
 
-    if (unlikely(frontend_tls_cache.alloc_idx == RTE_DIM(frontend_tls_cache.alloc_mbufs)))
-    {
-        int ret = rte_pktmbuf_alloc_bulk(frontend->pool,
-                                         frontend_tls_cache.alloc_mbufs,
-                                         RTE_DIM(frontend_tls_cache.alloc_mbufs));
-        if (unlikely(ret != 0))
-        {
-            return NULL;
-        }
-        frontend_tls_cache.alloc_idx = 0;
-    }
-
-    return frontend_tls_cache.alloc_mbufs[frontend_tls_cache.alloc_idx++];
+    return rte_pktmbuf_alloc(frontend->pool);
 }
 
 void fnp_free_mbuf(fnp_mbuf_t *m)
@@ -285,12 +288,22 @@ void fnp_free_mbuf(fnp_mbuf_t *m)
         return;
     }
 
-    frontend_tls_cache.free_mbufs[frontend_tls_cache.free_cnt++] = m;
-    if (unlikely(frontend_tls_cache.free_cnt == RTE_DIM(frontend_tls_cache.free_mbufs)))
+    rte_pktmbuf_free(m);
+}
+
+const fnp_ifaddr_info_t *fnp_get_ifaddrs(u16 *ifaddr_count)
+{
+    if (ifaddr_count != NULL)
     {
-        rte_pktmbuf_free_bulk(frontend_tls_cache.free_mbufs, frontend_tls_cache.free_cnt);
-        frontend_tls_cache.free_cnt = 0;
+        *ifaddr_count = frontend == NULL ? 0 : frontend->ifaddr_count;
     }
+
+    if (frontend == NULL || frontend->ifaddr_count == 0)
+    {
+        return NULL;
+    }
+
+    return frontend->ifaddrs;
 }
 
 static void *keepalive_task(void *arg)
@@ -318,11 +331,12 @@ static fnp_frontend_t *create_frontend(void)
     shared_frontend->socket_num = 0;
     shared_frontend->socket_capacity = 0;
     shared_frontend->sockets = NULL;
+    shared_frontend->pool_worker_id = (u16)-1;
     rte_spinlock_init(&shared_frontend->lock);
     return shared_frontend;
 }
 
-static int register_frontend_to_daemon(void)
+static int register_frontend_to_daemon(fnp_init_conf_t *conf)
 {
     frontend = create_frontend();
     if (frontend == NULL)
@@ -337,13 +351,22 @@ static int register_frontend_to_daemon(void)
         return FNP_ERR_MALLOC;
     }
 
+    int ret = frontend_apply_init_conf(frontend, conf);
+    if (ret != FNP_OK)
+    {
+        frontend_cleanup_local_state();
+        frontend_free(frontend);
+        frontend = NULL;
+        return ret;
+    }
+
     struct rte_mp_msg msg = {0};
     struct rte_mp_reply reply = {0};
     struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
     sprintf(msg.name, FAPI_REGISTER_ACTION_NAME);
     msg.num_fds = 0;
-    msg.len_param = sizeof(fapi_common_req_t);
-    ((fapi_common_req_t *)msg.param)->ptr = frontend;
+    msg.len_param = sizeof(fapi_register_req_t);
+    ((fapi_register_req_t *)msg.param)->frontend = frontend;
 
     if (rte_mp_request_sync(&msg, &reply, &ts) == 0 && reply.nb_received == 1)
     {
@@ -358,7 +381,6 @@ static int register_frontend_to_daemon(void)
             return resp->code;
         }
 
-        frontend->pool = rte_mempool_lookup("worker0_mbuf_pool");
         if (frontend->pool == NULL)
         {
             frontend_cleanup_local_state();
@@ -369,8 +391,8 @@ static int register_frontend_to_daemon(void)
         }
 
         pthread_t ctrl_thread;
-        int ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_keepalive_task", NULL,
-                                         keepalive_task, NULL);
+        ret = rte_ctrl_thread_create(&ctrl_thread, "fnp_keepalive_task", NULL,
+                                     keepalive_task, NULL);
         if (ret != 0)
         {
             frontend_cleanup_local_state();
@@ -390,10 +412,20 @@ static int register_frontend_to_daemon(void)
     return FNP_ERR_TIMEOUT;
 }
 
-int fnp_init(int main_lcore, int lcores[], int num_lcores)
+int fnp_init(fnp_init_conf_t *conf)
 {
+    if (conf == NULL || conf->main_lcore < 0 || conf->num_lcores < 0)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (conf->num_lcores > 0 && conf->lcores == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
     char main_lcore_argv[16];
-    sprintf(main_lcore_argv, "--main-lcore=%d", main_lcore);
+    sprintf(main_lcore_argv, "--main-lcore=%d", conf->main_lcore);
 
     const char *app_id = getenv("FNP_APP_ID");
     if (app_id == NULL || app_id[0] == 0)
@@ -415,10 +447,10 @@ int fnp_init(int main_lcore, int lcores[], int num_lcores)
     };
 
     u32 lcore_mask = 0;
-    lcore_mask |= (1U << main_lcore);
-    for (int i = 0; i < num_lcores; ++i)
+    lcore_mask |= (1U << conf->main_lcore);
+    for (int i = 0; i < conf->num_lcores; ++i)
     {
-        lcore_mask |= (1U << lcores[i]);
+        lcore_mask |= (1U << conf->lcores[i]);
     }
 
     char lcore_argv[16];
@@ -431,7 +463,7 @@ int fnp_init(int main_lcore, int lcores[], int num_lcores)
         return FNP_ERR_RTE_EAL_INIT;
     }
 
-    ret = register_frontend_to_daemon();
+    ret = register_frontend_to_daemon(conf);
     CHECK_RET(ret);
 
     return FNP_OK;

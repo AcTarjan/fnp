@@ -86,6 +86,38 @@ static void raw_local_deliver(struct rte_mbuf *m)
     ipv4_local_deliver_handler(m);
 }
 
+static void ipv4_tx_send_default(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
+                                 const fsockaddr_t *local, const fsockaddr_t *remote);
+
+static bool ipv4_tx_sockaddr_matches(const fsockaddr_t *requested, const fsockaddr_t *cached)
+{
+    if (requested == NULL || cached == NULL)
+    {
+        return false;
+    }
+
+    if (requested->family != 0 && requested->family != cached->family)
+    {
+        return false;
+    }
+
+    if (requested->ip != 0 && requested->ip != cached->ip)
+    {
+        return false;
+    }
+
+    return requested->port == 0 || requested->port == cached->port;
+}
+
+static bool ipv4_tx_cache_matches(const ipv4_tx_cache_t *cache,
+                                  const fsockaddr_t *local,
+                                  const fsockaddr_t *remote)
+{
+    return cache != NULL && cache->ifaddr != NULL &&
+           ipv4_tx_sockaddr_matches(local, &cache->local) &&
+           ipv4_tx_sockaddr_matches(remote, &cache->remote);
+}
+
 static void transport_local_deliver(struct rte_mbuf *m)
 {
     struct rte_ipv4_hdr *hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
@@ -251,12 +283,27 @@ static inline void ipv4_local_send_packet(struct rte_mbuf *m, u8 proto, u32 src_
 static void ipv4_tx_send_fast(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
                               const fsockaddr_t *local, const fsockaddr_t *remote)
 {
-    (void)local;
-    (void)remote;
     if (unlikely(cache == NULL || cache->ifaddr == NULL))
     {
         free_mbuf(m);
         return;
+    }
+
+    if (unlikely(!ipv4_tx_cache_matches(cache, local, remote)))
+    {
+        ipv4_tx_cache_init(cache);
+        ipv4_tx_send_default(cache, m, proto, local, remote);
+        return;
+    }
+
+    if (!cache->dmac_ready && cache->ifaddr->dev != NULL && !is_tun_device(cache->ifaddr->dev))
+    {
+        arp_entry_t *arp_entry = arp_lookup(cache->ifaddr, cache->next_hop_be);
+        if (arp_entry != NULL)
+        {
+            rte_ether_addr_copy(&arp_entry->mac, &cache->dmac);
+            cache->dmac_ready = true;
+        }
     }
 
     ipv4_fill_hdr(m, proto, cache->local.ip, cache->remote.ip);
@@ -300,19 +347,6 @@ static void ipv4_tx_send_default(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 
         return;
     }
 
-    if (unlikely(is_local_ipaddr(remote_ip_be)))
-    {
-        if (cache != NULL && local != NULL)
-        {
-            fsockaddr_copy(&cache->local, local);
-            fsockaddr_copy(&cache->remote, remote);
-            cache->send = ipv4_tx_send_local;
-        }
-
-        ipv4_local_send_packet(m, proto, local_ip_be, remote_ip_be);
-        return;
-    }
-
     fnp_ifaddr_t *preferred_ifaddr = local_ip_be == 0 ? NULL : lookup_ifaddr(local_ip_be);
     fnp_route_result_t route_result;
     int ret = preferred_ifaddr == NULL ? route_lookup(remote_ip_be, &route_result) : route_lookup_with_ifaddr(preferred_ifaddr, remote_ip_be, &route_result);
@@ -331,6 +365,20 @@ static void ipv4_tx_send_default(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 
     }
 
     u32 src_ip_be = local_ip_be == 0 ? route_result.pref_src_be : local_ip_be;
+    if (unlikely(route_result.is_local))
+    {
+        if (cache != NULL && local != NULL)
+        {
+            fsockaddr_copy(&cache->local, local);
+            cache->local.ip = src_ip_be;
+            fsockaddr_copy(&cache->remote, remote);
+            cache->send = ipv4_tx_send_local;
+        }
+
+        ipv4_local_send_packet(m, proto, src_ip_be, remote_ip_be);
+        return;
+    }
+
     {
         char *dst_ip = fnp_ipv4_ntos(remote_ip_be);
         char *src_ip = fnp_ipv4_ntos(src_ip_be);
@@ -399,6 +447,11 @@ void ipv4_tx_cache_send(ipv4_tx_cache_t *cache, struct rte_mbuf *m, u8 proto,
     {
         ipv4_send_default(m, proto, local, remote);
         return;
+    }
+
+    if (cache->send != ipv4_tx_send_default && !ipv4_tx_cache_matches(cache, local, remote))
+    {
+        ipv4_tx_cache_init(cache);
     }
 
     cache->send(cache, m, proto, local, remote);

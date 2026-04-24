@@ -97,18 +97,14 @@ set(FNP_DAEMON_SOURCES
         src/common/fnp_ring.c
         src/daemon/common/rbtree.c
         src/daemon/common/hash.c
-        src/daemon/udp/udp.c
+        src/daemon/gtpu/gtpu.c
         src/daemon/ip/ipv4.c
         src/daemon/ip/route.c
         src/daemon/icmp/icmp.c
         src/daemon/arp/arp.c
         src/daemon/ether/ether.c
         src/daemon/network/fnp_network.c
-        src/daemon/network/flow_table.c
         src/daemon/fsocket.c
-        src/daemon/raw.c
-        src/daemon/tun.c
-        src/daemon/tap.c
         src/daemon/fnp_worker.c
         src/common/fnp_msg.c
         src/daemon/fnp_context.c
@@ -123,7 +119,7 @@ set(FNP_DAEMON_INCLUDE_DIRS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/common"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/network"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/udp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/gtpu"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/ip"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/icmp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/ether"
@@ -312,6 +308,44 @@ target_link_options(fnp-api PRIVATE
         "-Wl,--no-as-needed"
 )
 
+add_executable(fnp_gtpu_ldp_demo EXCLUDE_FROM_ALL
+        test/gtpu/gtpu_ldp_demo.c
+)
+target_include_directories(fnp_gtpu_ldp_demo PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/api"
+        "${DPDK_INCLUDE_DIR}"
+)
+add_dependencies(fnp_gtpu_ldp_demo fnp-api-static)
+target_link_libraries(fnp_gtpu_ldp_demo PRIVATE
+        fnp-api-fat
+        pthread
+        ${CMAKE_DL_LIBS}
+        m
+        numa
+        atomic
+)
+
+add_executable(fnp_gtpu_linux_demo EXCLUDE_FROM_ALL
+        test/gtpu/gtpu_linux_demo.c
+)
+target_include_directories(fnp_gtpu_linux_demo PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/api"
+        "${DPDK_INCLUDE_DIR}"
+)
+add_dependencies(fnp_gtpu_linux_demo fnp-api-static)
+target_link_libraries(fnp_gtpu_linux_demo PRIVATE
+        fnp-api-fat
+        pthread
+        ${CMAKE_DL_LIBS}
+        m
+        numa
+        atomic
+)
+
 set(FNP_API_DPDK_BUNDLE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fnp_api_dpdk_bundle.o")
 set(FNP_API_FAT_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libfnp-api.a")
 
@@ -353,3 +387,8 @@ add_custom_command(
 )
 
 add_custom_target(fnp-api-static ALL DEPENDS "${FNP_API_FAT_ARCHIVE}")
+add_dependencies(fnp-api-static fnp-api-obj)
+
+add_library(fnp-api-fat STATIC IMPORTED GLOBAL)
+set_target_properties(fnp-api-fat PROPERTIES IMPORTED_LOCATION "${FNP_API_FAT_ARCHIVE}")
+add_dependencies(fnp-api-fat fnp-api-static)

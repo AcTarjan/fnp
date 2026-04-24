@@ -39,5 +39,5 @@ bool hash_del(rte_hash* h, void* key)
 
 bool hash_iterate(rte_hash* h, void** key, void** data, uint32_t* next)
 {
-    return rte_hash_iterate(h, key, data, next) >= 0;
+    return rte_hash_iterate(h, (const void **)key, data, next) >= 0;
 }

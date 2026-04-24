@@ -9,7 +9,8 @@ package main
 #define FNP_OTHER_ARGV_MAX 32
 #define FNP_LCORE_MAX 8
 #define FNP_DEVICE_MAX 8
-#define FNP_DEVICE_IFADDR_MAX 8
+#define FNP_DEVICE_IFADDR_MAX 16
+#define FNP_NETWORK_MAX 16
 #define FNP_ROUTE_MAX 32
 
 typedef struct {
@@ -25,14 +26,6 @@ typedef struct {
 } dpdk_config;
 
 typedef struct {
-	char* cidr;
-	char* ip;
-	char* ip_mask;
-	uint32_t ip_be;
-	uint32_t ip_mask_be;
-} fnp_ifaddr_config;
-
-typedef struct {
 	uint16_t id;
 	int32_t port;
 	char* name;
@@ -43,8 +36,8 @@ typedef struct {
 	bool promiscuous;
 	int nb_rx_desc;			//接收描述符数
 	int nb_tx_desc;			//发送描述符数
-	fnp_ifaddr_config ifaddrs[FNP_DEVICE_IFADDR_MAX];
-	int ifaddr_count;
+	char* ifaddrs[FNP_DEVICE_IFADDR_MAX];
+	int ifaddrs_count;
 } fnp_device_config;
 
 typedef struct {
@@ -60,8 +53,22 @@ typedef struct {
 } fnp_route_config;
 
 typedef struct {
+	uint16_t id;
+	char* name;
+	char* device;
+	char* cidr;
+	char* gateway;
+	int priority;
+	uint32_t subnet_be;
+	uint32_t netmask_be;
+	uint32_t gateway_be;
+} fnp_network_pool_config;
+
+typedef struct {
 	fnp_device_config devices[FNP_DEVICE_MAX];
 	int devices_count;
+	fnp_network_pool_config networks[FNP_NETWORK_MAX];
+	int networks_count;
 	fnp_route_config routes[FNP_ROUTE_MAX];
 	int routes_count;
 } network_config;
@@ -81,24 +88,38 @@ typedef struct {
 	worker_config worker;
 } fnp_config;
 
+static inline int fnp_device_ifaddr_max(void) {
+	return FNP_DEVICE_IFADDR_MAX;
+}
+
+static inline void fnp_config_set_device_ifaddr_count(fnp_config* conf, int device_index, int count) {
+	conf->network.devices[device_index].ifaddrs_count = count;
+}
+
+static inline void fnp_config_set_device_ifaddr(fnp_config* conf, int device_index, int ifaddr_index, char* ifaddr) {
+	conf->network.devices[device_index].ifaddrs[ifaddr_index] = ifaddr;
+}
+
 */
 import "C"
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const maxDpdkArgs = 64
 const maxOtherArgv = 32
-const maxLcores = 8
+const maxLcores = 4 // must match C-side FNP_MAX_WORKER_NUM
 const maxDevices = 8
-const maxDeviceIfaddrs = 8
+const maxNetworks = 16
 const maxRoutes = 32
 const defaultStaticRoutePriority = 100
 
@@ -111,15 +132,24 @@ type DpdkConfig struct {
 }
 
 type DeviceConfig struct {
-	Name        string   `yaml:"name"`
-	Type        string   `yaml:"type"`
-	Driver      string   `yaml:"driver"`
-	PCI         string   `yaml:"pci"`
-	MAC         string   `yaml:"mac"`
-	Promiscuous bool     `yaml:"promiscuous"`
-	NbRxDesc    int      `yaml:"nb_rx_desc"`
-	NbTxDesc    int      `yaml:"nb_tx_desc"`
-	Ifaddrs     []string `yaml:"ifaddrs"`
+	Name          string   `yaml:"name"`
+	Type          string   `yaml:"type"`
+	Driver        string   `yaml:"driver"`
+	PCI           string   `yaml:"pci"`
+	MAC           string   `yaml:"mac"`
+	Promiscuous   bool     `yaml:"promiscuous"`
+	NbRxDesc      int      `yaml:"nb_rx_desc"`
+	NbTxDesc      int      `yaml:"nb_tx_desc"`
+	LegacyIfaddrs []string `yaml:"ifaddrs"`
+}
+
+type NetworkPoolConfig struct {
+	Name     string `yaml:"name"`
+	Device   string `yaml:"device"`
+	CIDR     string `yaml:"cidr"`
+	Subnet   string `yaml:"subnet"`
+	Gateway  string `yaml:"gateway"`
+	Priority *int   `yaml:"priority"`
 }
 
 type RouteConfig struct {
@@ -131,8 +161,9 @@ type RouteConfig struct {
 }
 
 type NetworkSection struct {
-	Devices []DeviceConfig `yaml:"devices"`
-	Routes  []RouteConfig  `yaml:"routes"`
+	Devices  []DeviceConfig      `yaml:"devices"`
+	Networks []NetworkPoolConfig `yaml:"networks"`
+	Routes   []RouteConfig       `yaml:"routes"`
 }
 
 type WorkerConfig struct {
@@ -147,6 +178,74 @@ type FnpConfig struct {
 	Dpdk    DpdkConfig     `yaml:"dpdk"`
 	Network NetworkSection `yaml:"network"`
 	Worker  WorkerConfig   `yaml:"worker"`
+}
+
+func normalizeDeviceType(deviceType string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(deviceType))
+	if trimmed == "" {
+		return "ethernet"
+	}
+	return trimmed
+}
+
+func normalizeDeviceDriver(deviceDriver string, deviceType string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(deviceDriver))
+	if trimmed == "" && deviceType == "ethernet" {
+		return "physical"
+	}
+	return trimmed
+}
+
+func validateConfig(goConf *FnpConfig) error {
+	if goConf == nil {
+		return errors.New("nil config")
+	}
+
+	for i, device := range goConf.Network.Devices {
+		if strings.TrimSpace(device.Name) == "" {
+			return fmt.Errorf("network.devices[%d].name is required", i)
+		}
+
+		deviceType := normalizeDeviceType(device.Type)
+		deviceDriver := normalizeDeviceDriver(device.Driver, deviceType)
+
+		switch deviceType {
+		case "ethernet":
+			switch deviceDriver {
+			case "physical":
+				if strings.TrimSpace(device.PCI) == "" {
+					return fmt.Errorf("network.devices[%d].pci is required for ethernet physical devices", i)
+				}
+			case "dpdk_tap":
+				if strings.TrimSpace(device.PCI) != "" {
+					return fmt.Errorf("network.devices[%d].pci is not supported for ethernet dpdk_tap devices", i)
+				}
+			default:
+				return fmt.Errorf("unsupported device driver %q at network.devices[%d]", device.Driver, i)
+			}
+		case "tap", "tun":
+			return fmt.Errorf("unsupported device type %q at network.devices[%d]: runtime only supports ethernet", deviceType, i)
+		default:
+			return fmt.Errorf("unsupported device type %q at network.devices[%d]", device.Type, i)
+		}
+	}
+
+	return nil
+}
+
+func decodeConfig(bs []byte) (FnpConfig, error) {
+	goConf := FnpConfig{}
+	decoder := yaml.NewDecoder(bytes.NewReader(bs))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&goConf); err != nil {
+		return goConf, err
+	}
+
+	if err := validateConfig(&goConf); err != nil {
+		return goConf, err
+	}
+
+	return goConf, nil
 }
 
 func appendUniqueArg(args []string, arg string) []string {
@@ -172,12 +271,12 @@ func formatLcores(lcores []int) string {
 }
 
 func parseIPv4CIDR(cidr string) (string, string, error) {
-	ipAddr, ipNet, err := net.ParseCIDR(cidr)
+	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return "", "", err
 	}
 
-	ipv4 := ipAddr.To4()
+	ipv4 := ipNet.IP.To4()
 	if ipv4 == nil {
 		return "", "", fmt.Errorf("only IPv4 CIDR is supported: %s", cidr)
 	}
@@ -197,6 +296,13 @@ func parseRouteDst(dst string) (string, string, error) {
 	}
 
 	return parseIPv4CIDR(dst)
+}
+
+func pickNetworkCIDR(network NetworkPoolConfig) string {
+	if strings.TrimSpace(network.CIDR) != "" {
+		return network.CIDR
+	}
+	return network.Subnet
 }
 
 func ipv4StringToUint32(ip string) (C.uint32_t, error) {
@@ -233,19 +339,11 @@ func buildDpdkArgs(goConf *FnpConfig) ([]string, error) {
 
 	hasPhysical := false
 	for i, device := range goConf.Network.Devices {
-		deviceType := strings.ToLower(strings.TrimSpace(device.Type))
-		deviceDriver := strings.ToLower(strings.TrimSpace(device.Driver))
-
-		if deviceType == "" {
-			deviceType = "ethernet"
-		}
+		deviceType := normalizeDeviceType(device.Type)
+		deviceDriver := normalizeDeviceDriver(device.Driver, deviceType)
 
 		switch deviceType {
 		case "ethernet":
-			if deviceDriver == "" {
-				deviceDriver = "physical"
-			}
-
 			switch deviceDriver {
 			case "physical":
 				if strings.TrimSpace(device.PCI) == "" {
@@ -327,6 +425,11 @@ func setupNetwork(goConf *FnpConfig, conf *C.fnp_config) C.int {
 		return -4
 	}
 	conf.network.devices_count = C.int(len(goConf.Network.Devices))
+	if len(goConf.Network.Networks) > maxNetworks {
+		fmt.Fprintf(os.Stderr, "too many network.networks: got %d, max is %d\n", len(goConf.Network.Networks), maxNetworks)
+		return -6
+	}
+	conf.network.networks_count = C.int(len(goConf.Network.Networks))
 	if len(goConf.Network.Routes) > maxRoutes {
 		fmt.Fprintf(os.Stderr, "too many network.routes: got %d, max is %d\n", len(goConf.Network.Routes), maxRoutes)
 		return -5
@@ -334,10 +437,12 @@ func setupNetwork(goConf *FnpConfig, conf *C.fnp_config) C.int {
 	conf.network.routes_count = C.int(len(goConf.Network.Routes))
 
 	for i, device := range goConf.Network.Devices {
-		if len(device.Ifaddrs) > maxDeviceIfaddrs {
-			fmt.Fprintf(os.Stderr, "too many ifaddrs on device %q: got %d, max is %d\n",
-				device.Name, len(device.Ifaddrs), maxDeviceIfaddrs)
-			return -6
+		if len(device.LegacyIfaddrs) > 0 {
+			maxIfaddrs := int(C.fnp_device_ifaddr_max())
+			if len(device.LegacyIfaddrs) > maxIfaddrs {
+				fmt.Fprintf(os.Stderr, "too many network.devices[%d].ifaddrs: got %d, max is %d\n", i, len(device.LegacyIfaddrs), maxIfaddrs)
+				return -7
+			}
 		}
 
 		conf.network.devices[i].id = C.uint16_t(i)
@@ -355,31 +460,65 @@ func setupNetwork(goConf *FnpConfig, conf *C.fnp_config) C.int {
 		conf.network.devices[i].promiscuous = C.bool(device.Promiscuous)
 		conf.network.devices[i].nb_rx_desc = C.int(device.NbRxDesc)
 		conf.network.devices[i].nb_tx_desc = C.int(device.NbTxDesc)
-		conf.network.devices[i].ifaddr_count = C.int(len(device.Ifaddrs))
-
-		for j, cidr := range device.Ifaddrs {
-			ip, mask, err := parseIPv4CIDR(cidr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid network.devices[%d].ifaddrs[%d]: %v\n", i, j, err)
-				return -7
-			}
-			ipUint32, err := ipv4StringToUint32(ip)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid parsed IPv4 network.devices[%d].ifaddrs[%d]: %v\n", i, j, err)
-				return -7
-			}
-			maskUint32, err := ipv4StringToUint32(mask)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid parsed IPv4 mask network.devices[%d].ifaddrs[%d]: %v\n", i, j, err)
-				return -7
-			}
-
-			conf.network.devices[i].ifaddrs[j].ip = C.CString(ip)
-			conf.network.devices[i].ifaddrs[j].ip_mask = C.CString(mask)
-			conf.network.devices[i].ifaddrs[j].cidr = C.CString(cidr)
-			conf.network.devices[i].ifaddrs[j].ip_be = ipUint32
-			conf.network.devices[i].ifaddrs[j].ip_mask_be = maskUint32
+		C.fnp_config_set_device_ifaddr_count(conf, C.int(i), C.int(len(device.LegacyIfaddrs)))
+		for j, ifaddr := range device.LegacyIfaddrs {
+			C.fnp_config_set_device_ifaddr(conf, C.int(i), C.int(j), C.CString(ifaddr))
 		}
+	}
+
+	for i, network := range goConf.Network.Networks {
+		cidr := pickNetworkCIDR(network)
+		if strings.TrimSpace(network.Name) == "" {
+			fmt.Fprintf(os.Stderr, "network.networks[%d].name is required\n", i)
+			return -7
+		}
+		if strings.TrimSpace(network.Device) == "" {
+			fmt.Fprintf(os.Stderr, "network.networks[%d].device is required\n", i)
+			return -7
+		}
+		if strings.TrimSpace(cidr) == "" {
+			fmt.Fprintf(os.Stderr, "network.networks[%d].cidr or subnet is required\n", i)
+			return -7
+		}
+		if strings.TrimSpace(network.Gateway) == "" {
+			fmt.Fprintf(os.Stderr, "network.networks[%d].gateway is required\n", i)
+			return -7
+		}
+
+		subnet, mask, err := parseIPv4CIDR(cidr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid network.networks[%d].cidr: %v\n", i, err)
+			return -7
+		}
+		subnetUint32, err := ipv4StringToUint32(subnet)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid parsed network subnet network.networks[%d].cidr: %v\n", i, err)
+			return -7
+		}
+		maskUint32, err := ipv4StringToUint32(mask)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid parsed network mask network.networks[%d].cidr: %v\n", i, err)
+			return -7
+		}
+		gatewayUint32, err := ipv4StringToUint32(network.Gateway)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid network.networks[%d].gateway: %v\n", i, err)
+			return -7
+		}
+
+		conf.network.networks[i].id = C.uint16_t(i)
+		conf.network.networks[i].name = C.CString(network.Name)
+		conf.network.networks[i].device = C.CString(network.Device)
+		conf.network.networks[i].cidr = C.CString(cidr)
+		conf.network.networks[i].gateway = C.CString(network.Gateway)
+		priority := defaultStaticRoutePriority
+		if network.Priority != nil {
+			priority = *network.Priority
+		}
+		conf.network.networks[i].priority = C.int(priority)
+		conf.network.networks[i].subnet_be = subnetUint32
+		conf.network.networks[i].netmask_be = maskUint32
+		conf.network.networks[i].gateway_be = gatewayUint32
 	}
 
 	for i, route := range goConf.Network.Routes {
@@ -446,13 +585,11 @@ func parse_fnp_config(path *C.char, conf *C.fnp_config) C.int {
 	if err != nil {
 		return -1
 	}
-	goConf := FnpConfig{}
-	err = yaml.Unmarshal(bs, &goConf)
+	goConf, err := decodeConfig(bs)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return -2
 	}
-
-	fmt.Printf("read yaml: %+v\n", goConf)
 
 	//DPDK Config
 	ret := setupDpdkArg(&goConf, &conf.dpdk)

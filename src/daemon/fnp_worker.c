@@ -10,7 +10,6 @@
 #include <rte_per_lcore.h>
 #include <unistd.h>
 
-#include "udp.h"
 #include "arp.h"
 
 // 每个lcore线程会拥有一个id实例
@@ -18,18 +17,19 @@ RTE_DEFINE_PER_LCORE(int, worker_id);
 RTE_DEFINE_PER_LCORE(uint64_t, tsc_cycles);
 
 #define MBUF_BURST_SIZE 64
+#define FNP_WORKER_CONTROL_RING_SIZE 1024
 
 int get_fnp_worker_count(void)
 {
     return fnp.worker.count;
 }
 
-fnp_worker_t* get_local_worker(void)
+fnp_worker_t *get_local_worker(void)
 {
     return get_fnp_worker(fnp_worker_id);
 }
 
-fnp_worker_t* get_fnp_worker(int id)
+fnp_worker_t *get_fnp_worker(int id)
 {
     if (unlikely(id < 0 || id >= fnp.worker.count))
     {
@@ -41,11 +41,11 @@ fnp_worker_t* get_fnp_worker(int id)
 
 static void recv_data_from_nic()
 {
-    fnp_worker_t* worker = get_local_worker();
+    fnp_worker_t *worker = get_local_worker();
 
     for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
     {
-        fnp_device_t* dev = get_fnp_device(dev_index);
+        fnp_device_t *dev = get_fnp_device(dev_index);
         if (dev == NULL || dev->ops == NULL || dev->ops->recv == NULL)
         {
             continue;
@@ -57,10 +57,10 @@ static void recv_data_from_nic()
 
 static void send_data_to_net()
 {
-    fnp_worker_t* worker = get_local_worker();
+    fnp_worker_t *worker = get_local_worker();
     for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
     {
-        fnp_device_t* dev = get_fnp_device(dev_index);
+        fnp_device_t *dev = get_fnp_device(dev_index);
         if (unlikely(dev == NULL || !is_ethernet_device(dev)))
         {
             continue;
@@ -70,31 +70,267 @@ static void send_data_to_net()
     }
 }
 
-void fnp_worker_add_fsocket(fsocket_t* socket)
+static int fnp_worker_load(const fnp_worker_t *worker)
 {
-    int worker_id = 0;
-    fnp_worker_t* worker = get_fnp_worker(worker_id);
+    return worker == NULL ? INT32_MAX : (int)(worker->recv_socket_count + worker->send_socket_count);
+}
+
+static fnp_worker_t *select_send_worker(void)
+{
+    fnp_worker_t *best = NULL;
+    int best_load = INT32_MAX;
+    for (int id = 0; id < get_fnp_worker_count(); ++id)
+    {
+        fnp_worker_t *worker = get_fnp_worker(id);
+        int load = fnp_worker_load(worker);
+        if (load < best_load)
+        {
+            best = worker;
+            best_load = load;
+        }
+    }
+
+    return best;
+}
+
+static fnp_worker_t *select_command_worker(const fsocket_t *socket)
+{
+    if (socket != NULL)
+    {
+        if (socket->polling_worker >= 0)
+        {
+            fnp_worker_t *worker = get_fnp_worker(socket->polling_worker);
+            if (worker != NULL)
+            {
+                return worker;
+            }
+        }
+
+        int owner_worker = fsocket_get_owner_worker(socket);
+        if (owner_worker >= 0)
+        {
+            fnp_worker_t *worker = get_fnp_worker(owner_worker);
+            if (worker != NULL)
+            {
+                return worker;
+            }
+        }
+
+        if (socket->recv_worker_id >= 0)
+        {
+            fnp_worker_t *worker = get_fnp_worker(socket->recv_worker_id);
+            if (worker != NULL)
+            {
+                return worker;
+            }
+        }
+    }
+
+    return select_send_worker();
+}
+
+static int worker_enqueue_command(fnp_worker_t *worker, fnp_worker_cmd_type_t type, fsocket_t *socket)
+{
+    if (worker == NULL || worker->control_ring == NULL || socket == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    fnp_worker_cmd_t *cmd = fnp_malloc(sizeof(*cmd));
+    if (cmd == NULL)
+    {
+        worker->control_drops++;
+        return FNP_ERR_MALLOC;
+    }
+
+    cmd->type = type;
+    cmd->socket = socket;
+    if (fnp_ring_enqueue(worker->control_ring, cmd) == 0)
+    {
+        worker->control_drops++;
+        fnp_free(cmd);
+        return FNP_ERR_RING_FULL;
+    }
+
+    return FNP_OK;
+}
+
+static int worker_add_fsocket_local(fnp_worker_t *worker, fsocket_t *socket)
+{
+    if (socket == NULL || worker == NULL || fsocket_is_closing(socket))
+    {
+        return FNP_OK;
+    }
+
+    fsocket_polling_clear_scheduled(socket);
+    if (socket->polling_worker >= 0)
+    {
+        return FNP_OK;
+    }
+
+    if (worker->polling_count >= (int)RTE_DIM(worker->polling_table))
+    {
+        fsocket_polling_clear_scheduled(socket);
+        return FNP_ERR_FULL;
+    }
+
+    socket->polling_worker = worker->id;
+    fsocket_set_owner_worker(socket, worker->id);
+    worker->polling_table[worker->polling_count++] = socket;
+    worker->send_socket_count++;
+    FNP_DEBUG("worker_add_fsocket_local: worker=%d socket=%s type=%d polling_count=%d\n",
+              worker->id, socket->name, socket->type, worker->polling_count);
+    return FNP_OK;
+}
+
+static int worker_remove_fsocket_local(fnp_worker_t *worker, fsocket_t *socket)
+{
+    if (socket == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    fsocket_polling_clear_scheduled(socket);
+
     if (worker == NULL)
+    {
+        worker = get_fnp_worker(socket->polling_worker);
+    }
+    if (worker == NULL || socket->polling_worker != worker->id)
+    {
+        socket->polling_worker = -1;
+        return FNP_OK;
+    }
+
+    for (int i = 0; i < worker->polling_count; ++i)
+    {
+        if (worker->polling_table[i] != socket)
+        {
+            continue;
+        }
+
+        worker->polling_count--;
+        worker->polling_table[i] = worker->polling_table[worker->polling_count];
+        worker->polling_table[worker->polling_count] = NULL;
+        if (worker->send_socket_count > 0)
+        {
+            worker->send_socket_count--;
+        }
+        break;
+    }
+
+    socket->polling_worker = -1;
+    return FNP_OK;
+}
+
+int fnp_worker_add_fsocket(fsocket_t *socket)
+{
+    if (socket == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (!fsocket_polling_try_schedule(socket))
+    {
+        return FNP_OK;
+    }
+
+    fnp_worker_t *worker = select_command_worker(socket);
+    if (worker == NULL)
+    {
+        fsocket_polling_clear_scheduled(socket);
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    int ret = worker_enqueue_command(worker, fnp_worker_cmd_add_poll, socket);
+    if (ret != FNP_OK)
+    {
+        fsocket_polling_clear_scheduled(socket);
+    }
+
+    return ret;
+}
+
+int fnp_worker_remove_fsocket(fsocket_t *socket)
+{
+    if (socket == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    fnp_worker_t *worker = select_command_worker(socket);
+    if (worker == NULL)
+    {
+        socket->polling_worker = -1;
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    return worker_enqueue_command(worker, fnp_worker_cmd_remove_poll, socket);
+}
+
+int fnp_worker_close_fsocket(fsocket_t *socket)
+{
+    fnp_worker_t *worker = select_command_worker(socket);
+    if (worker == NULL)
+    {
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    return worker_enqueue_command(worker, fnp_worker_cmd_close_socket, socket);
+}
+
+void fnp_worker_process_control(fnp_worker_t *worker)
+{
+    if (worker == NULL || worker->control_ring == NULL)
     {
         return;
     }
 
-    socket->polling_worker = worker_id;
-    // TODO: 负载均衡以及polling_table满的处理
-    rte_spinlock_lock(&worker->polling_lock);
-    worker->polling_table[worker->polling_count++] = socket;
-    rte_spinlock_unlock(&worker->polling_lock);
-    FNP_DEBUG("fnp_worker_add_fsocket: worker=%d socket=%s type=%d polling_count=%d\n",
-              worker_id, socket->name, socket->type, worker->polling_count);
+    fnp_worker_cmd_t *cmd = NULL;
+    while (fnp_ring_dequeue(worker->control_ring, (void **)&cmd) != 0)
+    {
+        if (cmd == NULL || cmd->socket == NULL)
+        {
+            fnp_free(cmd);
+            continue;
+        }
+
+        switch (cmd->type)
+        {
+        case fnp_worker_cmd_add_poll:
+            worker_add_fsocket_local(worker, cmd->socket);
+            break;
+        case fnp_worker_cmd_remove_poll:
+            worker_remove_fsocket_local(worker, cmd->socket);
+            break;
+        case fnp_worker_cmd_close_socket:
+        {
+            const fsocket_ops_t *ops = get_fsocket_ops(cmd->socket->type);
+            if (fsocket_enter_closing(cmd->socket))
+            {
+                worker_remove_fsocket_local(worker, cmd->socket);
+                if (ops != NULL && ops->close != NULL)
+                {
+                    ops->close(cmd->socket);
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+
+        fnp_free(cmd);
+    }
 }
 
-static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
+void fnp_worker_handle_polling_once(fnp_worker_t *worker, u64 tsc)
 {
     int size = worker->polling_count;
     for (int i = 0; i < size; i++)
     {
-        fsocket_t* socket = worker->polling_table[i];
-        const fsocket_ops_t* ops = get_fsocket_ops(socket->type);
+        fsocket_t *socket = worker->polling_table[i];
+        const fsocket_ops_t *ops = get_fsocket_ops(socket->type);
         fsocket_send_func send = ops == NULL ? NULL : ops->send;
         if (likely(send != NULL))
         {
@@ -109,23 +345,25 @@ static inline void worker_handle_polling(fnp_worker_t* worker, u64 tsc)
         if (unlikely(tsc - socket->polling_tsc > RTE_PER_LCORE(tsc_cycles))) // 长时间没有数据, 不再polling
         {
             printf("remove fsocket from worker\n");
-            rte_spinlock_lock(&worker->polling_lock);
-            worker->polling_count--; // 减少一个数据, 正好当下标
-            worker->polling_table[i] = worker->polling_table[worker->polling_count]; // 用最后一个替换当前位置
-            rte_spinlock_unlock(&worker->polling_lock);
-            socket->polling_worker = -1; // 标记为不在polling队列中
+            worker_remove_fsocket_local(worker, socket);
+            if (!fsocket_is_closing(socket) && socket->tx != NULL && fnp_ring_count(socket->tx) > 0)
+            {
+                // 退场窗口里如果应用刚写入了 tx ring，重新调度 polling，避免数据滞留。
+                fnp_worker_add_fsocket(socket);
+            }
             size--; // 数量减少
+            i--;
         }
     }
 }
 
 // 尽量避免遍历，选择epoll来处理事件通知
 // 尽量不要将mbuf保存在ofo队列或者pending队列内部，避免mbuf池耗尽
-int fnp_worker_loop(void* arg)
+int fnp_worker_loop(void *arg)
 {
-    int id = *(int*)arg;
-    RTE_PER_LCORE(worker_id) = id; //初始化线程变量
-    fnp_worker_t* worker = get_local_worker();
+    int id = *(int *)arg;
+    RTE_PER_LCORE(worker_id) = id; // 初始化线程变量
+    fnp_worker_t *worker = get_local_worker();
 
     i32 socket_id = rte_socket_id();
     i32 lcore_id = rte_lcore_id();
@@ -148,30 +386,45 @@ int fnp_worker_loop(void* arg)
             prev_tsc = cur_tsc;
         }
 
+        fnp_worker_process_control(worker);
+
         // 处理polling
-        worker_handle_polling(worker, cur_tsc);
+        fnp_worker_handle_polling_once(worker, cur_tsc);
 
         // 从网卡向网络发送数据
         send_data_to_net();
     }
 }
 
-int init_fnp_worker(worker_config* conf)
+int init_fnp_worker(worker_config *conf)
 {
+    if (conf == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+    if (conf->lcores_count < 1 || conf->lcores_count > FNP_MAX_WORKER_NUM)
+    {
+        printf("init_fnp_worker: lcores_count %d out of range [1, %d]\n",
+               conf->lcores_count, FNP_MAX_WORKER_NUM);
+        return FNP_ERR_PARAM;
+    }
+
     fnp.worker.count = conf->lcores_count;
     printf("fnp_worker_count = %d\n", fnp.worker.count);
     for (int id = 0; id < fnp.worker.count; id++)
     {
-        fnp_worker_t* worker = get_fnp_worker(id);
+        fnp_worker_t *worker = get_fnp_worker(id);
         worker->id = id;
         worker->queue_id = id;
         worker->lcore_id = conf->lcores[id];
         i32 socket_id = (i32)rte_lcore_to_socket_id(worker->lcore_id);
 
         worker->polling_count = 0;
-        rte_spinlock_init(&worker->polling_lock);
+        worker->recv_socket_count = 0;
+        worker->send_socket_count = 0;
+        worker->control_drops = 0;
 
-        //初始化arp pending table
+        // 初始化arp pending table
         char arp_name[32] = {0};
         sprintf(arp_name, "worker%d_arp_tbl", id);
         worker->arp_table = hash_create(arp_name, 256, sizeof(arp_key_t));
@@ -187,11 +440,13 @@ int init_fnp_worker(worker_config* conf)
             return FNP_ERR_CREATE_EPOLL;
         }
 
-        worker->fmsg_ring = fnp_ring_create(64, true, false);
-        if (worker->fmsg_ring == NULL)
+        worker->control_ring = fnp_ring_create(FNP_WORKER_CONTROL_RING_SIZE, true, false);
+        if (worker->control_ring == NULL)
         {
             return FNP_ERR_GENERIC;
         }
+
+        worker->gtpu_rx_tbl = NULL;
 
         char pool_name[32] = {0};
         sprintf(pool_name, "worker%d_mbuf_pool", id);
@@ -228,7 +483,6 @@ int init_fnp_worker(worker_config* conf)
                    rte_errno, rte_strerror(rte_errno), socket_id, conf->clone_pool_size);
             return FNP_ERR_CREATE_MBUFPOOL;
         }
-
     }
 
     FNP_INFO("fnp_worker init successfully\n");
@@ -239,7 +493,7 @@ int start_fnp_worker()
 {
     for (int id = 0; id < fnp.worker.count; id++)
     {
-        fnp_worker_t* worker = get_fnp_worker(id);
+        fnp_worker_t *worker = get_fnp_worker(id);
         if (rte_eal_remote_launch(fnp_worker_loop, &worker->id, worker->lcore_id) != 0)
         {
             printf("launch %d error!\n", worker->lcore_id);

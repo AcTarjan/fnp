@@ -9,18 +9,14 @@
 #include "ipv4.h"
 #include "route.h"
 #include "icmp.h"
-#include "udp.h"
-#include "raw.h"
-#include "tun.h"
-#include "tap.h"
+#include "gtpu.h"
 #include "ether.h"
 
 #include <rte_pdump.h>
 
-
 fnp_context_t fnp;
 
-i32 init_dpdk(dpdk_config* conf)
+i32 init_dpdk(dpdk_config *conf)
 {
     i32 ret = rte_eal_init(conf->argc, conf->argv);
     if (ret < 0)
@@ -43,9 +39,9 @@ i32 init_dpdk(dpdk_config* conf)
     return FNP_OK;
 }
 
-i32 init_fnp_daemon(char* path)
+i32 init_fnp_daemon(char *path)
 {
-    fnp_config* conf = &fnp.conf;
+    fnp_config *conf = &fnp.conf;
     i32 ret = parse_fnp_config(path, conf);
     if (ret != 0)
     {
@@ -84,21 +80,11 @@ i32 init_fnp_daemon(char* path)
     ret = icmp_module_init();
     CHECK_RET(ret);
 
-    ret = udp_module_init();
-    CHECK_RET(ret);
-
-    ret = raw_module_init();
-    CHECK_RET(ret);
-
-    ret = tun_module_init();
-    CHECK_RET(ret);
-
-    ret = tap_module_init();
+    ret = gtpu_module_init();
     CHECK_RET(ret);
 
     ret = init_fnp_master();
     CHECK_RET(ret);
-
 
     return FNP_OK;
 }

@@ -1,6 +1,7 @@
 #include "fsocket.h"
 
 #include "fnp_error.h"
+#include "gtpu.h"
 #include "fnp_master.h"
 #include "fnp_worker.h"
 
@@ -10,7 +11,7 @@
 #define FSOCKET_OPS_TABLE_SIZE 256
 #define FSOCKET_IO_RING_SIZE 8192
 
-static void fsocket_recv_unsupported(fsocket_t* socket, struct rte_mbuf* m)
+static void fsocket_recv_unsupported(fsocket_t *socket, struct rte_mbuf *m)
 {
     (void)socket;
     free_mbuf(m);
@@ -20,30 +21,22 @@ static const fsocket_ops_t fsocket_unsupported_ops = {
     .recv = fsocket_recv_unsupported,
 };
 
-static const fsocket_ops_t* fsocket_ops_table[FSOCKET_OPS_TABLE_SIZE];
+static const fsocket_ops_t *fsocket_ops_table[FSOCKET_OPS_TABLE_SIZE];
 
-static const char* fsocket_type_name(fsocket_type_t type)
+static const char *fsocket_type_name(fsocket_type_t type)
 {
     switch (type)
     {
-    case fsocket_type_udp:
-        return "UDP";
-    case fsocket_type_tcp:
-        return "TCP";
-    case fsocket_type_tun:
-        return "TUN";
-    case fsocket_type_tap:
-        return "TAP";
-    case fsocket_type_raw:
-        return "RAW";
+    case fsocket_type_gtpu:
+        return "GTPU";
     default:
         return "UNKNOWN";
     }
 }
 
-static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket)
+static fsocket_t *create_fsocket_register(fsocket_type_t type, fsocket_t *socket)
 {
-    const fsocket_ops_t* ops = get_fsocket_ops(type);
+    const fsocket_ops_t *ops = get_fsocket_ops(type);
     if (socket == NULL)
     {
         FNP_WARN("create_fsocket_register: type=%s(%d) create returned NULL\n", fsocket_type_name(type), type);
@@ -61,12 +54,13 @@ static fsocket_t* create_fsocket_register(fsocket_type_t type, fsocket_t* socket
         return NULL;
     }
 
+    fsocket_master_set_registered(socket, true);
     FNP_DEBUG("create_fsocket_register: added fsocket name=%s type=%s(%d)\n",
               socket->name, fsocket_type_name(type), type);
     return socket;
 }
 
-const fsocket_ops_t* get_fsocket_ops(fsocket_type_t type)
+const fsocket_ops_t *get_fsocket_ops(fsocket_type_t type)
 {
     u32 index = (u8)type;
     if (unlikely(index >= FSOCKET_OPS_TABLE_SIZE))
@@ -74,7 +68,7 @@ const fsocket_ops_t* get_fsocket_ops(fsocket_type_t type)
         return &fsocket_unsupported_ops;
     }
 
-    const fsocket_ops_t* ops = fsocket_ops_table[index];
+    const fsocket_ops_t *ops = fsocket_ops_table[index];
     return ops == NULL ? &fsocket_unsupported_ops : ops;
 }
 
@@ -84,7 +78,7 @@ int init_fsocket_layer(void)
     return FNP_OK;
 }
 
-int register_fsocket_ops(fsocket_type_t type, const fsocket_ops_t* ops)
+int register_fsocket_ops(fsocket_type_t type, const fsocket_ops_t *ops)
 {
     u32 index = (u8)type;
     if (unlikely(index >= FSOCKET_OPS_TABLE_SIZE || ops == NULL))
@@ -96,19 +90,35 @@ int register_fsocket_ops(fsocket_type_t type, const fsocket_ops_t* ops)
     return FNP_OK;
 }
 
-void fsocket_init_base(fsocket_t* socket, fsocket_type_t type)
+void fsocket_init_base(fsocket_t *socket, fsocket_type_t type)
 {
     socket->type = type;
     socket->rx_efd_in_frontend = -1;
     socket->tx_efd_in_frontend = -1;
     socket->rx_efd_in_backend = -1;
     socket->tx_efd_in_backend = -1;
+    socket->direct_rx_efd_in_frontend = -1;
+    socket->frontend_id = 0;
+    socket->owner_worker = -1;
     socket->polling_worker = -1;
+    socket->recv_worker_id = -1;
     socket->polling_tsc = 0;
+    socket->direct_peer = NULL;
+    socket->direct_notify_peer = NULL;
+    memset(&socket->direct_local, 0, sizeof(socket->direct_local));
+    memset(&socket->direct_remote, 0, sizeof(socket->direct_remote));
     socket->frontend_flags = 0;
+    socket->frontend_attached = 0;
+    socket->master_registered = 0;
+    socket->polling_cmd_pending = 0;
+    socket->close_requested = 0;
+    socket->is_ready = 0;
+    socket->is_closed = 0;
+    socket->lifecycle_state = fsocket_lifecycle_active;
+    fsocket_ref_init(socket);
 }
 
-int fsocket_create_io_rings(fsocket_t* socket, bool is_mp)
+int fsocket_create_io_rings(fsocket_t *socket, bool is_mp)
 {
     socket->rx = fnp_ring_create(FSOCKET_IO_RING_SIZE, is_mp, false);
     if (socket->rx == NULL)
@@ -137,11 +147,11 @@ int fsocket_create_io_rings(fsocket_t* socket, bool is_mp)
     return FNP_OK;
 }
 
-void fsocket_format_transport_name(fsocket_t* socket, const char* prefix,
-                                   const fsockaddr_t* local, const fsockaddr_t* remote)
+void fsocket_format_transport_name(fsocket_t *socket, const char *prefix,
+                                   const fsockaddr_t *local, const fsockaddr_t *remote)
 {
-    char* local_ip = fnp_ipv4_ntos(local->ip);
-    char* remote_ip = fnp_ipv4_ntos(remote->ip);
+    char *local_ip = fnp_ipv4_ntos(local->ip);
+    char *remote_ip = fnp_ipv4_ntos(remote->ip);
     u16 local_port = fnp_swap16(local->port);
     u16 remote_port = fnp_swap16(remote->port);
 
@@ -152,24 +162,24 @@ void fsocket_format_transport_name(fsocket_t* socket, const char* prefix,
     fnp_string_free(remote_ip);
 }
 
-void fsocket_format_local_name(fsocket_t* socket, const char* prefix, const fsockaddr_t* local)
+void fsocket_format_local_name(fsocket_t *socket, const char *prefix, const fsockaddr_t *local)
 {
-    char* local_ip = fnp_ipv4_ntos(local->ip);
+    char *local_ip = fnp_ipv4_ntos(local->ip);
     snprintf(socket->name, sizeof(socket->name), "%s-%s", prefix, local_ip);
     fnp_string_free(local_ip);
 }
 
-void fsocket_format_suffix_name(fsocket_t* socket, const char* prefix, const char* suffix)
+void fsocket_format_suffix_name(fsocket_t *socket, const char *prefix, const char *suffix)
 {
     snprintf(socket->name, sizeof(socket->name), "%s-%s", prefix, suffix);
 }
 
-void fsocket_cleanup(fsocket_t* socket)
+void fsocket_cleanup(fsocket_t *socket)
 {
-    struct rte_mbuf* m = NULL;
+    struct rte_mbuf *m = NULL;
     if (socket->rx != NULL)
     {
-        while (fnp_ring_dequeue(socket->rx, (void**)&m))
+        while (fnp_ring_dequeue(socket->rx, (void **)&m))
         {
             free_mbuf(m);
         }
@@ -178,7 +188,7 @@ void fsocket_cleanup(fsocket_t* socket)
 
     if (socket->tx != NULL)
     {
-        while (fnp_ring_dequeue(socket->tx, (void**)&m))
+        while (fnp_ring_dequeue(socket->tx, (void **)&m))
         {
             free_mbuf(m);
         }
@@ -195,9 +205,9 @@ void fsocket_cleanup(fsocket_t* socket)
     }
 }
 
-fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
+fsocket_t *create_fsocket(fsocket_type_t type, void *conf, void *ctx)
 {
-    const fsocket_ops_t* ops = get_fsocket_ops(type);
+    const fsocket_ops_t *ops = get_fsocket_ops(type);
     FNP_DEBUG("create_fsocket: type=%s(%d) begin\n", fsocket_type_name(type), type);
     if (ops == NULL || ops->create == NULL)
     {
@@ -205,7 +215,7 @@ fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
         return NULL;
     }
 
-    fsocket_t* socket = create_fsocket_register(type, ops->create(conf));
+    fsocket_t *socket = create_fsocket_register(type, ops->create(conf, ctx));
     if (socket != NULL)
     {
         FNP_DEBUG("create_fsocket: type=%s(%d) success name=%s\n",
@@ -214,21 +224,53 @@ fsocket_t* create_fsocket(fsocket_type_t type, void* conf)
     return socket;
 }
 
-void close_fsocket(fsocket_t* socket)
+int export_fsocket_conf(const fsocket_t *socket, void *conf, u16 *conf_len)
+{
+    if (socket == NULL || conf_len == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    switch (socket->type)
+    {
+    case fsocket_type_gtpu:
+        if (*conf_len < sizeof(fnp_gtpu_socket_conf_t))
+        {
+            *conf_len = sizeof(fnp_gtpu_socket_conf_t);
+            return FNP_ERR_FULL;
+        }
+        *conf_len = sizeof(fnp_gtpu_socket_conf_t);
+        return gtpu_export_socket_conf(socket, (fnp_gtpu_socket_conf_t *)conf);
+    default:
+        return FNP_ERR_NOT_SUPPORTED;
+    }
+}
+
+void close_fsocket(fsocket_t *socket)
 {
     if (socket == NULL)
     {
         return;
     }
 
-    const fsocket_ops_t* ops = get_fsocket_ops(socket->type);
-    if (ops != NULL && ops->close != NULL)
+    if (!fsocket_request_close(socket))
+    {
+        return;
+    }
+
+    if (fnp_worker_close_fsocket(socket) == FNP_OK)
+    {
+        return;
+    }
+
+    const fsocket_ops_t *ops = get_fsocket_ops(socket->type);
+    if (fsocket_enter_closing(socket) && ops != NULL && ops->close != NULL)
     {
         ops->close(socket);
     }
 }
 
-void free_fsocket(fsocket_t* socket)
+void free_fsocket(fsocket_t *socket)
 {
     close_fsocket(socket);
 }

@@ -8,22 +8,88 @@
 #include "fapi.h"
 #include "hash.h"
 
+#include <errno.h>
 #include <rte_ethdev.h>
 
 #include <unistd.h>
 
+typedef struct fnp_master_retire_item
+{
+    fsocket_t *socket;
+    fsocket_release_func_t release;
+} fnp_master_retire_item_t;
 
 fmaster_context_t master;
+
+static void drain_retired_sockets(void)
+{
+    if (master.retire_chan == NULL)
+    {
+        return;
+    }
+
+    eventfd_t value = 0;
+    while (eventfd_read(master.retire_chan->event_fd, &value) == 0)
+    {
+    }
+
+    u32 pending = fnp_ring_count(master.retire_chan->ring);
+    fnp_master_retire_item_t *item = NULL;
+    for (u32 i = 0; i < pending; ++i)
+    {
+        if (fnp_ring_dequeue(master.retire_chan->ring, (void **)&item) == 0)
+        {
+            break;
+        }
+
+        if (item != NULL)
+        {
+            if (item->socket != NULL)
+            {
+                (void)fnp_master_remove_fsocket(item->socket);
+            }
+            if (item->release != NULL)
+            {
+                item->release(item->socket);
+            }
+            fnp_free(item);
+        }
+    }
+}
+
+static void close_frontend_sockets(fnp_frontend_t *frontend)
+{
+    if (frontend == NULL)
+    {
+        return;
+    }
+
+    rte_spinlock_lock(&frontend->lock);
+    frontend->socket_num = 0;
+    for (u32 i = 0; i < frontend->socket_capacity; ++i)
+    {
+        fsocket_t *socket = frontend->sockets[i];
+        if (socket == NULL)
+        {
+            continue;
+        }
+
+        frontend->sockets[i] = NULL;
+        fsocket_detach_frontend(socket);
+        close_fsocket(socket);
+    }
+    rte_spinlock_unlock(&frontend->lock);
+}
 
 // main lcore调用，检查fnp-frontend是否正常
 // daemon的控制线程添加frontendTbl
 static void check_frontend_alive()
 {
-    fnp_list_node_t* node = fnp_list_first(&master.frontend_list);
+    fnp_list_node_t *node = fnp_list_first(&master.frontend_list);
     while (node != NULL)
     {
-        fnp_frontend_t* frontend = node->value;
-        fnp_list_node_t* next_node = fnp_list_get_next(node);
+        fnp_frontend_t *frontend = node->value;
+        fnp_list_node_t *next_node = fnp_list_get_next(node);
         if (frontend->alive)
         {
             frontend->alive = 0;
@@ -38,18 +104,7 @@ static void check_frontend_alive()
                 // 从master删除该前端
                 fnp_list_delete(&master.frontend_list, node);
 
-                // 释放该前端所有的socket
-                rte_spinlock_lock(&frontend->lock);
-                for (u32 i = 0; i < frontend->socket_capacity; ++i)
-                {
-                    fsocket_t* socket = frontend->sockets[i];
-                    if (socket != NULL)
-                    {
-                        free_fsocket(socket);
-                        frontend->sockets[i] = NULL;
-                    }
-                }
-                rte_spinlock_unlock(&frontend->lock);
+                close_frontend_sockets(frontend);
 
                 // 删除该前端
                 frontend_free(frontend);
@@ -59,7 +114,7 @@ static void check_frontend_alive()
     }
 }
 
-static void check_daemon_info(FILE* fp)
+static void check_daemon_info(FILE *fp)
 {
     static u64 prev_tsc = 0;
     show_mempool_info();
@@ -97,13 +152,12 @@ static void check_daemon_info(FILE* fp)
     rte_eth_stats_reset(port_id);
 }
 
-
-int fnp_master_add_fsocket(fsocket_t* socket)
+int fnp_master_add_fsocket(fsocket_t *socket)
 {
     int fd = socket->tx_efd_in_backend;
-    struct epoll_event ev = {0}; // 注意，必须初始化为0，否则read value会有异常
+    struct epoll_event ev = {0};   // 注意，必须初始化为0，否则read value会有异常
     ev.events = EPOLLIN | EPOLLET; // 边沿触发，正常是指0到非0值才会触发，与epoll配合后，值变化就会触发
-    ev.data.ptr = (void*)socket;
+    ev.data.ptr = (void *)socket;
     // 注意ev.data是一个union，ptr,fd,u32和u64只能设置一个值。
 
     int ret = epoll_ctl(master.epoll_fd, EPOLL_CTL_ADD, fd, &ev);
@@ -115,17 +169,68 @@ int fnp_master_add_fsocket(fsocket_t* socket)
     return FNP_OK;
 }
 
-
-static void handle_fsocket_event(fsocket_t* socket, u64 event)
+int fnp_master_remove_fsocket(fsocket_t *socket)
 {
+    if (socket == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (!fsocket_master_take_registered(socket))
+    {
+        return FNP_OK;
+    }
+
+    if (socket->tx_efd_in_backend >= 0 &&
+        epoll_ctl(master.epoll_fd, EPOLL_CTL_DEL, socket->tx_efd_in_backend, NULL) != 0 &&
+        errno != ENOENT && errno != EBADF)
+    {
+        return FNP_ERR_DEL_EVENTFD;
+    }
+
+    return FNP_OK;
+}
+
+int fnp_master_retire_fsocket(fsocket_t *socket, fsocket_release_func_t release)
+{
+    if (socket == NULL || release == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (master.retire_chan == NULL)
+    {
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    fnp_master_retire_item_t *item = fnp_malloc(sizeof(*item));
+    if (item == NULL)
+    {
+        return FNP_ERR_MALLOC;
+    }
+
+    item->socket = socket;
+    item->release = release;
+    if (!fchannel_enqueue(master.retire_chan, item))
+    {
+        fnp_free(item);
+        return FNP_ERR_RING_FULL;
+    }
+
+    return FNP_OK;
+}
+
+static void handle_fsocket_event(fsocket_t *socket, u64 event)
+{
+    if (socket == NULL || socket->tx == NULL || fsocket_is_closing(socket))
+    {
+        return;
+    }
+
     // 有数据要发送
     if (likely(event < fsocket_event_close))
     {
-        if (socket->polling_worker < 0)
-        {
-            printf("add fsocket to worker for sending data\n");
-            fnp_worker_add_fsocket(socket);
-        }
+        fnp_worker_add_fsocket(socket);
     }
     else
     {
@@ -139,7 +244,7 @@ void fnp_master_loop()
     struct epoll_event evs[MAX_EVENTS];
 
     printf("start task to manage frontend\n");
-    FILE* fp = fopen("./fnp_master_stat.txt", "w");
+    FILE *fp = fopen("./fnp_master_stat.txt", "w");
     if (fp == NULL)
     {
         perror("Failed to fnp_master_stat file");
@@ -148,40 +253,64 @@ void fnp_master_loop()
 
     // 添加定时器，定时检查frontend状态
     int timerfd = fnp_create_timerfd(5, true);
-    fmsg_epoll_add(master.epoll_fd, timerfd);
+    if (timerfd < 0)
+    {
+        perror("fnp_create_timerfd");
+        return;
+    }
+    master.timer_tag.kind = master_ev_kind_timer;
+    master.timer_tag.fd = timerfd;
+    fmsg_epoll_add_ptr(master.epoll_fd, timerfd, &master.timer_tag);
+    if (master.retire_chan != NULL)
+    {
+        master.retire_tag.kind = master_ev_kind_retire;
+        master.retire_tag.fd = master.retire_chan->event_fd;
+        fmsg_epoll_add_ptr(master.epoll_fd, master.retire_chan->event_fd, &master.retire_tag);
+    }
 
     while (1)
     {
         int n = epoll_wait(master.epoll_fd, evs, MAX_EVENTS, -1);
+        bool retire_ready = false;
         for (int i = 0; i < n; i++)
         {
-            struct epoll_event* ev = &evs[i];
-            if (unlikely(ev->data.fd == timerfd))
+            struct epoll_event *ev = &evs[i];
+            master_ev_tag_t *tag = (master_ev_tag_t *)ev->data.ptr;
+            if (unlikely(tag == &master.timer_tag))
             {
                 uint64_t expirations;
-                read(timerfd, &expirations, sizeof(expirations)); //清除定时器计数
+                read(timerfd, &expirations, sizeof(expirations)); // 清除定时器计数
                 check_frontend_alive();
                 // check_daemon_info(fp);
                 // show_all_fsocket();
             }
+            else if (tag == &master.retire_tag)
+            {
+                retire_ready = true;
+            }
             else
             {
                 // 处理fsocket的eventfd事件
-                fsocket_t* socket = (fsocket_t*)evs[i].data.ptr;
+                fsocket_t *socket = (fsocket_t *)evs[i].data.ptr;
 
                 eventfd_t value;
-                eventfd_read(socket->tx_efd_in_backend, &value); //清除事件fd计数
+                eventfd_read(socket->tx_efd_in_backend, &value); // 清除事件fd计数
 
                 handle_fsocket_event(socket, value);
             }
         }
+
+        if (retire_ready)
+        {
+            drain_retired_sockets();
+        }
     }
 }
 
-int compare_pid(void* v1, void* v2)
+int compare_pid(void *v1, void *v2)
 {
-    fnp_frontend_t* f1 = (fnp_frontend_t*)v1;
-    fnp_frontend_t* f2 = (fnp_frontend_t*)v2;
+    fnp_frontend_t *f1 = (fnp_frontend_t *)v1;
+    fnp_frontend_t *f2 = (fnp_frontend_t *)v2;
     return f1->pid - f2->pid;
 }
 
@@ -190,6 +319,12 @@ int init_fnp_master()
     fnp_init_list(&master.frontend_list, compare_pid);
     master.epoll_fd = fmsg_epoll_create();
     if (master.epoll_fd < 0)
+    {
+        return FNP_ERR_MALLOC;
+    }
+
+    master.retire_chan = fchannel_create(1024);
+    if (master.retire_chan == NULL)
     {
         return FNP_ERR_MALLOC;
     }
@@ -219,6 +354,13 @@ int init_fnp_master()
     if (ret != 0)
     {
         printf("fail to register action of %s\n", FAPI_CLOSE_FSOCKET_ACTION_NAME);
+        return ret;
+    }
+
+    ret = rte_mp_action_register(FAPI_GTPU_LDP_ATTACH_ACTION_NAME, gtpu_ldp_attach_action);
+    if (ret != 0)
+    {
+        printf("fail to register action of %s\n", FAPI_GTPU_LDP_ATTACH_ACTION_NAME);
         return ret;
     }
 

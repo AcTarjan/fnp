@@ -2,14 +2,14 @@
 
 #include "fnp_context.h"
 #include "ether.h"
-#include "tap.h"
-#include "tun.h"
 #include "fnp_error.h"
+#include "route.h"
 #include "fnp_worker.h"
-#include "flow_table.h"
 #include "hash.h"
 
+#include <arpa/inet.h>
 #include <rte_ethdev.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define IFADDR_TABLE_SIZE 256
@@ -48,6 +48,119 @@ static u8 ipv4_mask_prefix_len(u32 mask_be)
     return prefix_len;
 }
 
+static void network_fill_ifaddr_info(const fnp_ifaddr_t *ifaddr, fnp_ifaddr_info_t *info)
+{
+    if (ifaddr == NULL || info == NULL)
+    {
+        return;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->id = ifaddr->id;
+    info->network_id = ifaddr->network_id;
+    info->device_id = ifaddr->dev == NULL ? UINT16_MAX : ifaddr->dev->id;
+    info->prefix_len = ifaddr->prefix_len;
+    snprintf(info->network_name, sizeof(info->network_name), "%s", ifaddr->network_name);
+    snprintf(info->name, sizeof(info->name), "%s",
+             ifaddr->name == NULL ? "" : ifaddr->name);
+    snprintf(info->device_name, sizeof(info->device_name), "%s",
+             ifaddr->dev == NULL ? "" : ifaddr->dev->name);
+    info->ip = ifaddr->local_ip_be;
+    info->gateway = ifaddr->gateway_be;
+}
+
+static u32 network_first_host_cpu(const fnp_network_pool_t *network)
+{
+    u32 subnet_cpu = rte_be_to_cpu_32(network->subnet_be);
+    return network->prefix_len <= 30 ? subnet_cpu + 1 : subnet_cpu;
+}
+
+static u32 network_last_host_cpu(const fnp_network_pool_t *network)
+{
+    u32 subnet_cpu = rte_be_to_cpu_32(network->subnet_be);
+    u32 mask_cpu = rte_be_to_cpu_32(network->netmask_be);
+    u32 broadcast_cpu = subnet_cpu | ~mask_cpu;
+    return network->prefix_len <= 30 ? broadcast_cpu - 1 : broadcast_cpu;
+}
+
+static bool network_candidate_usable(const fnp_network_pool_t *network, u32 candidate_cpu)
+{
+    if (network == NULL)
+    {
+        return false;
+    }
+
+    u32 subnet_cpu = rte_be_to_cpu_32(network->subnet_be);
+    u32 mask_cpu = rte_be_to_cpu_32(network->netmask_be);
+    u32 broadcast_cpu = subnet_cpu | ~mask_cpu;
+    if ((candidate_cpu & mask_cpu) != subnet_cpu)
+    {
+        return false;
+    }
+
+    if (network->prefix_len <= 30 &&
+        (candidate_cpu == subnet_cpu || candidate_cpu == broadcast_cpu))
+    {
+        return false;
+    }
+
+    return rte_cpu_to_be_32(candidate_cpu) != network->gateway_be;
+}
+
+static int network_count_available_ips(fnp_network_pool_t *network, u16 needed)
+{
+    if (network == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (needed == 0)
+    {
+        return FNP_OK;
+    }
+
+    u16 available = 0;
+    u32 candidate_cpu = network->next_ip_cpu == 0 ? network_first_host_cpu(network) : network->next_ip_cpu;
+    u32 last_cpu = network_last_host_cpu(network);
+    for (; candidate_cpu <= last_cpu && available < needed; ++candidate_cpu)
+    {
+        u32 candidate_be = rte_cpu_to_be_32(candidate_cpu);
+        if (!network_candidate_usable(network, candidate_cpu) || lookup_ifaddr(candidate_be) != NULL)
+        {
+            continue;
+        }
+
+        ++available;
+    }
+
+    return available >= needed ? FNP_OK : FNP_ERR_FULL;
+}
+
+static int network_allocate_next_ip(fnp_network_pool_t *network, u32 *local_ip_be)
+{
+    if (network == NULL || local_ip_be == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    u32 candidate_cpu = network->next_ip_cpu == 0 ? network_first_host_cpu(network) : network->next_ip_cpu;
+    u32 last_cpu = network_last_host_cpu(network);
+    for (; candidate_cpu <= last_cpu; ++candidate_cpu)
+    {
+        u32 candidate_be = rte_cpu_to_be_32(candidate_cpu);
+        if (!network_candidate_usable(network, candidate_cpu) || lookup_ifaddr(candidate_be) != NULL)
+        {
+            continue;
+        }
+
+        network->next_ip_cpu = candidate_cpu + 1;
+        *local_ip_be = candidate_be;
+        return FNP_OK;
+    }
+
+    return FNP_ERR_FULL;
+}
+
 static bool parse_mac_addr(const char *text, struct rte_ether_addr *mac)
 {
     unsigned int bytes[RTE_ETHER_ADDR_LEN];
@@ -71,47 +184,11 @@ static bool parse_mac_addr(const char *text, struct rte_ether_addr *mac)
     return true;
 }
 
-static void init_virtual_tap_mac(fnp_device_t *dev, const fnp_device_config *conf)
-{
-    if (dev == NULL)
-    {
-        return;
-    }
-
-    memset(&dev->mac, 0, sizeof(dev->mac));
-    if (conf != NULL && conf->mac != NULL && conf->mac[0] != '\0')
-    {
-        if (parse_mac_addr(conf->mac, &dev->mac))
-        {
-            return;
-        }
-
-        printf("invalid mac address on tap device %s: %s\n", dev->name, conf->mac);
-    }
-
-    dev->mac.addr_bytes[0] = 0x02;
-    dev->mac.addr_bytes[1] = 0x00;
-    dev->mac.addr_bytes[2] = 0x00;
-    dev->mac.addr_bytes[3] = 0x00;
-    dev->mac.addr_bytes[4] = (u8)((dev->id >> 8) & 0xff);
-    dev->mac.addr_bytes[5] = (u8)(dev->id & 0xff);
-}
-
 static fnp_device_type_t parse_device_type(const char *type)
 {
     if (type == NULL || type[0] == '\0' || strcmp(type, "ethernet") == 0)
     {
         return fnp_device_type_ethernet;
-    }
-
-    if (strcmp(type, "tap") == 0)
-    {
-        return fnp_device_type_tap;
-    }
-
-    if (strcmp(type, "tun") == 0)
-    {
-        return fnp_device_type_tun;
     }
 
     return 0;
@@ -143,9 +220,6 @@ static bool validate_device_type_driver(fnp_device_type_t type, fnp_device_drive
     {
     case fnp_device_type_ethernet:
         return driver == fnp_device_driver_physical || driver == fnp_device_driver_dpdk_tap;
-    case fnp_device_type_tap:
-    case fnp_device_type_tun:
-        return driver == fnp_device_driver_none;
     default:
         return false;
     }
@@ -179,12 +253,18 @@ static int dpdk_device_init(fnp_device_t *dev, const fnp_device_config *conf, in
     printf("port %d mac is " RTE_ETHER_ADDR_PRT_FMT "\n", port, RTE_ETHER_ADDR_BYTES(&dev->mac));
 
     int socket_id = resolve_port_socket_id(port);
+    const uint64_t requested_rss_hf = RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_UDP;
     struct rte_eth_conf port_conf = {
+        .rxmode = {
+            .mq_mode = nb_queues > 1 ? RTE_ETH_MQ_RX_RSS : RTE_ETH_MQ_RX_NONE,
+        },
+        .rx_adv_conf = {
+            .rss_conf = {
+                .rss_hf = nb_queues > 1 ? requested_rss_hf : 0,
+            },
+        },
         .txmode = {
-            .offloads =
-                RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
-                RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
-                RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+            .offloads = RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
         },
     };
 
@@ -214,6 +294,22 @@ static int dpdk_device_init(fnp_device_t *dev, const fnp_device_config *conf, in
     }
 
     port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+    if (nb_queues > 1)
+    {
+        uint64_t rss_hf = requested_rss_hf & dev_info.flow_type_rss_offloads;
+        if (rss_hf == 0)
+        {
+            port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+            port_conf.rx_adv_conf.rss_conf.rss_hf = 0;
+            printf("port%d does not advertise IPv4+UDP RSS, fallback to queue0-compatible receive path\n", port);
+        }
+        else
+        {
+            port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf;
+            printf("port%d enable RSS hf=%#llx for IPv4+UDP receive steering\n",
+                   port, (unsigned long long)rss_hf);
+        }
+    }
 
     ret = rte_eth_dev_configure(port, nb_queues, nb_queues, &port_conf);
     if (ret != 0)
@@ -261,19 +357,6 @@ static int dpdk_device_init(fnp_device_t *dev, const fnp_device_config *conf, in
     {
         ret = rte_eth_promiscuous_enable(port);
         printf("set port to promiscuous mode: %d\n", ret);
-    }
-
-    if (nb_queues > 1)
-    {
-        if (is_dpdk_tap_driver(dev))
-        {
-            printf("skip flow table init on TAP port %u, use a single worker queue for test mode\n", port);
-        }
-        else
-        {
-            ret = init_flow_table(port);
-            CHECK_RET(ret);
-        }
     }
 
     return FNP_OK;
@@ -329,14 +412,6 @@ static const fnp_device_ops_t dpdk_device_ops = {
     .send = ether_device_send,
 };
 
-static const fnp_device_ops_t virtual_tap_device_ops = {
-    .send = ether_device_send,
-};
-
-static const fnp_device_ops_t virtual_tun_device_ops = {
-    .send = tun_device_send,
-};
-
 int get_fnp_device_count(void)
 {
     return network_context.device_count;
@@ -350,6 +425,21 @@ fnp_device_t *get_fnp_device(int index)
     }
 
     return &network_context.devices[index];
+}
+
+int get_fnp_network_count(void)
+{
+    return network_context.network_count;
+}
+
+fnp_network_pool_t *get_fnp_network(int index)
+{
+    if (index < 0 || index >= network_context.network_count)
+    {
+        return NULL;
+    }
+
+    return &network_context.networks[index];
 }
 
 fnp_device_t *lookup_device_by_id(u16 device_id)
@@ -383,6 +473,24 @@ fnp_device_t *lookup_device_by_name(const char *name)
     return NULL;
 }
 
+fnp_network_pool_t *lookup_network_by_name(const char *name)
+{
+    if (name == NULL)
+    {
+        return NULL;
+    }
+
+    for (int i = 0; i < network_context.network_count; ++i)
+    {
+        if (strcmp(network_context.networks[i].name, name) == 0)
+        {
+            return &network_context.networks[i];
+        }
+    }
+
+    return NULL;
+}
+
 fnp_device_t *lookup_device_by_port(u16 port_id)
 {
     for (int i = 0; i < network_context.device_count; ++i)
@@ -398,7 +506,7 @@ fnp_device_t *lookup_device_by_port(u16 port_id)
 
 const struct rte_ether_addr *get_device_mac(const fnp_device_t *dev)
 {
-    return (is_ethernet_device(dev) || is_tap_device(dev)) ? &dev->mac : NULL;
+    return is_ethernet_device(dev) ? &dev->mac : NULL;
 }
 
 int get_fnp_ifaddr_count(void)
@@ -500,43 +608,188 @@ static int register_ifaddr(fnp_ifaddr_t *ifaddr)
     return FNP_ERR_ADD_HASH;
 }
 
-fnp_ifaddr_t *add_dynamic_ifaddr(fnp_device_t *dev, u32 local_ip_be)
+static bool parse_ifaddr_cidr(const char *cidr, u32 *local_ip_be, u32 *netmask_be, u8 *prefix_len)
 {
-    if (dev == NULL || local_ip_be == 0)
+    char buf[64];
+    char *slash;
+    char *end = NULL;
+    long prefix_value;
+    struct in_addr addr = {0};
+    size_t len;
+
+    if (cidr == NULL || local_ip_be == NULL || netmask_be == NULL || prefix_len == NULL)
     {
-        return NULL;
+        return false;
     }
 
-    fnp_ifaddr_t *existing = lookup_ifaddr(local_ip_be);
-    if (existing != NULL)
+    len = strnlen(cidr, sizeof(buf));
+    if (len == 0 || len >= sizeof(buf))
     {
-        return existing->dev == dev ? existing : NULL;
+        return false;
+    }
+
+    memcpy(buf, cidr, len + 1);
+    slash = strchr(buf, '/');
+    if (slash == NULL)
+    {
+        return false;
+    }
+
+    *slash = '\0';
+    prefix_value = strtol(slash + 1, &end, 10);
+    if (end == slash + 1 || *end != '\0' || prefix_value < 0 || prefix_value > 32)
+    {
+        return false;
+    }
+
+    if (inet_pton(AF_INET, buf, &addr) != 1)
+    {
+        return false;
+    }
+
+    *local_ip_be = addr.s_addr;
+    *prefix_len = (u8)prefix_value;
+    if (*prefix_len == 0)
+    {
+        *netmask_be = 0;
+    }
+    else if (*prefix_len == 32)
+    {
+        *netmask_be = UINT32_MAX;
+    }
+    else
+    {
+        *netmask_be = rte_cpu_to_be_32(UINT32_MAX << (32 - *prefix_len));
+    }
+
+    return true;
+}
+
+static fnp_network_pool_t *find_network_pool_for_ifaddr(const fnp_device_t *dev,
+                                                        u32 local_ip_be,
+                                                        u32 netmask_be)
+{
+    for (int i = 0; i < network_context.network_count; ++i)
+    {
+        fnp_network_pool_t *network = &network_context.networks[i];
+        if (network->dev != dev || network->netmask_be != netmask_be)
+        {
+            continue;
+        }
+
+        if ((local_ip_be & netmask_be) == network->subnet_be)
+        {
+            return network;
+        }
+    }
+
+    return NULL;
+}
+
+static int add_static_ifaddr(fnp_device_t *dev, const char *cidr)
+{
+    u32 local_ip_be = 0;
+    u32 netmask_be = 0;
+    u8 prefix_len = 0;
+    if (dev == NULL || !parse_ifaddr_cidr(cidr, &local_ip_be, &netmask_be, &prefix_len))
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    if (lookup_ifaddr(local_ip_be) != NULL)
+    {
+        return FNP_ERR_OCCUPIED;
     }
 
     if (network_context.ifaddr_count >= FNP_MAX_IFADDR_NUM)
     {
-        return NULL;
+        return FNP_ERR_FULL;
     }
 
+    fnp_network_pool_t *network = find_network_pool_for_ifaddr(dev, local_ip_be, netmask_be);
     fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
     memset(ifaddr, 0, sizeof(*ifaddr));
     ifaddr->id = (u16)network_context.ifaddr_count;
+    ifaddr->network_id = network == NULL ? UINT16_MAX : network->id;
     ifaddr->dev = dev;
-    ifaddr->ip = fnp_ipv4_ntos(local_ip_be);
     ifaddr->local_ip_be = local_ip_be;
-    ifaddr->netmask_be = 0xffffffffu;
-    ifaddr->network_be = local_ip_be;
-    ifaddr->prefix_len = 32;
-    ++network_context.ifaddr_count;
-
-    if (register_ifaddr(ifaddr) != FNP_OK)
+    ifaddr->netmask_be = netmask_be;
+    ifaddr->network_be = local_ip_be & netmask_be;
+    ifaddr->gateway_be = network == NULL ? 0 : network->gateway_be;
+    ifaddr->prefix_len = prefix_len;
+    if (network != NULL)
     {
-        fnp_string_free(ifaddr->ip);
-        --network_context.ifaddr_count;
-        return NULL;
+        snprintf(ifaddr->network_name, sizeof(ifaddr->network_name), "%s", network->name);
     }
 
-    return ifaddr;
+    char ifaddr_name[FNP_IFADDR_NAME_LEN];
+    if (network != NULL)
+    {
+        snprintf(ifaddr_name, sizeof(ifaddr_name), "%.24s-%u", network->name, (unsigned)network->next_ifaddr_seq++);
+    }
+    else
+    {
+        snprintf(ifaddr_name, sizeof(ifaddr_name), "%.24s-%u", dev->name, (unsigned)(ifaddr->id + 1));
+    }
+
+    ifaddr->name = fnp_string_duplicate(ifaddr_name);
+    ifaddr->ip = fnp_ipv4_ntos(local_ip_be);
+    if (ifaddr->name == NULL || ifaddr->ip == NULL)
+    {
+        fnp_string_free(ifaddr->name);
+        fnp_string_free(ifaddr->ip);
+        memset(ifaddr, 0, sizeof(*ifaddr));
+        return FNP_ERR_MALLOC;
+    }
+
+    int ret = register_ifaddr(ifaddr);
+    if (ret != FNP_OK)
+    {
+        fnp_string_free(ifaddr->name);
+        fnp_string_free(ifaddr->ip);
+        memset(ifaddr, 0, sizeof(*ifaddr));
+        return ret;
+    }
+
+    ++network_context.ifaddr_count;
+
+    char *gateway = fnp_ipv4_ntos(ifaddr->gateway_be);
+    printf("register static ifaddr on device %s: %s/%u gateway=%s network=%s\n",
+           dev->name,
+           ifaddr->ip,
+           ifaddr->prefix_len,
+           gateway == NULL ? "0.0.0.0" : gateway,
+           ifaddr->network_name[0] == '\0' ? "" : ifaddr->network_name);
+    fnp_string_free(gateway);
+    return FNP_OK;
+}
+
+int export_network_ifaddrs(fnp_ifaddr_info_t *infos,
+                           u16 info_capacity,
+                           u16 *info_count)
+{
+    if (info_count == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    *info_count = (u16)network_context.ifaddr_count;
+    if (network_context.ifaddr_count == 0)
+    {
+        return FNP_OK;
+    }
+
+    if (infos == NULL || info_capacity < network_context.ifaddr_count)
+    {
+        return FNP_ERR_FULL;
+    }
+
+    for (int i = 0; i < network_context.ifaddr_count; ++i)
+    {
+        network_fill_ifaddr_info(&network_context.ifaddrs[i], &infos[i]);
+    }
+
+    return FNP_OK;
 }
 
 int init_fnp_device_layer(fnp_config *conf)
@@ -596,19 +849,6 @@ int init_fnp_device_layer(fnp_config *conf)
             return FNP_ERR_PARAM;
         }
 
-        if (dev->type == fnp_device_type_tun)
-        {
-            dev->ops = &virtual_tun_device_ops;
-            continue;
-        }
-
-        if (dev->type == fnp_device_type_tap)
-        {
-            init_virtual_tap_mac(dev, device_conf);
-            dev->ops = &virtual_tap_device_ops;
-            continue;
-        }
-
         if (dev->type != fnp_device_type_ethernet)
         {
             printf("device type %s is not implemented yet: %s\n",
@@ -652,41 +892,56 @@ int init_fnp_ifaddr_layer(fnp_config *conf)
     }
 
     network_context.ifaddr_count = 0;
-    for (int i = 0; i < conf->network.devices_count; ++i)
+    network_context.network_count = conf->network.networks_count;
+    for (int i = 0; i < conf->network.networks_count; ++i)
     {
-        const fnp_device_config *device_conf = &conf->network.devices[i];
-        fnp_device_t *dev = lookup_device_by_id(device_conf->id);
+        const fnp_network_pool_config *network_conf = &conf->network.networks[i];
+        fnp_device_t *dev = lookup_device_by_name(network_conf->device);
         if (dev == NULL)
         {
             return FNP_ERR_PARAM;
         }
 
-        for (int j = 0; j < device_conf->ifaddr_count; ++j)
+        fnp_network_pool_t *network = &network_context.networks[i];
+        memset(network, 0, sizeof(*network));
+        network->id = (u16)i;
+        network->dev = dev;
+        snprintf(network->name, sizeof(network->name), "%s",
+                 network_conf->name == NULL ? "" : network_conf->name);
+        network->subnet_be = network_conf->subnet_be;
+        network->netmask_be = network_conf->netmask_be;
+        network->gateway_be = network_conf->gateway_be;
+        network->prefix_len = ipv4_mask_prefix_len(network_conf->netmask_be);
+        network->priority = network_conf->priority;
+        network->next_ifaddr_seq = 1;
+        network->next_ip_cpu = network_first_host_cpu(network);
+
+        char *subnet = fnp_ipv4_ntos(network->subnet_be);
+        char *gateway = fnp_ipv4_ntos(network->gateway_be);
+        printf("register network %s on %s: %s/%u gateway=%s priority=%d\n",
+               network->name,
+               dev->name,
+               subnet == NULL ? "0.0.0.0" : subnet,
+               network->prefix_len,
+               gateway == NULL ? "0.0.0.0" : gateway,
+               network->priority);
+        fnp_string_free(subnet);
+        fnp_string_free(gateway);
+    }
+
+    for (int i = 0; i < conf->network.devices_count; ++i)
+    {
+        const fnp_device_config *device_conf = &conf->network.devices[i];
+        fnp_device_t *dev = lookup_device_by_name(device_conf->name);
+        if (dev == NULL)
         {
-            if (network_context.ifaddr_count >= FNP_MAX_IFADDR_NUM)
-            {
-                return FNP_ERR_PARAM;
-            }
+            return FNP_ERR_PARAM;
+        }
 
-            const fnp_ifaddr_config *ifaddr_conf = &device_conf->ifaddrs[j];
-            fnp_ifaddr_t *ifaddr = &network_context.ifaddrs[network_context.ifaddr_count];
-            memset(ifaddr, 0, sizeof(*ifaddr));
-            ifaddr->id = (u16)network_context.ifaddr_count;
-            ifaddr->dev = dev;
-            ifaddr->ip = ifaddr_conf->ip;
-            ifaddr->local_ip_be = ifaddr_conf->ip_be;
-            ifaddr->netmask_be = ifaddr_conf->ip_mask_be;
-            ifaddr->network_be = ifaddr_conf->ip_be & ifaddr_conf->ip_mask_be;
-            ifaddr->prefix_len = ipv4_mask_prefix_len(ifaddr_conf->ip_mask_be);
-            ++network_context.ifaddr_count;
-
-            int ret = register_ifaddr(ifaddr);
+        for (int j = 0; j < device_conf->ifaddrs_count; ++j)
+        {
+            int ret = add_static_ifaddr(dev, device_conf->ifaddrs[j]);
             CHECK_RET(ret);
-
-            printf("register ifaddr on %s: %s/%u\n",
-                   dev->name,
-                   ifaddr->ip,
-                   ifaddr->prefix_len);
         }
     }
 

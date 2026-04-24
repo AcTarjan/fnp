@@ -12,9 +12,9 @@ typedef struct sockaddr_in6 sockaddr_in6_t;
 #define FNP_SO_REUSEADDR 0x01
 #define FNP_SO_REUSEPORT 0x02
 
-#define FSOCKADDR_NONE   0
-#define FSOCKADDR_IPV4   4
-#define FSOCKADDR_IPV6   6
+#define FSOCKADDR_NONE 0
+#define FSOCKADDR_IPV4 4
+#define FSOCKADDR_IPV6 6
 
 typedef struct fsockaddr
 {
@@ -25,15 +25,10 @@ typedef struct fsockaddr
 
 typedef enum fsocket_type
 {
-    fsocket_type_quic = 3, //暂时未使用的, 仅作为标识, 实际使用UDP
-    fsocket_type_tcp = IPPROTO_TCP,
-    fsocket_type_udp = IPPROTO_UDP,
-    fsocket_type_tap = 252, // 类似 Linux TAP，前后端直接收发以太网帧
-    fsocket_type_raw = 253, // 直接收发ipv4数据包
-    fsocket_type_tun = 254, // 类似 Linux TUN，前后端直接收发 IPv4 包
+    fsocket_type_gtpu = 250,
 } fsocket_type_t;
 
-static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
+static inline void fsockaddr_copy(fsockaddr_t *dst, const fsockaddr_t *src)
 {
     if (unlikely(src == NULL))
     {
@@ -47,34 +42,34 @@ static inline void fsockaddr_copy(fsockaddr_t* dst, const fsockaddr_t* src)
     dst->port = src->port;
 }
 
-static inline void fsockaddr2sockaddr_in(fsockaddr_t* faddr, sockaddr_in_t* addr)
+static inline void fsockaddr2sockaddr_in(fsockaddr_t *faddr, sockaddr_in_t *addr)
 {
     addr->sin_family = AF_INET;
     addr->sin_addr.s_addr = faddr->ip;
     addr->sin_port = faddr->port;
 }
 
-static inline void sockaddr_in2fsockaddr(sockaddr_in_t* addr, fsockaddr_t* faddr)
+static inline void sockaddr_in2fsockaddr(sockaddr_in_t *addr, fsockaddr_t *faddr)
 {
     faddr->family = FSOCKADDR_IPV4;
     faddr->ip = addr->sin_addr.s_addr;
     faddr->port = addr->sin_port;
 }
 
-static inline bool fsockaddr_compare(const fsockaddr_t* expected, const fsockaddr_t* actual)
+static inline bool fsockaddr_compare(const fsockaddr_t *expected, const fsockaddr_t *actual)
 {
     if (expected == NULL || actual == NULL)
         return false;
     if (expected->family == actual->family && expected->family == FSOCKADDR_IPV4)
     {
         return expected->ip == actual->ip &&
-            expected->port == actual->port;
+               expected->port == actual->port;
     }
 
     return false;
 }
 
-static inline int fsockaddr_init(fsockaddr_t* addr, int family, const char* ip, int port)
+static inline int fsockaddr_init(fsockaddr_t *addr, int family, const char *ip, int port)
 {
     if (addr == NULL)
         return -1;

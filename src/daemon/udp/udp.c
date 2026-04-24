@@ -5,8 +5,8 @@
 #include "fnp_error.h"
 #include "fnp_network.h"
 #include "fnp_worker.h"
-#include "icmp.h"
 #include "ipv4.h"
+#include "gtpu.h"
 
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
@@ -90,10 +90,10 @@ static inline bool udp_remote_matches(const fsocket_t *socket, const fsockaddr_t
 // 真正的本地/快速/普通路径由IPv4层内部通过函数指针自动切换。
 static void udp_socket_init_send_func(udp_socket_t *udp_socket)
 {
-    udp_socket->send_func = udp_socket_send_unconnected;
     ipv4_tx_cache_init(&udp_socket->tx_cache);
+    udp_socket->send_func = udp_socket_send_unconnected;
 
-    if (udp_socket == NULL || !udp_socket_is_connected(&udp_socket->socket))
+    if (!udp_socket_is_connected(&udp_socket->socket))
     {
         return;
     }
@@ -421,34 +421,12 @@ static void udp_socket_recv(fsocket_t *socket, struct rte_mbuf *m)
 
 static void udp_input(struct rte_mbuf *m)
 {
-    fsockaddr_t local = {
-        .family = FSOCKADDR_IPV4,
-    };
-    fsockaddr_t remote = {
-        .family = FSOCKADDR_IPV4,
-    };
-
-    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod(m, struct rte_ipv4_hdr *);
-    struct rte_udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *, rte_ipv4_hdr_len(ip_hdr));
-
-    local.ip = ip_hdr->dst_addr;
-    local.port = udp_hdr->dst_port;
-    remote.ip = ip_hdr->src_addr;
-    remote.port = udp_hdr->src_port;
-
-    fsocket_t *socket = udp_socket_lookup(&local, &remote);
-    if (unlikely(socket == NULL))
-    {
-        icmp_send_port_unreachable(m);
-        free_mbuf(m);
-        return;
-    }
-
-    get_fsocket_ops(socket->type)->recv(socket, m);
+    gtpu_udp_input(m);
 }
 
-static fsocket_t *udp_socket_create(void *conf)
+static fsocket_t *udp_socket_create(void *conf, void *ctx)
 {
+    (void)ctx;
     const fnp_udp_socket_conf_t *udp_conf = conf;
     udp_socket_t *udp_socket;
     fsocket_t *socket;

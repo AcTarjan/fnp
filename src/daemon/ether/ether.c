@@ -3,7 +3,6 @@
 #include "fnp_worker.h"
 #include "fnp_ring.h"
 #include "arp.h"
-#include "tap.h"
 
 #define ETHER_INPUT_TABLE_SIZE 65536
 
@@ -47,7 +46,7 @@ void ether_send_mbuf(struct rte_mbuf *m, fnp_device_t *dev, struct rte_ether_add
         return;
     }
 
-    if (unlikely(!is_ethernet_device(dev) && !is_tap_device(dev)))
+    if (unlikely(!is_ethernet_device(dev)))
     {
         free_mbuf(m);
         return;
@@ -71,12 +70,6 @@ void ether_send_mbuf(struct rte_mbuf *m, fnp_device_t *dev, struct rte_ether_add
     rte_ether_addr_copy(dmac, &hdr->dst_addr);
     hdr->ether_type = fnp_swap16(type);
     m->l2_len = RTE_ETHER_HDR_LEN;
-
-    if (is_tap_device(dev))
-    {
-        tap_device_output(m, dev);
-        return;
-    }
 
     fnp_worker_t *worker = get_local_worker();
     fnp_ring_t *tx_ring = get_device_tx_ring(dev, worker->queue_id);

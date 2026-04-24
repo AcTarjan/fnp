@@ -44,9 +44,9 @@
 //     return FNP_OK;
 // }
 
-fnp_msg_t* fmsg_new(fmsg_type_t type)
+fnp_msg_t *fmsg_new(fmsg_type_t type)
 {
-    fnp_msg_t* msg = fnp_malloc(sizeof(fnp_msg_t));
+    fnp_msg_t *msg = fnp_malloc(sizeof(fnp_msg_t));
     if (msg == NULL)
     {
         return NULL;
@@ -57,33 +57,33 @@ fnp_msg_t* fmsg_new(fmsg_type_t type)
     return msg;
 }
 
-bool fchannel_enqueue(fchannel_t* chan, void* data)
+bool fchannel_enqueue(fchannel_t *chan, void *data)
 {
     if (fnp_ring_enqueue(chan->ring, data) == 0)
     {
-        return;
+        return false;
     }
 
     eventfd_write(chan->event_fd, 1); // 通知工作线程有数据到来
+    return true;
 }
 
-
-void fchannel_free(fchannel_t* chan)
+void fchannel_free(fchannel_t *chan)
 {
     close(chan->event_fd);
     fnp_ring_free(chan->ring);
     fnp_free(chan);
 }
 
-void fchannel_init(fchannel_t* chan, int efd, fnp_ring_t* ring)
+void fchannel_init(fchannel_t *chan, int efd, fnp_ring_t *ring)
 {
     chan->event_fd = efd;
     chan->ring = ring;
 }
 
-fchannel_t* fchannel_create(i32 size)
+fchannel_t *fchannel_create(i32 size)
 {
-    fchannel_t* chan = fnp_malloc(sizeof(fchannel_t));
+    fchannel_t *chan = fnp_malloc(sizeof(fchannel_t));
     if (chan == NULL)
     {
         return NULL;
@@ -107,20 +107,20 @@ fchannel_t* fchannel_create(i32 size)
     return chan;
 }
 
-void fchannel_handle(fchannel_t* chan, fmsg_handler_func handler)
+void fchannel_handle(fchannel_t *chan, fmsg_handler_func handler)
 {
     eventfd_t value;
-    eventfd_read(chan->event_fd, &value); //清除事件fd计数
+    eventfd_read(chan->event_fd, &value); // 清除事件fd计数
 
-    fnp_msg_t* msg = NULL;
-    while (fnp_ring_dequeue(chan->ring, (void**)&msg) != 0)
+    fnp_msg_t *msg = NULL;
+    while (fnp_ring_dequeue(chan->ring, (void **)&msg) != 0)
     {
         handler(msg);
-        // fnp_free(msg);
+        fnp_free(msg);
     }
 }
 
-int fmsg_send(fchannel_t* chan, fnp_msg_t* msg)
+int fmsg_send(fchannel_t *chan, fnp_msg_t *msg)
 {
     if (fnp_ring_enqueue(chan->ring, msg) == 0)
     {
@@ -131,23 +131,19 @@ int fmsg_send(fchannel_t* chan, fnp_msg_t* msg)
     return FNP_OK;
 }
 
-int fmsg_send_with_reply(fchannel_t* chan, fnp_msg_t* msg)
+int fmsg_send_with_reply(fchannel_t *chan, fnp_msg_t *msg)
 {
     fmsg_send(chan, msg);
 
-    //TODO: 设置超时
-    while (!msg->is_reply);
-    if (msg->code < 0)
-    {
-        fnp_free(msg);
-        return msg->code;
-    }
+    while (__atomic_load_n(&msg->is_reply, __ATOMIC_ACQUIRE) == 0)
+        rte_pause();
 
-    return FNP_OK;
+    int code = msg->code; // 先保存 code，再 free，避免 use-after-free
+    fnp_free(msg);
+    return code < 0 ? code : FNP_OK;
 }
 
-
-void fmsg_send_reply(fnp_msg_t* msg)
+void fmsg_send_reply(fnp_msg_t *msg)
 {
     msg->is_reply = true;
 }
@@ -179,7 +175,8 @@ int fnp_create_timerfd(int timeout, bool periodic)
     if (timerfd_settime(timerfd, 0, &new_value, &old_value) == -1)
     {
         perror("timerfd_settime");
-        // 错误处理
+        close(timerfd);
+        return -1;
     }
 
     return timerfd;
