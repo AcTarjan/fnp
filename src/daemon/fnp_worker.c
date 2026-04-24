@@ -281,11 +281,6 @@ int fnp_worker_close_fsocket(fsocket_t *socket)
 
 void fnp_worker_process_control(fnp_worker_t *worker)
 {
-    if (worker == NULL || worker->control_ring == NULL)
-    {
-        return;
-    }
-
     fnp_worker_cmd_t *cmd = NULL;
     while (fnp_ring_dequeue(worker->control_ring, (void **)&cmd) != 0)
     {
@@ -386,9 +381,10 @@ int fnp_worker_loop(void *arg)
             prev_tsc = cur_tsc;
         }
 
+        // 处理控制消息
         fnp_worker_process_control(worker);
 
-        // 处理polling
+        // polling发包
         fnp_worker_handle_polling_once(worker, cur_tsc);
 
         // 从网卡向网络发送数据
