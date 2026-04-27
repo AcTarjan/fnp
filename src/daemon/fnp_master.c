@@ -152,6 +152,37 @@ static void check_daemon_info(FILE *fp)
     rte_eth_stats_reset(port_id);
 }
 
+static void write_worker_rx_info(FILE *fp)
+{
+    static u64 prev_packets[FNP_MAX_WORKER_NUM] = {0};
+
+    fprintf(fp, "worker_rx");
+    for (int id = 0; id < get_fnp_worker_count(); ++id)
+    {
+        fnp_worker_t *worker = get_fnp_worker(id);
+        if (worker == NULL)
+        {
+            continue;
+        }
+
+        u64 packets = __atomic_load_n(&worker->nic_rx_packets, __ATOMIC_RELAXED);
+        u64 bursts = __atomic_load_n(&worker->nic_rx_bursts, __ATOMIC_RELAXED);
+        u64 delta = packets - prev_packets[id];
+        prev_packets[id] = packets;
+        fprintf(fp,
+                " worker%d_queue%d_packets=%llu worker%d_delta=%llu worker%d_bursts=%llu",
+                worker->id,
+                worker->queue_id,
+                (unsigned long long)packets,
+                worker->id,
+                (unsigned long long)delta,
+                worker->id,
+                (unsigned long long)bursts);
+    }
+    fprintf(fp, "\n");
+    fflush(fp);
+}
+
 int fnp_master_add_fsocket(fsocket_t *socket)
 {
     int fd = socket->tx_efd_in_backend;
@@ -281,6 +312,7 @@ void fnp_master_loop()
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); // 清除定时器计数
                 check_frontend_alive();
+                write_worker_rx_info(fp);
                 // check_daemon_info(fp);
                 // show_all_fsocket();
             }

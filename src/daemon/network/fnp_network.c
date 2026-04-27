@@ -35,6 +35,42 @@ static int resolve_port_socket_id(uint16_t port)
     return socket_id < 0 ? 0 : socket_id;
 }
 
+static int configure_rss_reta(uint16_t port, uint16_t nb_queues, const struct rte_eth_dev_info *dev_info)
+{
+    if (nb_queues <= 1 || dev_info == NULL || dev_info->reta_size == 0)
+    {
+        return FNP_OK;
+    }
+
+    uint16_t reta_size = dev_info->reta_size;
+    uint16_t reta_group_count = (uint16_t)((reta_size + RTE_ETH_RETA_GROUP_SIZE - 1) / RTE_ETH_RETA_GROUP_SIZE);
+    struct rte_eth_rss_reta_entry64 *reta_conf = calloc(reta_group_count, sizeof(*reta_conf));
+    if (reta_conf == NULL)
+    {
+        return FNP_ERR_MBUF_ALLOC;
+    }
+
+    for (uint16_t i = 0; i < reta_size; ++i)
+    {
+        uint16_t group = (uint16_t)(i / RTE_ETH_RETA_GROUP_SIZE);
+        uint16_t offset = (uint16_t)(i % RTE_ETH_RETA_GROUP_SIZE);
+        reta_conf[group].mask |= (uint64_t)1 << offset;
+        reta_conf[group].reta[offset] = (uint16_t)(i % nb_queues);
+    }
+
+    int ret = rte_eth_dev_rss_reta_update(port, reta_conf, reta_size);
+    free(reta_conf);
+    if (ret != 0)
+    {
+        printf("port%u failed to configure RSS RETA size=%u queues=%u: %s\n",
+               port, reta_size, nb_queues, strerror(-ret));
+        return ret;
+    }
+
+    printf("port%u configured RSS RETA size=%u across %u queues\n", port, reta_size, nb_queues);
+    return FNP_OK;
+}
+
 static u8 ipv4_mask_prefix_len(u32 mask_be)
 {
     u32 mask = rte_be_to_cpu_32(mask_be);
@@ -350,6 +386,13 @@ static int dpdk_device_init(fnp_device_t *dev, const fnp_device_config *conf, in
     ret = rte_eth_dev_start(port);
     if (ret != 0)
     {
+        return ret;
+    }
+
+    ret = configure_rss_reta(port, (uint16_t)nb_queues, &dev_info);
+    if (ret != FNP_OK)
+    {
+        rte_eth_dev_stop(port);
         return ret;
     }
 

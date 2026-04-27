@@ -1,0 +1,37 @@
+# FNP smoke-test configuration for server2 / 10.38.1.229.
+# Assumes PCI 0000:17:00.0 is already bound to vfio-pci and 1G hugepages are mounted.
+dpdk:
+  mbuf_pool_size: 8192
+  lcores: [2, 3, 4, 5, 6]
+  app_id: "fnp"
+  log_level: 8
+  other_argv:
+    - "--main-lcore=2"
+    - "--iova-mode=pa"
+    - "--socket-mem=16384"
+
+network:
+  devices:
+    - name: "eth0"
+      type: "ethernet"
+      driver: "physical"
+      pci: "0000:17:00.0"
+      mac: ""
+      promiscuous: true
+      nb_rx_desc: 2048
+      nb_tx_desc: 2048
+      ifaddrs:
+        - "192.168.100.2/24"
+        - "192.168.100.3/24"
+  routes:
+    - dst: "default"
+      via: "192.168.100.1"
+      dev: "eth0"
+      src: "192.168.100.2"
+
+worker:
+  mbuf_pool_size: 8191
+  clone_pool_size: 8191
+  rx_pool_size: 8191
+  tx_ring_size: 8192
+  lcores: [3, 4, 5, 6]

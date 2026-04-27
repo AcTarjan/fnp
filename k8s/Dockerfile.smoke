@@ -1,0 +1,24 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG FNP_BUILD_DIR=build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    iproute2 \
+    libnuma1 \
+    pciutils \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root
+
+COPY ${FNP_BUILD_DIR}/fnp-daemon /root/fnp-daemon
+COPY ${FNP_BUILD_DIR}/fnp_frontend_smoke /root/fnp_frontend_smoke
+COPY k8s/conf/fnp-server2-smoke.yaml /root/fnp-server2-smoke.yaml
+
+RUN chmod +x /root/fnp-daemon /root/fnp_frontend_smoke
+
+CMD ["/bin/bash"]

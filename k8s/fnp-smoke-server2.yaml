@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oai
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fnp-daemon-smoke-server2
+  namespace: oai
+  labels:
+    app: fnp-daemon-smoke
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: server2
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: fnp-daemon
+      image: fnp-smoke:v1
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          memory: 1Gi
+          hugepages-1Gi: 16Gi
+        limits:
+          memory: 1Gi
+          hugepages-1Gi: 16Gi
+      env:
+        - name: FNP_APP_ID
+          value: fnp
+      command:
+        - /bin/bash
+        - -lc
+        - |
+          set -euo pipefail
+          rm -rf /var/run/dpdk/fnp
+          exec /root/fnp-daemon /root/fnp-server2-smoke.yaml
+      volumeMounts:
+        - name: hugepages
+          mountPath: /dev/hugepages
+        - name: var-run-dpdk
+          mountPath: /var/run/dpdk
+        - name: vfio
+          mountPath: /dev/vfio
+        - name: sys-bus-pci
+          mountPath: /sys/bus/pci
+          readOnly: true
+  volumes:
+    - name: hugepages
+      hostPath:
+        path: /dev/hugepages
+        type: Directory
+    - name: var-run-dpdk
+      hostPath:
+        path: /var/run/dpdk
+        type: DirectoryOrCreate
+    - name: vfio
+      hostPath:
+        path: /dev/vfio
+        type: DirectoryOrCreate
+    - name: sys-bus-pci
+      hostPath:
+        path: /sys/bus/pci
+        type: Directory
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fnp-frontend-smoke-server2
+  namespace: oai
+  labels:
+    app: fnp-frontend-smoke
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: fnp-frontend-smoke
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: server2
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: fnp-frontend-smoke
+          image: fnp-smoke:v1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              memory: 512Mi
+              hugepages-1Gi: 4Gi
+            limits:
+              memory: 512Mi
+              hugepages-1Gi: 4Gi
+          env:
+            - name: FNP_APP_ID
+              value: fnp
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+              for i in $(seq 1 120); do
+                if [ -S /var/run/dpdk/fnp/mp_socket ] && [ -f /var/run/dpdk/fnp/config ]; then
+                  break
+                fi
+                sleep 1
+              done
+              test -S /var/run/dpdk/fnp/mp_socket
+              test -f /var/run/dpdk/fnp/config
+              sleep 2
+              exec /root/fnp_frontend_smoke \
+                --pairs 4 \
+                --messages 512 \
+                --payload-size 128 \
+                --main-lcore 7 \
+                --service-id 201 \
+                --base-port 41000 \
+                --timeout-ms 5000
+          volumeMounts:
+            - name: hugepages
+              mountPath: /dev/hugepages
+            - name: var-run-dpdk
+              mountPath: /var/run/dpdk
+            - name: vfio
+              mountPath: /dev/vfio
+            - name: sys-bus-pci
+              mountPath: /sys/bus/pci
+              readOnly: true
+      volumes:
+        - name: hugepages
+          hostPath:
+            path: /dev/hugepages
+            type: Directory
+        - name: var-run-dpdk
+          hostPath:
+            path: /var/run/dpdk
+            type: DirectoryOrCreate
+        - name: vfio
+          hostPath:
+            path: /dev/vfio
+            type: DirectoryOrCreate
+        - name: sys-bus-pci
+          hostPath:
+            path: /sys/bus/pci
+            type: Directory

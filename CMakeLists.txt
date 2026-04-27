@@ -346,6 +346,23 @@ target_link_libraries(fnp_gtpu_linux_demo PRIVATE
         atomic
 )
 
+add_executable(fnp_frontend_smoke EXCLUDE_FROM_ALL
+        test/gtpu/fnp_frontend_smoke.c
+)
+target_include_directories(fnp_frontend_smoke PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${DPDK_INCLUDE_DIR}"
+)
+add_dependencies(fnp_frontend_smoke fnp-api-static)
+target_link_libraries(fnp_frontend_smoke PRIVATE
+        fnp-api-fat
+        pthread
+        ${CMAKE_DL_LIBS}
+        m
+        numa
+        atomic
+)
+
 set(FNP_API_DPDK_BUNDLE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fnp_api_dpdk_bundle.o")
 set(FNP_API_FAT_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libfnp-api.a")
 

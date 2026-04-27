@@ -51,7 +51,12 @@ static void recv_data_from_nic()
             continue;
         }
 
-        dev->ops->recv(dev, worker->queue_id, MBUF_BURST_SIZE);
+        u16 received = dev->ops->recv(dev, worker->queue_id, MBUF_BURST_SIZE);
+        if (received > 0)
+        {
+            __atomic_add_fetch(&worker->nic_rx_packets, received, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&worker->nic_rx_bursts, 1, __ATOMIC_RELAXED);
+        }
     }
 }
 
@@ -419,6 +424,8 @@ int init_fnp_worker(worker_config *conf)
         worker->recv_socket_count = 0;
         worker->send_socket_count = 0;
         worker->control_drops = 0;
+        worker->nic_rx_packets = 0;
+        worker->nic_rx_bursts = 0;
 
         // 初始化arp pending table
         char arp_name[32] = {0};

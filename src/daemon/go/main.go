@@ -117,7 +117,8 @@ import (
 
 const maxDpdkArgs = 64
 const maxOtherArgv = 32
-const maxLcores = 4 // must match C-side FNP_MAX_WORKER_NUM
+const maxDpdkLcores = 8   // must match C-side FNP_LCORE_MAX
+const maxWorkerLcores = 4 // must match C-side FNP_MAX_WORKER_NUM
 const maxDevices = 8
 const maxNetworks = 16
 const maxRoutes = 32
@@ -375,8 +376,8 @@ func buildDpdkArgs(goConf *FnpConfig) ([]string, error) {
 }
 
 func setupDpdkArg(goConf *FnpConfig, cConf *C.dpdk_config) C.int {
-	if len(goConf.Dpdk.Lcores) > maxLcores {
-		fmt.Fprintf(os.Stderr, "too many dpdk.lcores: got %d, max is %d\n", len(goConf.Dpdk.Lcores), maxLcores)
+	if len(goConf.Dpdk.Lcores) > maxDpdkLcores {
+		fmt.Fprintf(os.Stderr, "too many dpdk.lcores: got %d, max is %d\n", len(goConf.Dpdk.Lcores), maxDpdkLcores)
 		return -3
 	}
 	if len(goConf.Dpdk.OtherArgv) > maxOtherArgv {
@@ -598,8 +599,8 @@ func parse_fnp_config(path *C.char, conf *C.fnp_config) C.int {
 	}
 
 	//worker Config
-	if len(goConf.Worker.Lcores) > maxLcores {
-		fmt.Fprintf(os.Stderr, "too many worker.lcores: got %d, max is %d\n", len(goConf.Worker.Lcores), maxLcores)
+	if len(goConf.Worker.Lcores) > maxWorkerLcores {
+		fmt.Fprintf(os.Stderr, "too many worker.lcores: got %d, max is %d\n", len(goConf.Worker.Lcores), maxWorkerLcores)
 		return -4
 	}
 

@@ -33,6 +33,8 @@ typedef struct fnp_worker
     u32 recv_socket_count;          // 通过本地hash学习到该worker的接收socket数
     u32 send_socket_count;          // 当前绑定到该worker发送轮询的socket数
     u32 control_drops;              // command入队失败统计
+    u64 nic_rx_packets;             // 当前worker从绑定RX queue收取的包数
+    u64 nic_rx_bursts;              // 当前worker非空RX burst次数
 } fnp_worker_t;
 
 typedef enum fnp_worker_cmd_type
