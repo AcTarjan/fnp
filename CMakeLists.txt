@@ -53,6 +53,7 @@ set(FNP_API_SOURCES
         src/api/fnp_frontend.c
         src/api/fnp_socket.c
         src/api/fnp_epoll.c
+        src/api/fnp_polling.c
 )
 
 set(FNP_DAEMON_DPDK_BUNDLE_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fnp_daemon_dpdk_bundle.o")
@@ -103,7 +104,8 @@ set(FNP_DAEMON_SOURCES
         src/daemon/icmp/icmp.c
         src/daemon/arp/arp.c
         src/daemon/ether/ether.c
-        src/daemon/network/fnp_network.c
+        src/daemon/fnp_device.c
+        src/daemon/ip/fnp_ifaddr.c
         src/daemon/fsocket.c
         src/daemon/fnp_worker.c
         src/common/fnp_msg.c
@@ -118,7 +120,6 @@ set(FNP_DAEMON_INCLUDE_DIRS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/common"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/network"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/gtpu"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/ip"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/daemon/icmp"
@@ -355,6 +356,23 @@ target_include_directories(fnp_frontend_smoke PRIVATE
 )
 add_dependencies(fnp_frontend_smoke fnp-api-static)
 target_link_libraries(fnp_frontend_smoke PRIVATE
+        fnp-api-fat
+        pthread
+        ${CMAKE_DL_LIBS}
+        m
+        numa
+        atomic
+)
+
+add_executable(fnp_node_perf_demo EXCLUDE_FROM_ALL
+        test/gtpu/fnp_node_perf_demo.c
+)
+target_include_directories(fnp_node_perf_demo PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${DPDK_INCLUDE_DIR}"
+)
+add_dependencies(fnp_node_perf_demo fnp-api-static)
+target_link_libraries(fnp_node_perf_demo PRIVATE
         fnp-api-fat
         pthread
         ${CMAKE_DL_LIBS}

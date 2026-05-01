@@ -111,13 +111,14 @@ spec:
             - |
               set -euo pipefail
               for i in $(seq 1 120); do
-                if [ -S /var/run/dpdk/fnp/mp_socket ] && [ -f /var/run/dpdk/fnp/config ]; then
+                if [ -S /var/run/dpdk/fnp/mp_socket ] && [ -f /var/run/dpdk/fnp/config ] && [ -f /var/run/dpdk/fnp/ready ]; then
                   break
                 fi
                 sleep 1
               done
               test -S /var/run/dpdk/fnp/mp_socket
               test -f /var/run/dpdk/fnp/config
+              test -f /var/run/dpdk/fnp/ready
               sleep 2
               exec /root/fnp_frontend_smoke \
                 --pairs 4 \

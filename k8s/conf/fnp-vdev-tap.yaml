@@ -42,5 +42,5 @@ worker:
   mbuf_pool_size: 4095
   clone_pool_size: 4095
   rx_pool_size: 4095
-  tx_ring_size: 8192 #发送环形队列大小, 必须是2的幂
+  worker_tx_ring_size: 8192 #发送环形队列大小, 必须是2的幂
   lcores: [ 3 ] # 每个worker按顺序绑定的lcore

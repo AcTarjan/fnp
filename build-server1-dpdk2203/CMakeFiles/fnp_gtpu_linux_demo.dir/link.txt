@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG CMakeFiles/fnp_gtpu_linux_demo.dir/test/gtpu/gtpu_linux_demo.c.o -o fnp_gtpu_linux_demo  libfnp-api.a -lpthread -ldl -lm -lnuma -latomic 

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "fnp_internal.h"
 
 #include "fnp_api.h"
@@ -12,6 +13,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 
 fnp_frontend_t *frontend = NULL;
@@ -87,62 +89,6 @@ void frontend_cleanup_local_state(void)
     memset(&frontend_local, 0, sizeof(frontend_local));
 }
 
-void frontend_release_direct_notify_fd(fsocket_t *shared_socket)
-{
-    if (shared_socket == NULL)
-    {
-        return;
-    }
-
-    if (shared_socket->direct_rx_efd_in_frontend >= 0)
-    {
-        close(shared_socket->direct_rx_efd_in_frontend);
-        shared_socket->direct_rx_efd_in_frontend = -1;
-    }
-
-    shared_socket->direct_notify_peer = NULL;
-}
-
-int frontend_prepare_direct_notify_fd(fsocket_t *shared_socket)
-{
-    if (shared_socket == NULL || shared_socket->direct_peer == NULL)
-    {
-        frontend_release_direct_notify_fd(shared_socket);
-        return FNP_ERR_NOT_FOUND;
-    }
-
-    if (fsocket_direct_notify_ready(shared_socket))
-    {
-        return FNP_OK;
-    }
-
-    frontend_release_direct_notify_fd(shared_socket);
-
-    struct rte_mp_msg msg = {0};
-    struct rte_mp_reply reply = {0};
-    struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
-    sprintf(msg.name, FAPI_GTPU_LDP_ATTACH_ACTION_NAME);
-    msg.len_param = sizeof(fapi_common_req_t);
-    ((fapi_common_req_t *)msg.param)->ptr = shared_socket;
-
-    if (!(rte_mp_request_sync(&msg, &reply, &ts) == 0 && reply.nb_received == 1))
-    {
-        return FNP_ERR_TIMEOUT;
-    }
-
-    struct rte_mp_msg *reply_msg = &reply.msgs[0];
-    fapi_common_resp_t *resp = (fapi_common_resp_t *)reply_msg->param;
-    int ret = resp->code;
-    if (ret == FNP_OK && reply_msg->num_fds == 1)
-    {
-        shared_socket->direct_rx_efd_in_frontend = reply_msg->fds[0];
-        shared_socket->direct_notify_peer = resp->ptr;
-    }
-
-    free(reply.msgs);
-    return ret;
-}
-
 fnp_socket_t *frontend_add_fsocket(fsocket_t *shared_socket, const void *conf, u16 conf_len)
 {
     if (shared_socket == NULL || conf_len > FAPI_SOCKET_CONF_MAX_LEN)
@@ -211,20 +157,6 @@ void frontend_remove_fsocket(fnp_socket_t *socket)
     }
 
     fsocket_t *shared_socket = socket->shared;
-    if (socket->wait_epfd >= 0 && shared_socket->rx_efd_in_frontend >= 0)
-    {
-        epoll_ctl(socket->wait_epfd, EPOLL_CTL_DEL, shared_socket->rx_efd_in_frontend, NULL);
-    }
-
-    fsocket_frontend_flags_clear(shared_socket, FSOCKET_FRONTEND_FLAG_EVENTFD | FSOCKET_FRONTEND_FLAG_POLLING);
-    frontend_release_direct_notify_fd(shared_socket);
-
-    if (shared_socket->rx_efd_in_frontend >= 0)
-    {
-        close(shared_socket->rx_efd_in_frontend);
-        shared_socket->rx_efd_in_frontend = -1;
-    }
-
     if (shared_socket->tx_efd_in_frontend >= 0)
     {
         close(shared_socket->tx_efd_in_frontend);
@@ -256,20 +188,6 @@ fnp_socket_t *frontend_get_fsocket(u32 slot_index)
     return frontend_local.sockets[slot_index];
 }
 
-int frontend_try_dequeue_mbuf(fnp_socket_t *socket, struct rte_mbuf **m)
-{
-    if (socket == NULL || socket->shared == NULL || m == NULL)
-    {
-        return FNP_ERR_BAD_FD;
-    }
-
-    if (!fnp_ring_dequeue(socket->shared->rx, (void **)m))
-    {
-        return FNP_ERR_EMPTY;
-    }
-
-    return FNP_OK;
-}
 
 fnp_mbuf_t *fnp_alloc_mbuf()
 {
@@ -283,12 +201,12 @@ fnp_mbuf_t *fnp_alloc_mbuf()
 
 void fnp_free_mbuf(fnp_mbuf_t *m)
 {
-    if (m == NULL)
-    {
-        return;
-    }
-
     rte_pktmbuf_free(m);
+}
+
+void fnp_free_mbuf_bulk(fnp_mbuf_t **m, u32 count)
+{
+    rte_pktmbuf_free_bulk(m, count);
 }
 
 const fnp_ifaddr_info_t *fnp_get_ifaddrs(u16 *ifaddr_count)
@@ -424,8 +342,8 @@ int fnp_init(fnp_init_conf_t *conf)
         return FNP_ERR_PARAM;
     }
 
-    char main_lcore_argv[16];
-    sprintf(main_lcore_argv, "--main-lcore=%d", conf->main_lcore);
+    char main_lcore_argv[32];
+    snprintf(main_lcore_argv, sizeof(main_lcore_argv), "--main-lcore=%d", conf->main_lcore);
 
     const char *app_id = getenv("FNP_APP_ID");
     if (app_id == NULL || app_id[0] == 0)

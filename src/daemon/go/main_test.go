@@ -24,7 +24,7 @@ worker:
   mbuf_pool_size: 4095
   clone_pool_size: 4095
   rx_pool_size: 4095
-  tx_ring_size: 8192
+  worker_tx_ring_size: 8192
 `))
 	if err == nil {
 		t.Fatal("expected unknown field error, got nil")
@@ -49,7 +49,7 @@ worker:
   mbuf_pool_size: 4095
   clone_pool_size: 4095
   rx_pool_size: 4095
-  tx_ring_size: 8192
+  worker_tx_ring_size: 8192
 `))
 	if err == nil {
 		t.Fatal("expected unsupported tap device type error, got nil")

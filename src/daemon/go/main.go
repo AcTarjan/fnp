@@ -79,13 +79,15 @@ typedef struct{
 	int mbuf_pool_size;
 	int clone_pool_size;
 	int rx_pool_size;
-	int tx_ring_size;		//发送环形队列大小
+	int worker_tx_ring_size;		//worker发送环形队列大小
 }worker_config;
 
 typedef struct {
 	dpdk_config dpdk;
 	network_config network;
 	worker_config worker;
+	int socket_rx_ring_size;
+	int socket_tx_ring_size;
 } fnp_config;
 
 static inline int fnp_device_ifaddr_max(void) {
@@ -168,17 +170,19 @@ type NetworkSection struct {
 }
 
 type WorkerConfig struct {
-	Lcores        []int `yaml:"lcores"`
-	MbufPoolSize  int   `yaml:"mbuf_pool_size"`
-	ClonePoolSize int   `yaml:"clone_pool_size"`
-	RxPoolSize    int   `yaml:"rx_pool_size"`
-	TxRingSize    int   `yaml:"tx_ring_size"`
+	Lcores            []int `yaml:"lcores"`
+	MbufPoolSize      int   `yaml:"mbuf_pool_size"`
+	ClonePoolSize     int   `yaml:"clone_pool_size"`
+	RxPoolSize        int   `yaml:"rx_pool_size"`
+	WorkerTxRingSize  int   `yaml:"worker_tx_ring_size"`
 }
 
 type FnpConfig struct {
-	Dpdk    DpdkConfig     `yaml:"dpdk"`
-	Network NetworkSection `yaml:"network"`
-	Worker  WorkerConfig   `yaml:"worker"`
+	Dpdk             DpdkConfig     `yaml:"dpdk"`
+	Network          NetworkSection `yaml:"network"`
+	Worker           WorkerConfig   `yaml:"worker"`
+	SocketRxRingSize int            `yaml:"socket_rx_ring_size"`
+	SocketTxRingSize int            `yaml:"socket_tx_ring_size"`
 }
 
 func normalizeDeviceType(deviceType string) string {
@@ -231,6 +235,24 @@ func validateConfig(goConf *FnpConfig) error {
 		}
 	}
 
+	if goConf.SocketRxRingSize == 0 {
+		goConf.SocketRxRingSize = 8192
+	}
+	if goConf.SocketTxRingSize == 0 {
+		goConf.SocketTxRingSize = 8192
+	}
+	if goConf.SocketRxRingSize < 2 || goConf.SocketRxRingSize&(goConf.SocketRxRingSize-1) != 0 {
+		return fmt.Errorf("socket_rx_ring_size must be a power of two and at least 2")
+	}
+	if goConf.SocketTxRingSize < 2 || goConf.SocketTxRingSize&(goConf.SocketTxRingSize-1) != 0 {
+		return fmt.Errorf("socket_tx_ring_size must be a power of two and at least 2")
+	}
+	if goConf.Worker.WorkerTxRingSize == 0 {
+		goConf.Worker.WorkerTxRingSize = 8192
+	}
+	if goConf.Worker.WorkerTxRingSize < 2 || goConf.Worker.WorkerTxRingSize&(goConf.Worker.WorkerTxRingSize-1) != 0 {
+		return fmt.Errorf("worker.worker_tx_ring_size must be a power of two and at least 2")
+	}
 	return nil
 }
 
@@ -607,7 +629,9 @@ func parse_fnp_config(path *C.char, conf *C.fnp_config) C.int {
 	conf.worker.mbuf_pool_size = C.int(goConf.Worker.MbufPoolSize)
 	conf.worker.clone_pool_size = C.int(goConf.Worker.ClonePoolSize)
 	conf.worker.rx_pool_size = C.int(goConf.Worker.RxPoolSize)
-	conf.worker.tx_ring_size = C.int(goConf.Worker.TxRingSize)
+	conf.worker.worker_tx_ring_size = C.int(goConf.Worker.WorkerTxRingSize)
+	conf.socket_rx_ring_size = C.int(goConf.SocketRxRingSize)
+	conf.socket_tx_ring_size = C.int(goConf.SocketTxRingSize)
 	conf.worker.lcores_count = C.int(len(goConf.Worker.Lcores))
 	for i, lcore := range goConf.Worker.Lcores {
 		conf.worker.lcores[i] = C.int(lcore)

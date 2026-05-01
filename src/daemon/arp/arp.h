@@ -3,7 +3,7 @@
 
 #include "fnp_common.h"
 #include "fnp_list.h"
-#include "fnp_network.h"
+#include "fnp_ifaddr.h"
 #include <rte_ether.h>
 #include <rte_timer.h>
 

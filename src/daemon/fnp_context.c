@@ -7,6 +7,7 @@
 
 #include "arp.h"
 #include "ipv4.h"
+#include "fnp_ifaddr.h"
 #include "route.h"
 #include "icmp.h"
 #include "gtpu.h"
@@ -56,7 +57,7 @@ i32 init_fnp_daemon(char *path)
     ret = init_fnp_worker(&conf->worker);
     CHECK_RET(ret);
 
-    ret = init_fnp_device_layer(conf);
+    ret = init_ether_device_layer(conf);
     CHECK_RET(ret);
 
     ret = init_fnp_ifaddr_layer(conf);

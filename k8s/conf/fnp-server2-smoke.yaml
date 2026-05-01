@@ -33,5 +33,5 @@ worker:
   mbuf_pool_size: 8191
   clone_pool_size: 8191
   rx_pool_size: 8191
-  tx_ring_size: 8192
+  worker_tx_ring_size: 8192
   lcores: [3, 4, 5, 6]

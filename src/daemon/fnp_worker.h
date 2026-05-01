@@ -19,22 +19,17 @@
 typedef struct fnp_worker
 {
     i32 id;
-    i32 queue_id;                   // 网卡的queue_id, 等于worker_id
-    i32 lcore_id;                   // 所在的lcore
-    i32 epoll_fd;                   // 监听socket的tx和net_rx事件
-    int polling_count;              // 当前轮询的socket数量
-    fsocket_t *polling_table[1024]; // 正在轮询的fsocket列表
-    struct rte_mempool *pool;       // 内存池
-    struct rte_mempool *rx_pool;    // 接收内存池, 用于网卡接收数据包
-    struct rte_mempool *clone_pool; // 间接内存池, 用于clone
-    fnp_ring_t *control_ring;       // 当前worker的control command队列
-    rte_hash *arp_table;            // 等待arp结果的待发送的mbuf列表, key为tip
-    struct rte_hash *gtpu_rx_tbl;   // GTP-U 本地接收hash
-    u32 recv_socket_count;          // 通过本地hash学习到该worker的接收socket数
-    u32 send_socket_count;          // 当前绑定到该worker发送轮询的socket数
-    u32 control_drops;              // command入队失败统计
-    u64 nic_rx_packets;             // 当前worker从绑定RX queue收取的包数
-    u64 nic_rx_bursts;              // 当前worker非空RX burst次数
+    i32 queue_id;                         // 网卡的queue_id, 等于worker_id
+    i32 lcore_id;                         // 所在的lcore
+    int egress_socket_count;              // 当前轮询的socket数量
+    fsocket_t *egress_socket_table[1024]; // 正在轮询的fsocket列表
+    struct rte_hash *gtpu_rx_tbl;         // GTP-U 本地接收hash，由RSS确定
+    u32 ingress_socket_count;             // 通过本地hash学习到该worker的接收socket数
+    struct rte_mempool *pool;             // 内存池
+    struct rte_mempool *rx_pool;          // 接收内存池, 用于网卡接收数据包
+    struct rte_mempool *clone_pool;       // 间接内存池, 用于clone
+    fnp_ring_t *control_ring;             // 当前worker的control command队列
+    rte_hash *arp_table;                  // 等待arp结果的待发送的mbuf列表, key为tip
 } fnp_worker_t;
 
 typedef enum fnp_worker_cmd_type
@@ -135,7 +130,7 @@ int fnp_worker_close_fsocket(fsocket_t *socket);
 
 void fnp_worker_process_control(fnp_worker_t *worker);
 
-void fnp_worker_handle_polling_once(fnp_worker_t *worker, u64 tsc);
+void worker_handle_polling_fsocket(fnp_worker_t *worker, u64 tsc);
 
 int init_fnp_worker(worker_config *conf);
 

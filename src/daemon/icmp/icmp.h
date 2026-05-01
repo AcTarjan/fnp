@@ -1,7 +1,7 @@
 #ifndef FNP_ICMP_H
 #define FNP_ICMP_H
 
-#include "fnp_network.h"
+#include "fnp_ifaddr.h"
 
 int icmp_module_init(void);
 

@@ -7,6 +7,7 @@
 #include "fnp_api.h"
 #include "fapi.h"
 #include "hash.h"
+#include "gtpu.h"
 
 #include <errno.h>
 #include <rte_ethdev.h>
@@ -154,8 +155,6 @@ static void check_daemon_info(FILE *fp)
 
 static void write_worker_rx_info(FILE *fp)
 {
-    static u64 prev_packets[FNP_MAX_WORKER_NUM] = {0};
-
     fprintf(fp, "worker_rx");
     for (int id = 0; id < get_fnp_worker_count(); ++id)
     {
@@ -165,22 +164,20 @@ static void write_worker_rx_info(FILE *fp)
             continue;
         }
 
-        u64 packets = __atomic_load_n(&worker->nic_rx_packets, __ATOMIC_RELAXED);
-        u64 bursts = __atomic_load_n(&worker->nic_rx_bursts, __ATOMIC_RELAXED);
-        u64 delta = packets - prev_packets[id];
-        prev_packets[id] = packets;
         fprintf(fp,
-                " worker%d_queue%d_packets=%llu worker%d_delta=%llu worker%d_bursts=%llu",
+                " worker%d_queue%d_ingress_sockets=%u worker%d_egress_sockets=%d",
                 worker->id,
                 worker->queue_id,
-                (unsigned long long)packets,
+                worker->ingress_socket_count,
                 worker->id,
-                (unsigned long long)delta,
-                worker->id,
-                (unsigned long long)bursts);
+                worker->egress_socket_count);
     }
     fprintf(fp, "\n");
     fflush(fp);
+}
+
+static void log_device_eth_stats_from_master(void)
+{
 }
 
 int fnp_master_add_fsocket(fsocket_t *socket)
@@ -313,6 +310,7 @@ void fnp_master_loop()
                 read(timerfd, &expirations, sizeof(expirations)); // 清除定时器计数
                 check_frontend_alive();
                 write_worker_rx_info(fp);
+                log_device_eth_stats_from_master();
                 // check_daemon_info(fp);
                 // show_all_fsocket();
             }
@@ -386,13 +384,6 @@ int init_fnp_master()
     if (ret != 0)
     {
         printf("fail to register action of %s\n", FAPI_CLOSE_FSOCKET_ACTION_NAME);
-        return ret;
-    }
-
-    ret = rte_mp_action_register(FAPI_GTPU_LDP_ATTACH_ACTION_NAME, gtpu_ldp_attach_action);
-    if (ret != 0)
-    {
-        printf("fail to register action of %s\n", FAPI_GTPU_LDP_ATTACH_ACTION_NAME);
         return ret;
     }
 

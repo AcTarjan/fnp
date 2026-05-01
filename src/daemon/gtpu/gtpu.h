@@ -9,6 +9,8 @@
 
 int gtpu_module_init(void);
 
+fsocket_t *gtpu_create_transport(void *conf, void *ctx);
+
 void gtpu_udp_input(struct rte_mbuf *m);
 
 int gtpu_export_socket_conf(const fsocket_t *socket, fnp_gtpu_socket_conf_t *conf);

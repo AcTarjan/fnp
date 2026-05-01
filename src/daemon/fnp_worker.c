@@ -1,13 +1,15 @@
 #include "fnp_worker.h"
 #include "fnp_msg.h"
 #include "fnp_context.h"
-#include "fnp_network.h"
+#include "fnp_device.h"
 #include "fnp_ring.h"
+#include "transport.h"
 
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
 #include <rte_per_lcore.h>
+#include <rte_ethdev.h>
 #include <unistd.h>
 
 #include "arp.h"
@@ -16,7 +18,6 @@
 RTE_DEFINE_PER_LCORE(int, worker_id);
 RTE_DEFINE_PER_LCORE(uint64_t, tsc_cycles);
 
-#define MBUF_BURST_SIZE 64
 #define FNP_WORKER_CONTROL_RING_SIZE 1024
 
 int get_fnp_worker_count(void)
@@ -39,45 +40,9 @@ fnp_worker_t *get_fnp_worker(int id)
     return &fnp.worker.workers[id];
 }
 
-static void recv_data_from_nic()
-{
-    fnp_worker_t *worker = get_local_worker();
-
-    for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
-    {
-        fnp_device_t *dev = get_fnp_device(dev_index);
-        if (dev == NULL || dev->ops == NULL || dev->ops->recv == NULL)
-        {
-            continue;
-        }
-
-        u16 received = dev->ops->recv(dev, worker->queue_id, MBUF_BURST_SIZE);
-        if (received > 0)
-        {
-            __atomic_add_fetch(&worker->nic_rx_packets, received, __ATOMIC_RELAXED);
-            __atomic_add_fetch(&worker->nic_rx_bursts, 1, __ATOMIC_RELAXED);
-        }
-    }
-}
-
-static void send_data_to_net()
-{
-    fnp_worker_t *worker = get_local_worker();
-    for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
-    {
-        fnp_device_t *dev = get_fnp_device(dev_index);
-        if (unlikely(dev == NULL || !is_ethernet_device(dev)))
-        {
-            continue;
-        }
-
-        fnp_device_flush_tx(dev, worker->queue_id, MBUF_BURST_SIZE);
-    }
-}
-
 static int fnp_worker_load(const fnp_worker_t *worker)
 {
-    return worker == NULL ? INT32_MAX : (int)(worker->recv_socket_count + worker->send_socket_count);
+    return worker == NULL ? INT32_MAX : (int)(worker->ingress_socket_count + worker->egress_socket_count);
 }
 
 static fnp_worker_t *select_send_worker(void)
@@ -102,28 +67,18 @@ static fnp_worker_t *select_command_worker(const fsocket_t *socket)
 {
     if (socket != NULL)
     {
-        if (socket->polling_worker >= 0)
+        if (socket->egress_worker >= 0)
         {
-            fnp_worker_t *worker = get_fnp_worker(socket->polling_worker);
+            fnp_worker_t *worker = get_fnp_worker(socket->egress_worker);
             if (worker != NULL)
             {
                 return worker;
             }
         }
 
-        int owner_worker = fsocket_get_owner_worker(socket);
-        if (owner_worker >= 0)
+        if (socket->ingress_worker >= 0)
         {
-            fnp_worker_t *worker = get_fnp_worker(owner_worker);
-            if (worker != NULL)
-            {
-                return worker;
-            }
-        }
-
-        if (socket->recv_worker_id >= 0)
-        {
-            fnp_worker_t *worker = get_fnp_worker(socket->recv_worker_id);
+            fnp_worker_t *worker = get_fnp_worker(socket->ingress_worker);
             if (worker != NULL)
             {
                 return worker;
@@ -144,7 +99,6 @@ static int worker_enqueue_command(fnp_worker_t *worker, fnp_worker_cmd_type_t ty
     fnp_worker_cmd_t *cmd = fnp_malloc(sizeof(*cmd));
     if (cmd == NULL)
     {
-        worker->control_drops++;
         return FNP_ERR_MALLOC;
     }
 
@@ -152,7 +106,6 @@ static int worker_enqueue_command(fnp_worker_t *worker, fnp_worker_cmd_type_t ty
     cmd->socket = socket;
     if (fnp_ring_enqueue(worker->control_ring, cmd) == 0)
     {
-        worker->control_drops++;
         fnp_free(cmd);
         return FNP_ERR_RING_FULL;
     }
@@ -168,63 +121,52 @@ static int worker_add_fsocket_local(fnp_worker_t *worker, fsocket_t *socket)
     }
 
     fsocket_polling_clear_scheduled(socket);
-    if (socket->polling_worker >= 0)
+    if (socket->egress_worker >= 0)
     {
         return FNP_OK;
     }
 
-    if (worker->polling_count >= (int)RTE_DIM(worker->polling_table))
+    if (worker->egress_socket_count >= (int)RTE_DIM(worker->egress_socket_table))
     {
         fsocket_polling_clear_scheduled(socket);
         return FNP_ERR_FULL;
     }
 
-    socket->polling_worker = worker->id;
-    fsocket_set_owner_worker(socket, worker->id);
-    worker->polling_table[worker->polling_count++] = socket;
-    worker->send_socket_count++;
+    socket->egress_worker = worker->id;
+    worker->egress_socket_table[worker->egress_socket_count++] = socket;
     FNP_DEBUG("worker_add_fsocket_local: worker=%d socket=%s type=%d polling_count=%d\n",
-              worker->id, socket->name, socket->type, worker->polling_count);
+              worker->id, socket->name, socket->type, worker->egress_socket_count);
     return FNP_OK;
 }
 
 static int worker_remove_fsocket_local(fnp_worker_t *worker, fsocket_t *socket)
 {
-    if (socket == NULL)
-    {
-        return FNP_ERR_PARAM;
-    }
-
     fsocket_polling_clear_scheduled(socket);
 
     if (worker == NULL)
     {
-        worker = get_fnp_worker(socket->polling_worker);
+        worker = get_fnp_worker(socket->egress_worker);
     }
-    if (worker == NULL || socket->polling_worker != worker->id)
+    if (worker == NULL || socket->egress_worker != worker->id)
     {
-        socket->polling_worker = -1;
+        socket->egress_worker = -1;
         return FNP_OK;
     }
 
-    for (int i = 0; i < worker->polling_count; ++i)
+    for (int i = 0; i < worker->egress_socket_count; ++i)
     {
-        if (worker->polling_table[i] != socket)
+        if (worker->egress_socket_table[i] != socket)
         {
             continue;
         }
 
-        worker->polling_count--;
-        worker->polling_table[i] = worker->polling_table[worker->polling_count];
-        worker->polling_table[worker->polling_count] = NULL;
-        if (worker->send_socket_count > 0)
-        {
-            worker->send_socket_count--;
-        }
+        worker->egress_socket_count--;
+        worker->egress_socket_table[i] = worker->egress_socket_table[worker->egress_socket_count];
+        worker->egress_socket_table[worker->egress_socket_count] = NULL;
         break;
     }
 
-    socket->polling_worker = -1;
+    socket->egress_worker = -1;
     return FNP_OK;
 }
 
@@ -266,7 +208,7 @@ int fnp_worker_remove_fsocket(fsocket_t *socket)
     fnp_worker_t *worker = select_command_worker(socket);
     if (worker == NULL)
     {
-        socket->polling_worker = -1;
+        socket->egress_worker = -1;
         return FNP_ERR_NOT_FOUND;
     }
 
@@ -289,7 +231,7 @@ void fnp_worker_process_control(fnp_worker_t *worker)
     fnp_worker_cmd_t *cmd = NULL;
     while (fnp_ring_dequeue(worker->control_ring, (void **)&cmd) != 0)
     {
-        if (cmd == NULL || cmd->socket == NULL)
+        if (unlikely(cmd == NULL || cmd->socket == NULL))
         {
             fnp_free(cmd);
             continue;
@@ -305,13 +247,13 @@ void fnp_worker_process_control(fnp_worker_t *worker)
             break;
         case fnp_worker_cmd_close_socket:
         {
-            const fsocket_ops_t *ops = get_fsocket_ops(cmd->socket->type);
             if (fsocket_enter_closing(cmd->socket))
             {
                 worker_remove_fsocket_local(worker, cmd->socket);
-                if (ops != NULL && ops->close != NULL)
+                transport_context_t *transport = transport_from_socket(cmd->socket);
+                if (transport->ops != NULL && transport->ops->close != NULL)
                 {
-                    ops->close(cmd->socket);
+                    transport->ops->close(transport);
                 }
             }
             break;
@@ -324,35 +266,51 @@ void fnp_worker_process_control(fnp_worker_t *worker)
     }
 }
 
-void fnp_worker_handle_polling_once(fnp_worker_t *worker, u64 tsc)
+void worker_handle_polling_fsocket(fnp_worker_t *worker, u64 tsc)
 {
-    int size = worker->polling_count;
+    int size = worker->egress_socket_count;
     for (int i = 0; i < size; i++)
     {
-        fsocket_t *socket = worker->polling_table[i];
-        const fsocket_ops_t *ops = get_fsocket_ops(socket->type);
-        fsocket_send_func send = ops == NULL ? NULL : ops->send;
-        if (likely(send != NULL))
-        {
-            u32 pending = socket->tx == NULL ? 0 : fnp_ring_count(socket->tx);
-            if (pending > 0)
-            {
-                FNP_DEBUG("worker_handle_polling: worker=%d socket=%s type=%d pending_tx=%u\n",
-                          worker->id, socket->name, socket->type, pending);
-            }
-            send(socket, tsc); // 执行发送轮询
-        }
+        fsocket_t *socket = worker->egress_socket_table[i];
+        transport_context_t *transport = transport_from_socket(socket);
+        transport->ops->send(transport, tsc); // 发送fsocket的数据
+
         if (unlikely(tsc - socket->polling_tsc > RTE_PER_LCORE(tsc_cycles))) // 长时间没有数据, 不再polling
         {
             printf("remove fsocket from worker\n");
             worker_remove_fsocket_local(worker, socket);
-            if (!fsocket_is_closing(socket) && socket->tx != NULL && fnp_ring_count(socket->tx) > 0)
-            {
-                // 退场窗口里如果应用刚写入了 tx ring，重新调度 polling，避免数据滞留。
-                fnp_worker_add_fsocket(socket);
-            }
             size--; // 数量减少
             i--;
+        }
+    }
+}
+
+static void ether_device_recv_mbufs(fnp_worker_t *worker)
+{
+    for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
+    {
+        fnp_device_t *dev = get_fnp_device(dev_index);
+        dev->ops->recv(dev, worker->queue_id);
+    }
+}
+
+static void ether_device_flush_mbufs(fnp_worker_t *worker)
+{
+#define DEVICE_TX_MAX_BURST_SIZE 512
+    for (int dev_index = 0; dev_index < get_fnp_device_count(); ++dev_index)
+    {
+        fnp_device_t *dev = get_fnp_device(dev_index);
+        fnp_ring_t *tx_ring = get_device_tx_ring(dev, worker->queue_id);
+        struct rte_mbuf *mbufs[DEVICE_TX_MAX_BURST_SIZE] = {0};
+
+        u16 tx_num = fnp_ring_dequeue_burst(tx_ring, (void **)mbufs, DEVICE_TX_MAX_BURST_SIZE);
+        if (likely(tx_num > 0))
+        {
+            u16 sent = rte_eth_tx_burst(dev->port_id, worker->queue_id, mbufs, tx_num);
+            if (unlikely(sent < tx_num))
+            {
+                rte_pktmbuf_free_bulk(&mbufs[sent], tx_num - sent);
+            }
         }
     }
 }
@@ -377,7 +335,7 @@ int fnp_worker_loop(void *arg)
         cur_tsc = fnp_get_tsc();
 
         // 收取底层device上的报文，并在device接收入口内完成协议分发
-        recv_data_from_nic();
+        ether_device_recv_mbufs(worker);
 
         //  每1ms检查定时器状态
         if (unlikely(cur_tsc - prev_tsc > timer_timeout))
@@ -390,10 +348,10 @@ int fnp_worker_loop(void *arg)
         fnp_worker_process_control(worker);
 
         // polling发包
-        fnp_worker_handle_polling_once(worker, cur_tsc);
+        worker_handle_polling_fsocket(worker, cur_tsc);
 
         // 从网卡向网络发送数据
-        send_data_to_net();
+        ether_device_flush_mbufs(worker);
     }
 }
 
@@ -420,13 +378,8 @@ int init_fnp_worker(worker_config *conf)
         worker->lcore_id = conf->lcores[id];
         i32 socket_id = (i32)rte_lcore_to_socket_id(worker->lcore_id);
 
-        worker->polling_count = 0;
-        worker->recv_socket_count = 0;
-        worker->send_socket_count = 0;
-        worker->control_drops = 0;
-        worker->nic_rx_packets = 0;
-        worker->nic_rx_bursts = 0;
-
+        worker->egress_socket_count = 0;
+        worker->ingress_socket_count = 0;
         // 初始化arp pending table
         char arp_name[32] = {0};
         sprintf(arp_name, "worker%d_arp_tbl", id);
@@ -434,13 +387,6 @@ int init_fnp_worker(worker_config *conf)
         if (worker->arp_table == NULL)
         {
             return FNP_ERR_CREATE_HASH_TABLE;
-        }
-
-        worker->epoll_fd = fmsg_epoll_create();
-        if (worker->epoll_fd < 0)
-        {
-            printf("create epoll fd failed!\n");
-            return FNP_ERR_CREATE_EPOLL;
         }
 
         worker->control_ring = fnp_ring_create(FNP_WORKER_CONTROL_RING_SIZE, true, false);

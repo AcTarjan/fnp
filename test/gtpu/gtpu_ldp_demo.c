@@ -6,6 +6,7 @@
 #include "fnp_internal.h"
 
 #define DEMO_EXPLICIT_LOCAL_PORT 41001
+#define DEMO_RECEIVER_LOCAL_PORT 41002
 
 typedef struct ldp_demo_result
 {
@@ -73,8 +74,10 @@ int main(void)
     fnp_gtpu_socket_conf_t resolved_receiver = {0};
     fnp_socket_t *sender = NULL;
     fnp_socket_t *receiver = NULL;
-    int epfd = -1;
 
+    receiver_conf.local.family = FSOCKADDR_IPV4;
+    receiver_conf.local.ip = ifaddrs[1].ip;
+    receiver_conf.local.port = htons(DEMO_RECEIVER_LOCAL_PORT);
     receiver_conf.remote.family = FSOCKADDR_IPV4;
     receiver_conf.remote.ip = ifaddrs[0].ip;
     receiver_conf.remote.port = htons(DEMO_EXPLICIT_LOCAL_PORT);
@@ -96,20 +99,19 @@ int main(void)
         goto out;
     }
 
-    if (resolved_receiver.send_ip != ifaddrs[1].ip ||
-        resolved_receiver.send_port == 0 ||
-        ntohs(resolved_receiver.send_port) == FNP_GTPU_UDP_PORT ||
-        resolved_receiver.send_port == receiver_conf.remote.port)
+    if (resolved_receiver.local.ip != receiver_conf.local.ip ||
+        resolved_receiver.local.port != receiver_conf.local.port)
     {
         fprintf(stderr, "receiver resolved local is unexpected\n");
         goto out;
     }
 
-    sender_conf.send_ip = ifaddrs[0].ip;
-    sender_conf.send_port = htons(DEMO_EXPLICIT_LOCAL_PORT);
+    sender_conf.local.family = FSOCKADDR_IPV4;
+    sender_conf.local.ip = ifaddrs[0].ip;
+    sender_conf.local.port = htons(DEMO_EXPLICIT_LOCAL_PORT);
     sender_conf.remote.family = FSOCKADDR_IPV4;
-    sender_conf.remote.ip = resolved_receiver.send_ip;
-    sender_conf.remote.port = resolved_receiver.send_port;
+    sender_conf.remote.ip = receiver_conf.local.ip;
+    sender_conf.remote.port = receiver_conf.local.port;
     sender_conf.incoming_teid = 0x1001;
     sender_conf.outgoing_teid = 0x1002;
 
@@ -128,34 +130,20 @@ int main(void)
         goto out;
     }
 
-    if (resolved_sender.send_ip != ifaddrs[0].ip ||
-        resolved_sender.send_port != htons(DEMO_EXPLICIT_LOCAL_PORT))
+    if (resolved_sender.local.ip != sender_conf.local.ip ||
+        resolved_sender.local.port != sender_conf.local.port)
     {
         fprintf(stderr, "sender resolved local is unexpected\n");
         goto out;
     }
 
-    if (sender->shared->direct_peer != receiver->shared || receiver->shared->direct_peer != sender->shared)
+    if (sender->shared->tx_efd_in_backend >= 0 || receiver->shared->tx_efd_in_backend >= 0)
     {
         fprintf(stderr, "LDP pair was not established\n");
         goto out;
     }
 
-    epfd = fnp_epoll_create();
-    if (epfd < 0)
-    {
-        fprintf(stderr, "create epoll failed: %d\n", epfd);
-        goto out;
-    }
-
     ldp_demo_result_t result = {0};
-    ret = fnp_epoll_add(epfd, receiver, ldp_demo_handler, &result);
-    if (ret != FNP_OK)
-    {
-        fprintf(stderr, "epoll add failed: %d\n", ret);
-        goto out;
-    }
-
     const char *payload = "gtpu-ldp-ok";
     fnp_mbuf_t *m = fnp_alloc_mbuf();
     if (m == NULL)
@@ -175,16 +163,25 @@ int main(void)
         goto out;
     }
 
-    if (sender->shared->polling_worker >= 0)
+    if (sender->shared->egress_worker >= 0)
     {
-        fprintf(stderr, "LDP send unexpectedly activated daemon send worker %d\n", sender->shared->polling_worker);
+        fprintf(stderr, "LDP send unexpectedly activated daemon send worker %d\n", sender->shared->egress_worker);
         goto out;
     }
 
-    ret = fnp_epoll_wait(epfd, 1000, 8);
-    if (ret <= 0 || !result.received)
+    for (int i = 0; i < 1000 && !result.received; ++i)
     {
-        fprintf(stderr, "epoll recv failed: %d\n", ret);
+        ret = fnp_polling(receiver, ldp_demo_handler, &result);
+        if (ret < 0)
+        {
+            break;
+        }
+        fnp_sleep(1000);
+    }
+
+    if (!result.received)
+    {
+        fprintf(stderr, "polling recv failed: %d\n", ret);
         goto out;
     }
 
@@ -198,10 +195,6 @@ int main(void)
     status = 0;
 
 out:
-    if (epfd >= 0)
-    {
-        fnp_epoll_destroy(epfd);
-    }
     if (receiver != NULL)
     {
         fnp_socket_close(receiver);

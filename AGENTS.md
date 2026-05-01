@@ -9,7 +9,7 @@
 - 正常运行时通过 DPDK 接管物理网卡。
 - 测试态现在可以通过 DPDK TAP `vdev` 与内核协议栈互通，参考 [fnp-tap.yaml](/root/fnp/conf/fnp-tap.yaml) 和 [setup-tap-test.sh](/root/fnp/deploy/setup-tap-test.sh)。
 
-当前仓库里，UDP 路径最完整；TCP 已有真实状态机和数据通路；QUIC 后端代码很多，但前端公开 API 还没有完整接通。
+当前仓库已收敛到 RAN GTP-U 优先路径。UDP 模块已删除；GTP-U 是当前主要传输层协议实体，位于前端应用和 IPv4 网络层之间。frontend 只保留 polling 收包接口；epoll/eventfd 接收路径不再作为性能路径维护。
 
 ## 先信什么，后信什么
 
@@ -39,8 +39,10 @@
   - `fnp_context.*` 初始化全局上下文。
   - `fnp_master.*` 管理 frontend、`rte_mp` action、eventfd。
   - `fnp_worker.*` 负责 worker lcore 的轮询主循环。
-  - `fsocket.*` 管理共享 socket、socket 表、本地直连路径。
-  - `iface/`、`ether/`、`arp/`、`ip/`、`icmp/`、`udp/`、`tcp/` 是主协议路径。
+  - `fsocket.*` 管理前后端共享 socket 和控制面生命周期。
+  - `transport.h` 定义传输层上下文和 `send/recv/close` ops。
+  - `fnp_device.*` 是公共网络设备抽象；`ether/` 是以太网设备实现；`ip/fnp_ifaddr.*` 管理本地 IP 地址和地址池。
+  - `arp/`、`ip/`、`icmp/`、`gtpu/` 是当前主协议路径。
   - `picoquic/` 是大块 QUIC 实现，绝大多数是上游/移植代码。
 - `src/daemon/go/`
   - Go 写的 YAML 解析器，编译成 `libfnp-conf.a` 给 C 使用。
@@ -80,12 +82,12 @@
 - 共享 `fnp_ring_t`
   - 承载应用数据或待 accept 的连接。
 - eventfd
-  - 前端发数据后通知后端。
-  - 后端有数据可读时通知前端。
+  - 仅保留 frontend TX 通知 master，用于把 socket 加入 egress worker。
+  - backend 不再用 RX eventfd 通知 frontend；应用收包使用 polling。
 - 每 frontend 一个专属 mempool
   - 在 `register_frontend_action()` 中由 daemon 创建。
 
-注意：应用拿到的“socket fd”本质上是 `rx_efd_in_frontend`。
+注意：应用拿到的 `fnp_socket_t` 是 frontend 本地句柄，内部指向 daemon 创建的 shared `fsocket_t`；收包不再依赖 RX eventfd。
 
 ### worker 主循环
 
@@ -103,36 +105,26 @@
 
 ### RX
 
-NIC -> `ether_recv_mbuf()` -> `ipv4_recv_mbuf()` -> UDP/TCP/ICMP -> `fsocket_enqueue_for_app()` -> frontend 的 `rx` ring -> 应用 `fnp_recv*`
+NIC -> `ether_recv_mbuf()` -> `ipv4_recv_mbuf()` -> GTP-U/ICMP -> `fsocket_enqueue_for_app()` -> frontend 的 `rx` ring -> 应用 `fnp_recv*` / `fnp_polling()`
 
 ### TX
 
-应用 `fnp_send*` -> frontend 的 `tx` ring -> eventfd 通知 master -> socket 被加入 worker polling -> UDP/TCP 封包 -> IPv4/ARP/Ether -> NIC
+应用 `fnp_socket_send()` -> frontend 的 `tx` ring -> eventfd 通知 master -> socket 被加入 worker polling -> GTP-U 封装 -> IPv4/ARP/Ether -> NIC
 
 ### 本地优化路径
 
-项目里已经有两条“本地不出网卡”的路径：
-
-- Local Forwarding Path
-  - 只在 UDP 上使用。
-  - 远端 IP 是本机 IP，但不是严格的直连双端配对时，由 daemon 中转。
-- Local Direct Path, LDP
-  - 在 `create_fsocket()` 时，如果发现本地 socket 对端也是本机并且能配对，直接交换/共享 ring 和 eventfd。
-  - `polling_worker == fnp_worker_count` 被当作 LDP 特殊标记。
-  - QUIC 明确不走 LDP。
-
-LDP 的 ring 和 eventfd 可能由两端共享，改销毁逻辑时一定要同时看 [src/daemon/fsocket.c](/root/fnp/src/daemon/fsocket.c)。
+GTP-U LDP 在创建 socket 时配对本地对端，配对成功后直接共享对端 ring。LDP 状态由 `gtpu_context_t.ldp_peer != NULL` 表示，不再使用 shared `fsocket_t` direct 字段。配对成功后 backend TX eventfd 会被禁用，避免共享 ring 路径被 daemon egress worker 抢走。
 
 ## 协议层现状
 
-### UDP
+### GTP-U
 
-UDP 是当前最可信的主路径：
+GTP-U 是当前主路径：
 
-- 支持网络发送接收。
-- 支持本地转发。
-- 支持本地直连。
-- `test/fnp/fnp_udp_client.c` 里的注释比样例本身更有参考价值。
+- `gtpu_context_t` 保存协议专有状态，包括 TEID 和 LDP peer。
+- `transport_context_t` 保存 shared `fsocket_t`、传输层 ops、local/remote/send 地址和 IPv4 TX cache。
+- worker 发包路径调用 `transport->ops->send()`。
+- IPv4 收包路径根据 TEID、本地 IP 和端口查 `gtpu_context_t *`，再调用 `transport->ops->recv()`。
 
 ### TCP
 
@@ -175,7 +167,7 @@ QUIC 现状要分开看：
 
 这些点后续代理非常容易踩：
 
-- [inc/fnp.h](/root/fnp/inc/fnp.h) 注释说 TCP/UDP client 的本地地址可以是 0，但当前后端 `create_fsocket()` 会先 `lookup_iface(local->ip)`，也就是本地 IP 必须已经配置在某个 iface 上。
+- [inc/fnp.h](/root/fnp/inc/fnp.h) 当前公开主路径是 GTP-U socket；旧 UDP 样例不能当作当前 API 权威。
 - [deploy/fnp.yaml](/root/fnp/deploy/fnp.yaml) 已删除；兼容模板应以 [fnp.yaml](/root/fnp/conf/fnp.yaml) 为准。
 - [src/daemon/main.c](/root/fnp/src/daemon/main.c) 现在支持可选命令行参数传入配置文件路径；不传时仍默认找 `fnp.yaml`。
 - DPDK 现在默认从 `/opt/dpdk` 取头文件和库，库目录会优先选择 `lib/${CMAKE_LIBRARY_ARCHITECTURE}`，其次才是 `lib64` 或 `lib`。
@@ -311,23 +303,37 @@ daemon 不传参时会在当前工作目录找 `fnp.yaml`。更稳妥的做法�
 12. [src/daemon/iface/fnp_iface.c](/root/fnp/src/daemon/iface/fnp_iface.c)
 13. [src/daemon/ether/ether.c](/root/fnp/src/daemon/ether/ether.c)
 14. [src/daemon/ip/ipv4.c](/root/fnp/src/daemon/ip/ipv4.c)
-15. [src/daemon/udp/udp.c](/root/fnp/src/daemon/udp/udp.c)
-16. [src/daemon/tcp/](/root/fnp/src/daemon/tcp)
-17. `src/daemon/picoquic/`，只在需要改 QUIC 时深入
+15. [src/daemon/gtpu/gtpu.c](/root/fnp/src/daemon/gtpu/gtpu.c)
+16. `src/daemon/picoquic/`，只在需要改 QUIC 时深入
 
 ## 如果要实现 TAP 测试模式
 
 推荐原则：
 
-- 不要把 TAP 特判散落到 TCP/UDP/ARP/ICMP 里。
+- 不要把 TAP 特判散落到 GTP-U/ARP/ICMP 里。
 - 尽量把“物理 NIC”与“TAP 设备”差异收敛在 `iface/` 或一个新的后端适配层。
 - 让协议层继续只面向 mbuf 和既有入口：
   - 入方向尽量仍然走 `ether_recv_mbuf()`
   - 出方向尽量复用 `ether_send_mbuf()` 所在抽象边界
 - 先明确 TAP 是单独测试后端，还是和 DPDK 物理口共存；不要在实现中把两条路径混成一个不可维护的分支团。
 
+## fnp_node_perf 手动测试流程
+
+`fnp_node_perf_demo` 是 FNP 节点间 GTP-U 数据面微基准，只用于 FNP 独立能力验证，不能替代 OAI/CU-UP 论文实验。
+
+标准使用方式：
+
+- 先构建 `fnp-daemon`、`fnp-api-static` 和 `fnp_node_perf_demo`。
+- 使用 `experiment_result/_archive/fnp_node_perf_demo/docker/start_node_perf_env.sh` 只搭建 TX/RX 容器环境，不自动启动压测。
+- 用户进入两端容器后手动启动 `fnp-daemon`，daemon 日志写到容器内文件，例如 `/results/fnp-daemon.log`。
+- 再进入 frontend 应用容器，先启动 RX，再启动 TX。
+- perf-demo 参数中的速率单位使用 kpps；主 lcore 和业务发送/接收 lcore 不要相同。
+- 每次运行保存 TX/RX stdout、daemon 日志、配置 YAML、容器启动命令和镜像 tag。
+
+测试时优先关注 PPS、丢包、mbuf 分配失败、TX ring 入队失败、socket RX ring 入队失败和 worker 出队到入 worker 发送队列的耗时。不要只报告吞吐量。
+
 ## 测试建议
 
-- 当前最靠谱的 smoke path 是“daemon + UDP”主链路。
-- `test/fnp/`、`test/local/`、`test/remote_udp/` 更适合作为历史意图参考，不适合作为当前 API 的权威示例。
-- 如果你改了 TCP 或 QUIC，通常需要顺手补一套新的可编译样例或测试，因为现有样例大概率是过期的。
+- 当前最靠谱的 smoke path 是“daemon + GTP-U + polling”主链路。
+- `test/fnp/`、`test/local/`、`test/remote_udp/` 是历史参考，不适合作为当前 API 的权威示例。
+- 如果改了前后端共享 ABI、GTP-U、IPv4 或 worker 热路径，至少编译 `fnp-daemon`、`fnp-api-static`、`fnp_node_perf_demo` 和 `fnp_gtpu_ldp_demo`。

@@ -4,27 +4,38 @@
 #include "fnp_common.h"
 #include "fnp_error.h"
 #include "fnp_frontend.h"
+#include "fnp_context.h"
 #include "fnp_master.h"
-#include "fnp_network.h"
 #include "fnp_socket.h"
 #include "fsocket.h"
 #include "ipv4.h"
 #include "route.h"
 #include "fnp_worker.h"
+#include "transport.h"
 
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
 #include <rte_ip.h>
 #include <rte_pause.h>
 #include <rte_udp.h>
+#include <rte_gtp.h>
 
 #include <string.h>
+#include <unistd.h>
 
 #define GTPU_SOCKET_TABLE_SIZE 4096
 #define GTPU_HDR_LEN 8
 #define GTPU_FLAGS_V1_GPDU 0x30u
+#define GTPU_FLAGS_V1_PT_MASK 0xf8u
+#define GTPU_FLAGS_EXT 0x04u
+#define GTPU_FLAGS_SEQ 0x02u
+#define GTPU_FLAGS_NPDU 0x01u
 #define GTPU_MSGTYPE_GPDU 255u
-#define GTPU_BURST_SIZE 32
+#define GTPU_MSGTYPE_END_MARKER 254u
+#define GTPU_EXT_NONE 0u
+#define GTPU_EXT_NR_RAN_CONTAINER 0x84u
+#define GTPU_EXT_PDU_SESSION_CONTAINER 0x85u
+#define GTPU_EXT_HDR_UNIT 4u
 #define GTPU_AUTO_PORT_FIRST 32768u
 #define GTPU_AUTO_PORT_LAST 60999u
 #define GTPU_AUTO_PORT_COUNT (GTPU_AUTO_PORT_LAST - GTPU_AUTO_PORT_FIRST + 1u)
@@ -39,37 +50,14 @@ typedef struct __attribute__((packed)) gtpu_hdr
     u32 teid;
 } gtpu_hdr_t;
 
-typedef struct gtpu_socket
-{
-    fsocket_t socket;
-    fsockaddr_t local;
-    fsockaddr_t remote;
-    ipv4_tx_cache_t tx_cache;
-    u32 incoming_teid;
-    u32 outgoing_teid;
-    bool is_registered;
-    struct gtpu_socket *ldp_peer;
-} gtpu_socket_t;
-
 typedef struct gtpu_context
 {
-    struct rte_hash *global_tbl;
-    rte_spinlock_t lock;
-    struct rte_hash *port_pool_tbl;
-    rte_spinlock_t port_pool_lock;
+    transport_context_t transport; // 与应用层和IP网络层交互的传输层上下文
+    u32 incoming_teid;
+    u32 outgoing_teid;
+    bool is_registered; // 是否已经注册到Hash表
+    struct gtpu_context *ldp_peer;
 } gtpu_context_t;
-
-typedef struct gtpu_port_pool
-{
-    u32 local_ip;
-    u16 next_port_offset;
-    u16 reserved0;
-    rte_spinlock_t lock;
-    u64 used_bitmap[GTPU_AUTO_PORT_BITMAP_WORDS];
-} gtpu_port_pool_t;
-
-static gtpu_context_t gtpu_context;
-static char gtpu_local_hash_names[FNP_MAX_WORKER_NUM][32];
 
 typedef struct gtpu_socket_key
 {
@@ -79,9 +67,39 @@ typedef struct gtpu_socket_key
     u16 reserved0;
 } gtpu_socket_key_t;
 
-static inline gtpu_socket_t *gtpu_socket_cast(fsocket_t *socket)
+typedef struct gtpu_module_context
 {
-    return (gtpu_socket_t *)socket;
+    struct rte_hash *global_tbl;
+} gtpu_module_context_t;
+
+static gtpu_module_context_t gtpu_module = {};
+static char gtpu_local_hash_names[FNP_MAX_WORKER_NUM][64];
+
+static void gtpu_close(transport_context_t *transport);
+static void gtpu_send(transport_context_t *transport, u64 tsc);
+static void gtpu_recv(transport_context_t *transport, struct rte_mbuf *m);
+
+static const transport_ops_t gtpu_transport_ops = {
+    .close = gtpu_close,
+    .send = gtpu_send,
+    .recv = gtpu_recv,
+};
+
+static inline gtpu_context_t *gtpu_context_cast(fsocket_t *socket)
+{
+    return (gtpu_context_t *)transport_from_socket(socket);
+}
+
+static void gtpu_disable_backend_tx_event(fsocket_t *socket)
+{
+    if (socket == NULL || socket->tx_efd_in_backend < 0)
+    {
+        return;
+    }
+
+    (void)fnp_master_remove_fsocket(socket);
+    close(socket->tx_efd_in_backend);
+    socket->tx_efd_in_backend = -1;
 }
 
 static struct rte_hash *gtpu_create_hash_table(const char *name)
@@ -93,22 +111,6 @@ static struct rte_hash *gtpu_create_hash_table(const char *name)
         .hash_func = rte_hash_crc,
         .hash_func_init_val = 0,
         .socket_id = (int)rte_socket_id(),
-        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY,
-    };
-
-    return rte_hash_create(&params);
-}
-
-static struct rte_hash *gtpu_create_port_pool_table(void)
-{
-    struct rte_hash_parameters params = {
-        .name = "fnp_gtpu_port_pool_tbl",
-        .entries = GTPU_PORT_POOL_TABLE_SIZE,
-        .key_len = sizeof(u32),
-        .hash_func = rte_hash_crc,
-        .hash_func_init_val = 0,
-        .socket_id = (int)rte_socket_id(),
-        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY,
     };
 
     return rte_hash_create(&params);
@@ -116,17 +118,17 @@ static struct rte_hash *gtpu_create_port_pool_table(void)
 
 static int gtpu_init_context(void)
 {
-    memset(&gtpu_context, 0, sizeof(gtpu_context));
-    rte_spinlock_init(&gtpu_context.lock);
-    rte_spinlock_init(&gtpu_context.port_pool_lock);
-    gtpu_context.global_tbl = gtpu_create_hash_table("fnp_gtpu_global_tbl");
-    if (gtpu_context.global_tbl == NULL)
-    {
-        return FNP_ERR_CREATE_HASH_TABLE;
-    }
-
-    gtpu_context.port_pool_tbl = gtpu_create_port_pool_table();
-    if (gtpu_context.port_pool_tbl == NULL)
+    struct rte_hash_parameters params = {
+        .name = "fnp_gtpu_global_tbl",
+        .entries = GTPU_SOCKET_TABLE_SIZE,
+        .key_len = sizeof(gtpu_socket_key_t),
+        .hash_func = rte_hash_crc,
+        .hash_func_init_val = 0,
+        .socket_id = (int)rte_socket_id(),
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY,
+    };
+    gtpu_module.global_tbl = rte_hash_create(&params);
+    if (gtpu_module.global_tbl == NULL)
     {
         return FNP_ERR_CREATE_HASH_TABLE;
     }
@@ -153,491 +155,165 @@ static int gtpu_init_context(void)
 
 static inline void gtpu_fill_key(gtpu_socket_key_t *key, u32 teid, u32 local_ip, u16 local_port)
 {
-    memset(key, 0, sizeof(*key));
     key->teid = teid;
     key->local_ip = local_ip;
     key->local_port = local_port;
+    key->reserved0 = 0;
 }
 
-static inline void gtpu_fill_socket_key(gtpu_socket_key_t *key, const gtpu_socket_t *gtpu_socket)
+static inline void gtpu_fill_socket_key(gtpu_socket_key_t *key, const gtpu_context_t *gtpu)
 {
-    gtpu_fill_key(key, gtpu_socket->incoming_teid, gtpu_socket->local.ip, gtpu_socket->local.port);
+    gtpu_fill_key(key, gtpu->incoming_teid, gtpu->transport.local.ip, gtpu->transport.local.port);
 }
 
-static inline void gtpu_fill_ldp_peer_key(gtpu_socket_key_t *key, const gtpu_socket_t *gtpu_socket)
+static inline void gtpu_fill_ldp_peer_key(gtpu_socket_key_t *key, const gtpu_context_t *gtpu)
 {
-    gtpu_fill_key(key, gtpu_socket->outgoing_teid, gtpu_socket->remote.ip, gtpu_socket->remote.port);
+    gtpu_fill_key(key, gtpu->outgoing_teid, gtpu->transport.remote.ip, gtpu->transport.remote.port);
 }
 
-static void gtpu_format_name(gtpu_socket_t *gtpu_socket)
+static void gtpu_format_name(gtpu_context_t *gtpu)
 {
-    char *local_ip = fnp_ipv4_ntos(gtpu_socket->local.ip);
-    char *remote_ip = fnp_ipv4_ntos(gtpu_socket->remote.ip);
-    snprintf(gtpu_socket->socket.name,
-             sizeof(gtpu_socket->socket.name),
+    fsocket_t *socket = transport_socket(&gtpu->transport);
+    char *local_ip = fnp_ipv4_ntos(gtpu->transport.local.ip);
+    char *remote_ip = fnp_ipv4_ntos(gtpu->transport.remote.ip);
+    snprintf(socket->name,
+             sizeof(socket->name),
              "GTPU-%s:%u/%#x->%s:%u/%#x",
              local_ip == NULL ? "0.0.0.0" : local_ip,
-             rte_be_to_cpu_16(gtpu_socket->local.port),
-             gtpu_socket->incoming_teid,
+             rte_be_to_cpu_16(gtpu->transport.local.port),
+             gtpu->incoming_teid,
              remote_ip == NULL ? "0.0.0.0" : remote_ip,
-             rte_be_to_cpu_16(gtpu_socket->remote.port),
-             gtpu_socket->outgoing_teid);
+             rte_be_to_cpu_16(gtpu->transport.remote.port),
+             gtpu->outgoing_teid);
     fnp_string_free(local_ip);
     fnp_string_free(remote_ip);
 }
 
-static bool gtpu_can_pair_ldp(const gtpu_socket_t *first, const gtpu_socket_t *second)
+static bool gtpu_try_pair_ldp(gtpu_context_t *gtpu)
 {
-    if (first == NULL || second == NULL || first == second)
-    {
-        return false;
-    }
-
-    if (!is_local_ipaddr(first->remote.ip) || !is_local_ipaddr(second->remote.ip))
-    {
-        return false;
-    }
-
-    return first->incoming_teid == second->outgoing_teid &&
-           first->outgoing_teid == second->incoming_teid &&
-           first->local.ip == second->remote.ip &&
-           first->remote.ip == second->local.ip &&
-           first->local.port == second->remote.port &&
-           first->remote.port == second->local.port;
-}
-
-static bool gtpu_port_in_managed_range(u16 local_port)
-{
-    u16 local_port_host = rte_be_to_cpu_16(local_port);
-    return local_port_host >= GTPU_AUTO_PORT_FIRST && local_port_host <= GTPU_AUTO_PORT_LAST;
-}
-
-static gtpu_port_pool_t *gtpu_get_or_create_port_pool(u32 local_ip)
-{
-    if (local_ip == 0)
-    {
-        return NULL;
-    }
-
-    gtpu_port_pool_t *pool = NULL;
-    if (rte_hash_lookup_data(gtpu_context.port_pool_tbl, &local_ip, (void **)&pool) == 0)
-    {
-        return pool;
-    }
-
-    rte_spinlock_lock(&gtpu_context.port_pool_lock);
-    if (rte_hash_lookup_data(gtpu_context.port_pool_tbl, &local_ip, (void **)&pool) < 0)
-    {
-        pool = fnp_zmalloc(sizeof(*pool));
-        if (pool != NULL)
-        {
-            pool->local_ip = local_ip;
-            rte_spinlock_init(&pool->lock);
-            if (rte_hash_add_key_data(gtpu_context.port_pool_tbl, &pool->local_ip, pool) < 0)
-            {
-                fnp_free(pool);
-                pool = NULL;
-            }
-        }
-    }
-    rte_spinlock_unlock(&gtpu_context.port_pool_lock);
-
-    return pool;
-}
-
-static bool gtpu_reserve_local_port(u32 local_ip, u16 local_port)
-{
-    if (local_ip == 0 || !gtpu_port_in_managed_range(local_port))
-    {
-        return true;
-    }
-
-    gtpu_port_pool_t *pool = gtpu_get_or_create_port_pool(local_ip);
-    if (pool == NULL)
-    {
-        return false;
-    }
-
-    u16 port_offset = (u16)(rte_be_to_cpu_16(local_port) - GTPU_AUTO_PORT_FIRST);
-    u32 word_index = port_offset / 64u;
-    u32 bit_index = port_offset % 64u;
-    u64 bit = 1ULL << bit_index;
-
-    bool reserved = false;
-    rte_spinlock_lock(&pool->lock);
-    if ((pool->used_bitmap[word_index] & bit) == 0)
-    {
-        pool->used_bitmap[word_index] |= bit;
-        reserved = true;
-    }
-    rte_spinlock_unlock(&pool->lock);
-
-    return reserved;
-}
-
-static void gtpu_release_local_port(const gtpu_socket_t *gtpu_socket)
-{
-    if (gtpu_socket == NULL || gtpu_socket->local.ip == 0 || !gtpu_port_in_managed_range(gtpu_socket->local.port))
-    {
-        return;
-    }
-
-    gtpu_port_pool_t *pool = NULL;
-    if (rte_hash_lookup_data(gtpu_context.port_pool_tbl, &gtpu_socket->local.ip, (void **)&pool) < 0 || pool == NULL)
-    {
-        return;
-    }
-
-    u16 port_offset = (u16)(rte_be_to_cpu_16(gtpu_socket->local.port) - GTPU_AUTO_PORT_FIRST);
-    u32 word_index = port_offset / 64u;
-    u32 bit_index = port_offset % 64u;
-    u64 bit = 1ULL << bit_index;
-
-    rte_spinlock_lock(&pool->lock);
-    pool->used_bitmap[word_index] &= ~bit;
-    if (port_offset < pool->next_port_offset)
-    {
-        pool->next_port_offset = port_offset;
-    }
-    rte_spinlock_unlock(&pool->lock);
-}
-
-static u16 gtpu_allocate_auto_local_port(u32 local_ip)
-{
-    if (local_ip == 0)
-    {
-        return 0;
-    }
-
-    gtpu_port_pool_t *pool = gtpu_get_or_create_port_pool(local_ip);
-    if (pool == NULL)
-    {
-        return 0;
-    }
-
-    rte_spinlock_lock(&pool->lock);
-    for (u32 scanned = 0; scanned < GTPU_AUTO_PORT_COUNT; ++scanned)
-    {
-        u16 offset = (u16)((pool->next_port_offset + scanned) % GTPU_AUTO_PORT_COUNT);
-        u32 word_index = offset / 64u;
-        u32 bit_index = offset % 64u;
-        u64 bit = 1ULL << bit_index;
-        if ((pool->used_bitmap[word_index] & bit) != 0)
-        {
-            continue;
-        }
-
-        pool->used_bitmap[word_index] |= bit;
-        pool->next_port_offset = (u16)((offset + 1u) % GTPU_AUTO_PORT_COUNT);
-        rte_spinlock_unlock(&pool->lock);
-        return rte_cpu_to_be_16((u16)(GTPU_AUTO_PORT_FIRST + offset));
-    }
-
-    rte_spinlock_unlock(&pool->lock);
-    return 0;
-}
-
-static fnp_ifaddr_t *gtpu_pick_frontend_ifaddr(const fnp_frontend_t *frontend,
-                                               const fnp_route_result_t *route_result)
-{
-    if (frontend == NULL || route_result == NULL || frontend->ifaddr_count == 0)
-    {
-        return NULL;
-    }
-
-    fnp_ifaddr_t *same_pref = NULL;
-    fnp_ifaddr_t *same_network = NULL;
-    fnp_ifaddr_t *same_device = NULL;
-    fnp_ifaddr_t *first = NULL;
-    for (u16 i = 0; i < frontend->ifaddr_count; ++i)
-    {
-        fnp_ifaddr_t *candidate = lookup_ifaddr(frontend->ifaddrs[i].ip);
-        if (candidate == NULL)
-        {
-            continue;
-        }
-
-        if (first == NULL)
-        {
-            first = candidate;
-        }
-
-        if (candidate->local_ip_be == route_result->pref_src_be)
-        {
-            same_pref = candidate;
-            break;
-        }
-
-        if (route_result->ifaddr != NULL &&
-            candidate->network_be == route_result->ifaddr->network_be &&
-            candidate->netmask_be == route_result->ifaddr->netmask_be &&
-            candidate->local_ip_be != route_result->ifaddr->local_ip_be &&
-            same_network == NULL)
-        {
-            same_network = candidate;
-        }
-
-        if (route_result->ifaddr != NULL &&
-            candidate->dev == route_result->ifaddr->dev &&
-            candidate->local_ip_be != route_result->ifaddr->local_ip_be &&
-            same_device == NULL)
-        {
-            same_device = candidate;
-        }
-    }
-
-    if (same_pref != NULL)
-    {
-        return same_pref;
-    }
-
-    if (same_network != NULL)
-    {
-        return same_network;
-    }
-
-    if (same_device != NULL)
-    {
-        return same_device;
-    }
-
-    return first;
-}
-
-static int gtpu_resolve_send_addr(const fnp_gtpu_socket_conf_t *gtpu_conf,
-                                  const fnp_frontend_t *frontend,
-                                  fsockaddr_t *local)
-{
-    if (gtpu_conf == NULL || local == NULL)
-    {
-        return FNP_ERR_PARAM;
-    }
-
-    memset(local, 0, sizeof(*local));
-    local->family = FSOCKADDR_IPV4;
-    local->ip = gtpu_conf->send_ip;
-    local->port = gtpu_conf->send_port;
-    if (local->ip == 0)
-    {
-        fnp_route_result_t route_result;
-        int ret = route_lookup(gtpu_conf->remote.ip, &route_result);
-        if (ret != FNP_OK || route_result.ifaddr == NULL)
-        {
-            return ret != FNP_OK ? ret : FNP_ERR_NOT_FOUND;
-        }
-
-        fnp_ifaddr_t *preferred_ifaddr = gtpu_pick_frontend_ifaddr(frontend, &route_result);
-        local->ip = preferred_ifaddr == NULL ? route_result.pref_src_be : preferred_ifaddr->local_ip_be;
-    }
-    else if (lookup_ifaddr(local->ip) == NULL)
-    {
-        return FNP_ERR_IFACE_NOT_FOUND;
-    }
-
-    if (local->port == 0)
-    {
-        local->port = gtpu_allocate_auto_local_port(local->ip);
-        if (local->port == 0)
-        {
-            return FNP_ERR_FULL;
-        }
-    }
-    else if (!gtpu_reserve_local_port(local->ip, local->port))
-    {
-        return FNP_ERR_PORT_BIND;
-    }
-
-    return FNP_OK;
-}
-
-static void gtpu_try_pair_ldp(gtpu_socket_t *gtpu_socket)
-{
-    if (gtpu_socket == NULL || gtpu_socket->ldp_peer != NULL)
-    {
-        return;
-    }
-
     gtpu_socket_key_t peer_key;
-    gtpu_fill_ldp_peer_key(&peer_key, gtpu_socket);
+    gtpu_fill_ldp_peer_key(&peer_key, gtpu);
 
-    fsocket_t *peer_socket = NULL;
-    if (rte_hash_lookup_data(gtpu_context.global_tbl, &peer_key, (void **)&peer_socket) < 0 || peer_socket == NULL)
+    // 查找对端socket是否存在，后建立的会配对新建立的
+    gtpu_context_t *peer = NULL;
+    if (rte_hash_lookup_data(gtpu_module.global_tbl, &peer_key, (void **)&peer) < 0)
     {
-        return;
+        return false;
     }
 
-    gtpu_socket_t *peer = gtpu_socket_cast(peer_socket);
-    if (!peer->is_registered || peer->ldp_peer != NULL || !gtpu_can_pair_ldp(gtpu_socket, peer))
-    {
-        return;
-    }
+    // 对端socket存在，建立LDP
+    fsocket_t *socket = transport_socket(&gtpu->transport);
+    fsocket_t *peer_socket = transport_socket(&peer->transport);
+    peer->ldp_peer = gtpu;
+    gtpu->ldp_peer = peer;
 
-    gtpu_socket->ldp_peer = peer;
-    peer->ldp_peer = gtpu_socket;
-    // 先写地址字段（非原子），再用 release store 发布 peer 指针，
-    // 保证前端见到非 NULL peer 时地址字段已经可见。
-    fsockaddr_copy(&gtpu_socket->socket.direct_local, &peer->local);
-    fsockaddr_copy(&gtpu_socket->socket.direct_remote, &peer->remote);
-    fsockaddr_copy(&peer->socket.direct_local, &gtpu_socket->local);
-    fsockaddr_copy(&peer->socket.direct_remote, &gtpu_socket->remote);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    fsocket_direct_peer_store(&gtpu_socket->socket, &peer->socket);
-    fsocket_direct_peer_store(&peer->socket, &gtpu_socket->socket);
+    // 直接共享对端socket的队列，避免中间转发，提高性能
+    socket->rx = fnp_ring_clone(peer_socket->tx);
+    socket->tx = fnp_ring_clone(peer_socket->rx);
+    gtpu_disable_backend_tx_event(peer_socket);
+    gtpu_disable_backend_tx_event(socket);
+
+    return true;
 }
 
-static void gtpu_clear_direct_path(gtpu_socket_t *gtpu_socket)
+static void gtpu_remove_from_ingress_worker(gtpu_context_t *gtpu)
 {
-    if (gtpu_socket == NULL)
+    fsocket_t *socket = gtpu == NULL ? NULL : transport_socket(&gtpu->transport);
+    if (socket == NULL || socket->ingress_worker < 0)
     {
         return;
     }
 
-    fsocket_direct_peer_store(&gtpu_socket->socket, NULL);
-    memset(&gtpu_socket->socket.direct_local, 0, sizeof(gtpu_socket->socket.direct_local));
-    memset(&gtpu_socket->socket.direct_remote, 0, sizeof(gtpu_socket->socket.direct_remote));
-}
+    // 向ingress worker发送控制命令删除从hash表删除该socket
 
-static void gtpu_remove_from_recv_worker(gtpu_socket_t *gtpu_socket)
-{
-    if (gtpu_socket == NULL || gtpu_socket->socket.recv_worker_id < 0)
-    {
-        return;
-    }
-
-    fnp_worker_t *worker = get_fnp_worker(gtpu_socket->socket.recv_worker_id);
+    fnp_worker_t *worker = get_fnp_worker(socket->ingress_worker);
     if (worker == NULL || worker->gtpu_rx_tbl == NULL)
     {
-        gtpu_socket->socket.recv_worker_id = -1;
+        socket->ingress_worker = -1;
         return;
     }
 
     gtpu_socket_key_t key;
-    gtpu_fill_socket_key(&key, gtpu_socket);
+    gtpu_fill_socket_key(&key, gtpu);
     rte_hash_del_key(worker->gtpu_rx_tbl, &key);
-    if (worker->recv_socket_count > 0)
+    if (worker->ingress_socket_count > 0)
     {
-        worker->recv_socket_count--;
+        worker->ingress_socket_count--;
     }
-    gtpu_socket->socket.recv_worker_id = -1;
+    socket->ingress_worker = -1;
 }
 
-static void gtpu_learn_recv_worker(gtpu_socket_t *gtpu_socket, fnp_worker_t *worker, const gtpu_socket_key_t *key)
-{
-    if (gtpu_socket == NULL || key == NULL || worker == NULL || worker->gtpu_rx_tbl == NULL)
-    {
-        return;
-    }
-
-    int worker_id = worker->id;
-
-    rte_spinlock_lock(&gtpu_context.lock);
-    if (!gtpu_socket->is_registered)
-    {
-        rte_spinlock_unlock(&gtpu_context.lock);
-        return;
-    }
-
-    if (gtpu_socket->socket.recv_worker_id == worker_id)
-    {
-        rte_spinlock_unlock(&gtpu_context.lock);
-        return;
-    }
-
-    gtpu_remove_from_recv_worker(gtpu_socket);
-    if (rte_hash_add_key_data(worker->gtpu_rx_tbl, key, &gtpu_socket->socket) >= 0)
-    {
-        gtpu_socket->socket.recv_worker_id = worker_id;
-        worker->recv_socket_count++;
-    }
-    rte_spinlock_unlock(&gtpu_context.lock);
-}
-
-static fsocket_t *gtpu_lookup_socket(u32 teid, u32 local_ip, u16 local_port)
+static gtpu_context_t *gtpu_lookup_context(u32 teid, u32 local_ip, u16 local_port)
 {
     gtpu_socket_key_t key;
     gtpu_fill_key(&key, teid, local_ip, local_port);
 
     fnp_worker_t *worker = get_local_worker();
-    fsocket_t *socket = NULL;
-    if (likely(worker != NULL && worker->gtpu_rx_tbl != NULL &&
-               rte_hash_lookup_data(worker->gtpu_rx_tbl, &key, (void **)&socket) == 0 && socket != NULL))
+    gtpu_context_t *gtpu = NULL;
+    // 优先查本地worker的hash表，减少访问全局hash表的开销
+    if (likely(rte_hash_lookup_data(worker->gtpu_rx_tbl, &key, (void **)&gtpu) >= 0))
     {
-        return fsocket_acquire_active(socket);
+        return gtpu;
     }
 
-    if (unlikely(rte_hash_lookup_data(gtpu_context.global_tbl, &key, (void **)&socket) < 0 || socket == NULL))
-    {
-        return NULL;
-    }
-
-    socket = fsocket_acquire_active(socket);
-    if (socket == NULL)
+    // 本地worker查不到，再查全局hash表
+    if (unlikely(rte_hash_lookup_data(gtpu_module.global_tbl, &key, (void **)&gtpu) < 0))
     {
         return NULL;
     }
 
-    if (worker != NULL && worker->gtpu_rx_tbl != NULL)
+    // 从全局hash表查到，学习到本地worker的hash表，减少下次查找的开销
+    if (likely(rte_hash_add_key_data(worker->gtpu_rx_tbl, &key, gtpu) >= 0))
     {
-        gtpu_learn_recv_worker(gtpu_socket_cast(socket), worker, &key);
+        fsocket_t *socket = transport_socket(&gtpu->transport);
+        socket->ingress_worker = worker->id;
+        worker->ingress_socket_count++;
     }
 
-    return socket;
+    return gtpu;
 }
 
-static int gtpu_socket_register(gtpu_socket_t *gtpu_socket)
+// 只会用户线程创建，不涉及并发访问，不加锁
+static int gtpu_register(gtpu_context_t *gtpu)
 {
-    if (gtpu_socket == NULL || gtpu_socket->incoming_teid == 0)
-    {
-        return FNP_ERR_PARAM;
-    }
-
     gtpu_socket_key_t key;
-    gtpu_fill_socket_key(&key, gtpu_socket);
+    gtpu_fill_socket_key(&key, gtpu);
 
-    rte_spinlock_lock(&gtpu_context.lock);
-    if (rte_hash_add_key_data(gtpu_context.global_tbl,
-                              &key,
-                              &gtpu_socket->socket) < 0)
+    if (rte_hash_add_key_data(gtpu_module.global_tbl, &key, gtpu) < 0)
     {
-        rte_spinlock_unlock(&gtpu_context.lock);
         return FNP_ERR_ADD_HASH;
     }
 
-    gtpu_socket->is_registered = true;
-    gtpu_try_pair_ldp(gtpu_socket);
-    rte_spinlock_unlock(&gtpu_context.lock);
+    gtpu->is_registered = true;
     return FNP_OK;
 }
 
-static void gtpu_socket_unregister(gtpu_socket_t *gtpu_socket)
+static void gtpu_unregister(gtpu_context_t *gtpu)
 {
-    if (gtpu_socket == NULL || !gtpu_socket->is_registered)
+    if (gtpu == NULL || !gtpu->is_registered)
     {
         return;
     }
 
     gtpu_socket_key_t key;
-    gtpu_fill_socket_key(&key, gtpu_socket);
+    gtpu_fill_socket_key(&key, gtpu);
 
-    rte_spinlock_lock(&gtpu_context.lock);
-    rte_hash_del_key(gtpu_context.global_tbl, &key);
-    gtpu_remove_from_recv_worker(gtpu_socket);
-    if (gtpu_socket->ldp_peer != NULL)
+    rte_hash_del_key(gtpu_module.global_tbl, &key);
+    gtpu->is_registered = false;
+
+    gtpu_remove_from_ingress_worker(gtpu);
+    if (gtpu->ldp_peer != NULL)
     {
-        gtpu_socket->ldp_peer->ldp_peer = NULL;
-        gtpu_clear_direct_path(gtpu_socket->ldp_peer);
-        gtpu_socket->ldp_peer = NULL;
+        gtpu->ldp_peer->ldp_peer = NULL;
+        gtpu->ldp_peer = NULL;
     }
-    gtpu_clear_direct_path(gtpu_socket);
-    gtpu_socket->is_registered = false;
-    rte_spinlock_unlock(&gtpu_context.lock);
 }
 
-static inline void gtpu_prepend_hdr(struct rte_mbuf *m, u32 teid, u16 payload_len)
+static inline void gtpu_prepend_hdr(struct rte_mbuf *m, u32 teid, u16 payload_len, u8 flags, u8 msg_type)
 {
     gtpu_hdr_t *hdr = (gtpu_hdr_t *)rte_pktmbuf_prepend(m, GTPU_HDR_LEN);
-    hdr->flags = GTPU_FLAGS_V1_GPDU;
-    hdr->msg_type = GTPU_MSGTYPE_GPDU;
+    hdr->flags = flags;
+    hdr->msg_type = msg_type;
     hdr->msg_length = rte_cpu_to_be_16(payload_len);
     hdr->teid = rte_cpu_to_be_32(teid);
 }
@@ -651,53 +327,125 @@ static inline void gtpu_prepend_udp_hdr(struct rte_mbuf *m, u16 src_port, u16 ds
     hdr->dgram_cksum = 0;
 }
 
-static void gtpu_socket_recv(fsocket_t *socket, struct rte_mbuf *m)
+static inline void gtpu_recv(transport_context_t *transport, struct rte_mbuf *m)
 {
-    if (unlikely(!fsocket_enqueue_for_app(socket, m)))
+    fsocket_t *socket = transport_socket(transport);
+    fsocket_enqueue_for_app(socket, m);
+}
+
+static inline bool gtpu_send_one(gtpu_context_t *gtpu, struct rte_mbuf *m)
+{
+    fmbuf_info_t *info = get_fmbuf_info(m);
+    u16 payload_len = (u16)m->pkt_len;
+    u16 gtpu_len = payload_len;
+    u8 flags = GTPU_FLAGS_V1_GPDU;
+    u8 msg_type = (info->gtpu_flags & FNP_MBUF_GTPU_F_MSG_TYPE) ? info->gtpu_msg_type : GTPU_MSGTYPE_GPDU;
+    bool has_seq = (info->gtpu_flags & FNP_MBUF_GTPU_F_SEQ) != 0;
+    bool has_npdu = (info->gtpu_flags & FNP_MBUF_GTPU_F_NPDU) != 0;
+    bool has_ext = (info->gtpu_flags & FNP_MBUF_GTPU_F_EXT) != 0 && info->gtpu_ext_len > 0;
+
+    if (has_ext)
     {
-        free_mbuf(m);
+        u8 *ext = (u8 *)rte_pktmbuf_prepend(m, info->gtpu_ext_len);
+        if (unlikely(ext == NULL))
+        {
+            free_mbuf(m);
+            return false;
+        }
+        rte_memcpy(ext, info->gtpu_ext_data, info->gtpu_ext_len);
+        gtpu_len += info->gtpu_ext_len;
+        flags |= GTPU_FLAGS_EXT;
     }
 
-    fsocket_ref_put(socket);
+    if (has_seq || has_npdu || has_ext)
+    {
+        u8 *opt = (u8 *)rte_pktmbuf_prepend(m, 4);
+        if (unlikely(opt == NULL))
+        {
+            free_mbuf(m);
+            return false;
+        }
+        *(u16 *)opt = has_seq ? rte_cpu_to_be_16(info->gtpu_seq_num) : 0;
+        opt[2] = has_npdu ? info->gtpu_npdu_num : 0;
+        opt[3] = has_ext ? info->gtpu_next_ext_type : GTPU_EXT_NONE;
+        gtpu_len += 4;
+        if (has_seq)
+            flags |= GTPU_FLAGS_SEQ;
+        if (has_npdu)
+            flags |= GTPU_FLAGS_NPDU;
+    }
+
+    gtpu_prepend_hdr(m, gtpu->outgoing_teid, gtpu_len, flags, msg_type);
+
+    gtpu_prepend_udp_hdr(m, gtpu->transport.local.port, gtpu->transport.remote.port);
+
+    return ipv4_send_mbuf_with_cache(&gtpu->transport.ip_tx_cache, m);
 }
 
-static inline void gtpu_socket_send_network(gtpu_socket_t *gtpu_socket, struct rte_mbuf *m)
+static void gtpu_send(transport_context_t *transport, u64 tsc)
 {
-    u16 payload_len = (u16)m->pkt_len;
-    gtpu_prepend_hdr(m, gtpu_socket->outgoing_teid, payload_len);
-    gtpu_prepend_udp_hdr(m, gtpu_socket->local.port, gtpu_socket->remote.port);
-    ipv4_tx_cache_send(&gtpu_socket->tx_cache,
-                       m,
-                       IPPROTO_UDP,
-                       &gtpu_socket->local,
-                       &gtpu_socket->remote);
-}
+#define GTPU_TX_BURST_SIZE 64
+    struct rte_mbuf *mbufs[GTPU_TX_BURST_SIZE] = {0};
 
-static void gtpu_socket_send(fsocket_t *socket, u64 tsc)
-{
-    struct rte_mbuf *mbufs[GTPU_BURST_SIZE] = {0};
-    u32 n = fnp_ring_dequeue_burst(socket->tx, (void **)mbufs, GTPU_BURST_SIZE);
-    gtpu_socket_t *gtpu_socket = gtpu_socket_cast(socket);
+    fsocket_t *socket = transport_socket(transport);
+    u32 n = fnp_ring_dequeue_burst(socket->tx, (void **)mbufs, (u32)GTPU_TX_BURST_SIZE);
+    gtpu_context_t *gtpu = gtpu_context_cast(socket);
     for (u32 i = 0; i < n; ++i)
     {
-        gtpu_socket_send_network(gtpu_socket, mbufs[i]);
+        (void)gtpu_send_one(gtpu, mbufs[i]);
     }
 
-    if (n > 0)
+    // 更新轮询时间戳
+    if (likely(n > 0))
     {
         socket->polling_tsc = tsc;
     }
 }
 
-static void gtpu_socket_release(fsocket_t *socket)
+static bool gtpu_parse_ext_metadata(const u8 *ext, u16 ext_bytes, u8 ext_type, fmbuf_info_t *info)
 {
-    gtpu_socket_t *gtpu_socket = gtpu_socket_cast(socket);
+    if (ext == NULL || info == NULL || ext_bytes < GTPU_EXT_HDR_UNIT)
+    {
+        return true;
+    }
 
-    fsocket_cleanup(socket);
-    fnp_free(gtpu_socket);
+    switch (ext_type)
+    {
+    case GTPU_EXT_PDU_SESSION_CONTAINER:
+        if (ext_bytes >= 3)
+        {
+            info->gtpu_qfi = ext[2] & 0x3fu;
+            info->gtpu_rqi = (ext[2] >> 6) & 0x01u;
+            info->gtpu_flags |= FNP_MBUF_GTPU_F_QFI | FNP_MBUF_GTPU_F_RQI;
+        }
+        break;
+    case GTPU_EXT_NR_RAN_CONTAINER:
+        if (ext_bytes >= 9)
+        {
+            u8 pdu_type = (ext[1] >> 4) & 0x0fu;
+            if (pdu_type == 0 && ((ext[2] >> 3) & 0x01u))
+            {
+                info->gtpu_nr_pdcp_pdu_sn = ((u32)ext[6] << 16) | ((u32)ext[7] << 8) | ext[8];
+                info->gtpu_flags |= FNP_MBUF_GTPU_F_NR_PDCP_SN;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+
+    return true;
 }
 
-static void gtpu_socket_release_when_idle(fsocket_t *socket)
+static void gtpu_release(fsocket_t *socket)
+{
+    gtpu_context_t *gtpu = gtpu_context_cast(socket);
+
+    fsocket_cleanup(socket);
+    fnp_free(gtpu);
+}
+
+static void gtpu_release_when_idle(fsocket_t *socket)
 {
     if (socket == NULL)
     {
@@ -706,7 +454,7 @@ static void gtpu_socket_release_when_idle(fsocket_t *socket)
 
     if (fsocket_ref_count(socket) > 1)
     {
-        if (fnp_master_retire_fsocket(socket, gtpu_socket_release_when_idle) == FNP_OK)
+        if (fnp_master_retire_fsocket(socket, gtpu_release_when_idle) == FNP_OK)
         {
             return;
         }
@@ -717,27 +465,39 @@ static void gtpu_socket_release_when_idle(fsocket_t *socket)
         }
     }
 
-    gtpu_socket_release(socket);
+    gtpu_release(socket);
 }
 
-static void gtpu_socket_close(fsocket_t *socket)
+static void gtpu_close(transport_context_t *transport)
 {
-    gtpu_socket_t *gtpu_socket = gtpu_socket_cast(socket);
+    fsocket_t *socket = transport_socket(transport);
+    gtpu_context_t *gtpu = gtpu_context_cast(socket);
     fsocket_enter_closing(socket);
-    gtpu_socket_unregister(gtpu_socket);
-    gtpu_release_local_port(gtpu_socket);
+    gtpu_unregister(gtpu);
     fsocket_mark_closed(socket);
 
-    if (fnp_master_retire_fsocket(socket, gtpu_socket_release_when_idle) == FNP_OK)
+    if (fnp_master_retire_fsocket(socket, gtpu_release_when_idle) == FNP_OK)
     {
         return;
     }
 
     (void)fnp_master_remove_fsocket(socket);
-    gtpu_socket_release_when_idle(socket);
+    gtpu_release_when_idle(socket);
 }
 
-static fsocket_t *gtpu_socket_create(void *conf, void *ctx)
+u16 gtpu_socket_get_random_port()
+{
+    for (int i = 0; i < 10; ++i)
+    {
+        int port = random();
+        // 判断端口没有使用
+        return port;
+    }
+
+    return 0;
+}
+
+fsocket_t *gtpu_create_transport(void *conf, void *ctx)
 {
     const fnp_gtpu_socket_conf_t *gtpu_conf = conf;
     const fnp_frontend_t *frontend = ctx;
@@ -747,66 +507,59 @@ static fsocket_t *gtpu_socket_create(void *conf, void *ctx)
         return NULL;
     }
 
-    gtpu_socket_t *gtpu_socket = fnp_zmalloc(sizeof(*gtpu_socket));
-    if (unlikely(gtpu_socket == NULL))
+    gtpu_context_t *gtpu = fnp_zmalloc(sizeof(*gtpu));
+    if (unlikely(gtpu == NULL))
     {
         return NULL;
     }
 
-    fsocket_t *socket = &gtpu_socket->socket;
+    transport_context_t *transport = &gtpu->transport;
+    fsocket_t *socket = transport_socket(transport);
     fsocket_init_base(socket, fsocket_type_gtpu);
+    transport->ops = &gtpu_transport_ops;
 
-    fsockaddr_t resolved_local = {0};
-    if (gtpu_resolve_send_addr(gtpu_conf, frontend, &resolved_local) != FNP_OK)
+    fsockaddr_copy(&transport->local, &gtpu_conf->local);
+    fsockaddr_copy(&transport->remote, &gtpu_conf->remote);
+    gtpu->incoming_teid = gtpu_conf->incoming_teid;
+    gtpu->outgoing_teid = gtpu_conf->outgoing_teid;
+
+    // 构造一个发送地址，端口不一样来使对端RSS分流，用于发送数据包给对端
+    transport->send.family = FSOCKADDR_IPV4;
+    transport->send.ip = transport->local.ip;
+    u16 send_port = gtpu_socket_get_random_port();
+    transport->send.port = fnp_swap16(send_port);
+
+    // 初始化发送缓存用来加速发送路径，IP层会填充待确定字段
+    ipv4_init_tx_cache(&transport->ip_tx_cache, IPPROTO_UDP,
+                       &transport->send, &transport->remote);
+    gtpu_format_name(gtpu);
+
+    // 注册到全局表，才能被接收路径查到并分配到工作线程。
+    if (gtpu_register(gtpu) != FNP_OK)
     {
-        fnp_free(gtpu_socket);
+        fnp_free(gtpu);
         return NULL;
     }
 
-    fsockaddr_copy(&gtpu_socket->local, &resolved_local);
-    fsockaddr_copy(&gtpu_socket->remote, &gtpu_conf->remote);
-    gtpu_socket->local.family = FSOCKADDR_IPV4;
-    gtpu_socket->remote.family = FSOCKADDR_IPV4;
-    if (gtpu_socket->remote.port == 0)
+    // 尝试配对LDP，如果成功则直接走rx ring 和tx ring, 不需要经过fnp-deamon
+    if (!gtpu_try_pair_ldp(gtpu))
     {
-        gtpu_socket->remote.port = rte_cpu_to_be_16(FNP_GTPU_UDP_PORT);
-    }
-    gtpu_socket->incoming_teid = gtpu_conf->incoming_teid;
-    gtpu_socket->outgoing_teid = gtpu_conf->outgoing_teid;
-    socket->is_ready = 1;
-    if (frontend != NULL && frontend->pool_worker_id != (u16)-1)
-    {
-        fsocket_set_owner_worker(socket, frontend->pool_worker_id);
-    }
-    ipv4_tx_cache_init(&gtpu_socket->tx_cache);
-    gtpu_format_name(gtpu_socket);
-
-    if (fsocket_create_io_rings(socket, false) != FNP_OK)
-    {
-        gtpu_socket_close(socket);
-        return NULL;
-    }
-
-    if (gtpu_socket_register(gtpu_socket) != FNP_OK)
-    {
-        gtpu_socket_close(socket);
-        return NULL;
+        // 没有配对成功，创建IO环路，走fnp-daemon
+        if (fsocket_create_io_rings(socket, false) != FNP_OK)
+        {
+            gtpu_unregister(gtpu);
+            fnp_free(gtpu);
+            return NULL;
+        }
     }
 
     printf("create socket %s\n", socket->name);
     return socket;
 }
 
-static const fsocket_ops_t gtpu_fsocket_ops = {
-    .create = gtpu_socket_create,
-    .close = gtpu_socket_close,
-    .send = gtpu_socket_send,
-    .recv = gtpu_socket_recv,
-};
-
 void gtpu_udp_input(struct rte_mbuf *m)
 {
-    if (unlikely(m == NULL || m->pkt_len < sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + GTPU_HDR_LEN))
+    if (unlikely(m->pkt_len < sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + GTPU_HDR_LEN))
     {
         free_mbuf(m);
         return;
@@ -830,35 +583,47 @@ void gtpu_udp_input(struct rte_mbuf *m)
         return;
     }
 
-    u16 payload_bytes = udp_len - sizeof(struct rte_udp_hdr) - GTPU_HDR_LEN;
+    u16 gtpu_packet_bytes = udp_len - sizeof(struct rte_udp_hdr);
     gtpu_hdr_t *gtpu_hdr = rte_pktmbuf_mtod_offset(m, gtpu_hdr_t *, udp_offset + sizeof(struct rte_udp_hdr));
-    if (unlikely(gtpu_hdr->flags != GTPU_FLAGS_V1_GPDU || gtpu_hdr->msg_type != GTPU_MSGTYPE_GPDU))
+    if (unlikely((gtpu_hdr->flags & GTPU_FLAGS_V1_PT_MASK) != GTPU_FLAGS_V1_GPDU ||
+                 (gtpu_hdr->msg_type != GTPU_MSGTYPE_GPDU && gtpu_hdr->msg_type != GTPU_MSGTYPE_END_MARKER)))
     {
         free_mbuf(m);
         return;
     }
 
     u16 gtpu_payload_len = rte_be_to_cpu_16(gtpu_hdr->msg_length);
-    if (unlikely(gtpu_payload_len > payload_bytes))
+    if (unlikely(gtpu_payload_len > gtpu_packet_bytes - GTPU_HDR_LEN))
     {
         free_mbuf(m);
         return;
+    }
+
+    u8 *gtpu_data = (u8 *)gtpu_hdr;
+    u16 payload_offset = GTPU_HDR_LEN;
+    u16 remaining = gtpu_payload_len;
+    u8 next_ext_type = GTPU_EXT_NONE;
+    bool has_optional_fields = (gtpu_hdr->flags & (GTPU_FLAGS_EXT | GTPU_FLAGS_SEQ | GTPU_FLAGS_NPDU)) != 0;
+    if (has_optional_fields)
+    {
+        if (unlikely(remaining < 4))
+        {
+            free_mbuf(m);
+            return;
+        }
+        next_ext_type = gtpu_data[payload_offset + 3];
+        payload_offset += 4;
+        remaining -= 4;
     }
 
     u32 incoming_teid = rte_be_to_cpu_32(gtpu_hdr->teid);
-    fsocket_t *socket = gtpu_lookup_socket(incoming_teid, ip_hdr->dst_addr, udp_hdr->dst_port);
-    if (unlikely(socket == NULL))
+    gtpu_context_t *gtpu = gtpu_lookup_context(incoming_teid, ip_hdr->dst_addr, udp_hdr->dst_port);
+    if (unlikely(gtpu == NULL))
     {
         free_mbuf(m);
         return;
     }
-
-    rte_pktmbuf_adj(m, decap_len);
-    int trim_len = rte_pktmbuf_data_len(m) - (int)gtpu_payload_len;
-    if (trim_len > 0)
-    {
-        rte_pktmbuf_trim(m, trim_len);
-    }
+    fsocket_t *socket = transport_socket(&gtpu->transport);
 
     fmbuf_info_t *info = get_fmbuf_info(m);
     info->local.family = FSOCKADDR_IPV4;
@@ -867,8 +632,58 @@ void gtpu_udp_input(struct rte_mbuf *m)
     info->remote.family = FSOCKADDR_IPV4;
     info->remote.ip = ip_hdr->src_addr;
     info->remote.port = udp_hdr->src_port;
+    info->gtpu_flags = FNP_MBUF_GTPU_F_MSG_TYPE;
+    info->gtpu_msg_type = gtpu_hdr->msg_type;
+    info->gtpu_next_ext_type = GTPU_EXT_NONE;
+    info->gtpu_seq_num = 0;
+    info->gtpu_npdu_num = 0;
+    info->gtpu_qfi = 0;
+    info->gtpu_rqi = 0;
+    info->gtpu_ext_len = 0;
+    info->gtpu_nr_pdcp_pdu_sn = 0;
 
-    gtpu_socket_recv(socket, m);
+    if ((gtpu_hdr->flags & GTPU_FLAGS_EXT) != 0)
+    {
+        while (next_ext_type != GTPU_EXT_NONE)
+        {
+            if (unlikely(remaining < 1))
+            {
+                free_mbuf(m);
+                return;
+            }
+
+            u8 *ext = gtpu_data + payload_offset;
+            u16 ext_bytes = (u16)ext[0] * GTPU_EXT_HDR_UNIT;
+            if (unlikely(ext_bytes == 0 || ext_bytes > remaining))
+            {
+                free_mbuf(m);
+                return;
+            }
+
+            gtpu_parse_ext_metadata(ext, ext_bytes, next_ext_type, info);
+            next_ext_type = ext[ext_bytes - 1];
+            payload_offset += ext_bytes;
+            remaining -= ext_bytes;
+        }
+    }
+
+    decap_len = udp_offset + sizeof(struct rte_udp_hdr) + payload_offset;
+    rte_pktmbuf_adj(m, decap_len);
+    int trim_len = (int)m->pkt_len - (int)remaining;
+    if (trim_len > 0)
+    {
+        rte_pktmbuf_trim(m, trim_len);
+    }
+
+    gtpu_recv(&gtpu->transport, m);
+}
+
+int gtpu_module_init(void)
+{
+    int ret = gtpu_init_context();
+    CHECK_RET(ret);
+
+    return ipv4_register_input(IPPROTO_UDP, gtpu_udp_input);
 }
 
 int gtpu_export_socket_conf(const fsocket_t *socket, fnp_gtpu_socket_conf_t *conf)
@@ -878,23 +693,10 @@ int gtpu_export_socket_conf(const fsocket_t *socket, fnp_gtpu_socket_conf_t *con
         return FNP_ERR_PARAM;
     }
 
-    const gtpu_socket_t *gtpu_socket = (const gtpu_socket_t *)socket;
-    memset(conf, 0, sizeof(*conf));
-    conf->send_ip = gtpu_socket->local.ip;
-    conf->send_port = gtpu_socket->local.port;
-    fsockaddr_copy(&conf->remote, &gtpu_socket->remote);
-    conf->incoming_teid = gtpu_socket->incoming_teid;
-    conf->outgoing_teid = gtpu_socket->outgoing_teid;
+    const gtpu_context_t *gtpu = (const gtpu_context_t *)transport_const_from_socket(socket);
+    fsockaddr_copy(&conf->local, &gtpu->transport.local);
+    fsockaddr_copy(&conf->remote, &gtpu->transport.remote);
+    conf->incoming_teid = gtpu->incoming_teid;
+    conf->outgoing_teid = gtpu->outgoing_teid;
     return FNP_OK;
-}
-
-int gtpu_module_init(void)
-{
-    int ret = gtpu_init_context();
-    CHECK_RET(ret);
-
-    ret = register_fsocket_ops(fsocket_type_gtpu, &gtpu_fsocket_ops);
-    CHECK_RET(ret);
-
-    return ipv4_register_input(IPPROTO_UDP, gtpu_udp_input);
 }

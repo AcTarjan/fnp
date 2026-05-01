@@ -5,7 +5,7 @@
 #include "fnp_master.h"
 #include "fsocket.h"
 #include "gtpu.h"
-#include "network/fnp_network.h"
+#include "fnp_ifaddr.h"
 #include "fnp_worker.h"
 
 static u32 frontend_pool_round_robin = 0;
@@ -58,9 +58,9 @@ int register_frontend_action(const struct rte_mp_msg *msg, const void *peer)
                 }
                 else
                 {
-                    code = export_network_ifaddrs(frontend->ifaddrs,
-                                                  (u16)RTE_DIM(frontend->ifaddrs),
-                                                  &frontend->ifaddr_count);
+                    code = export_fnp_ifaddrs(frontend->ifaddrs,
+                                              (u16)RTE_DIM(frontend->ifaddrs),
+                                              &frontend->ifaddr_count);
                 }
 
                 if (code == FNP_OK)
@@ -108,22 +108,13 @@ int create_fsocket_action(const struct rte_mp_msg *msg, const void *peer)
         fsocket_t *socket = create_fsocket(param->type, conf, param->frontend);
         if (likely(socket != NULL))
         {
-            u16 conf_len = sizeof(resp->conf);
-            int export_ret = export_fsocket_conf(socket, resp->conf, &conf_len);
-            if (export_ret != FNP_OK)
+            if (socket->tx_efd_in_backend >= 0)
             {
-                code = export_ret;
-                close_fsocket(socket);
+                reply.num_fds = 1;
+                reply.fds[0] = socket->tx_efd_in_backend; // 前端发包时通知后端master
             }
-            else
-            {
-                reply.num_fds = 2;
-                reply.fds[0] = socket->rx_efd_in_backend; // 将eventfd传递回去
-                reply.fds[1] = socket->tx_efd_in_backend; // 将eventfd传递回去
-                resp->ptr = socket;
-                resp->conf_len = conf_len;
-                printf("create fsocket successfully: %s\n", socket->name);
-            }
+            resp->ptr = socket;
+            printf("create fsocket successfully: %s\n", socket->name);
         }
         else
         {
@@ -162,9 +153,11 @@ int accept_fsocket_action(const struct rte_mp_msg *msg, const void *peer)
         fsocket_t *new_socket = NULL;
         if (likely(fnp_ring_dequeue(socket->rx, (void **)&new_socket)))
         {
-            reply.num_fds = 2;
-            reply.fds[0] = new_socket->rx_efd_in_backend; // 将eventfd传递回去
-            reply.fds[1] = new_socket->tx_efd_in_backend; // 将eventfd传递回去
+            if (new_socket->tx_efd_in_backend >= 0)
+            {
+                reply.num_fds = 1;
+                reply.fds[0] = new_socket->tx_efd_in_backend; // 前端发包时通知后端master
+            }
             resp->ptr = new_socket;
         }
         else
@@ -195,55 +188,6 @@ int close_fsocket_action(const struct rte_mp_msg *msg, const void *peer)
 
     fapi_common_req_t *req = (fapi_common_req_t *)msg->param;
     close_fsocket(req->ptr);
-
-    return FNP_OK;
-}
-
-int gtpu_ldp_attach_action(const struct rte_mp_msg *msg, const void *peer)
-{
-    int code = FNP_OK;
-    struct rte_mp_msg reply = {0};
-    strcpy(reply.name, FAPI_GTPU_LDP_ATTACH_ACTION_NAME);
-    reply.len_param = sizeof(fapi_common_resp_t);
-    fapi_common_resp_t *resp = (fapi_common_resp_t *)reply.param;
-
-    if (unlikely(msg->len_param != sizeof(fapi_common_req_t)))
-    {
-        code = FNP_ERR_PARAM;
-    }
-    else
-    {
-        fapi_common_req_t *req = (fapi_common_req_t *)msg->param;
-        fsocket_t *socket = req->ptr;
-        fsocket_t *peer_socket = socket == NULL ? NULL : fsocket_acquire_direct_peer(socket);
-        if (socket == NULL || socket->type != fsocket_type_gtpu || peer_socket == NULL ||
-            peer_socket->rx_efd_in_backend < 0)
-        {
-            code = FNP_ERR_NOT_FOUND;
-        }
-        else
-        {
-            reply.num_fds = 1;
-            reply.fds[0] = peer_socket->rx_efd_in_backend;
-            resp->ptr = peer_socket;
-        }
-    }
-
-    resp->code = code;
-    if (rte_mp_reply(&reply, peer) < 0)
-    {
-        if (code == FNP_OK)
-        {
-            fsocket_ref_put((fsocket_t *)resp->ptr);
-        }
-        printf("error sending reply\n");
-        return -3;
-    }
-
-    if (code == FNP_OK)
-    {
-        fsocket_ref_put((fsocket_t *)resp->ptr);
-    }
 
     return FNP_OK;
 }

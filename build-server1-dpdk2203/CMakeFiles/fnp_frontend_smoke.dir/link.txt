@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG CMakeFiles/fnp_frontend_smoke.dir/test/gtpu/fnp_frontend_smoke.c.o -o fnp_frontend_smoke  libfnp-api.a -lpthread -ldl -lm -lnuma -latomic 

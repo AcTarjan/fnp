@@ -30,12 +30,11 @@ extern fnp_frontend_local_t frontend_local;
 
 static inline void fsocket_notify_backend(fsocket_t *socket)
 {
-    eventfd_write(socket->tx_efd_in_frontend, 1);
+    if (socket != NULL && socket->tx_efd_in_frontend >= 0 && socket->tx_efd_in_backend >= 0)
+    {
+        eventfd_write(socket->tx_efd_in_frontend, 1);
+    }
 }
-
-int frontend_prepare_direct_notify_fd(fsocket_t *shared_socket);
-
-void frontend_release_direct_notify_fd(fsocket_t *shared_socket);
 
 int frontend_init_tables(u32 initial_capacity);
 
@@ -46,7 +45,5 @@ fnp_socket_t *frontend_add_fsocket(fsocket_t *shared_socket, const void *conf, u
 void frontend_remove_fsocket(fnp_socket_t *socket);
 
 fnp_socket_t *frontend_get_fsocket(u32 slot_index);
-
-int frontend_try_dequeue_mbuf(fnp_socket_t *socket, struct rte_mbuf **m);
 
 #endif // FNP_INTERNAL_H

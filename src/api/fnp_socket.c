@@ -103,15 +103,14 @@ int fnp_socket_create(fsocket_type_t type, const void *conf, fnp_socket_t **out)
         return resp->code;
     }
 
-    if (unlikely(reply_msg->num_fds != 2))
+    if (unlikely(reply_msg->num_fds > 1))
     {
         free(reply.msgs);
         return FNP_ERR_PARAM;
     }
 
     fsocket_t *shared_socket = resp->ptr;
-    shared_socket->rx_efd_in_frontend = reply_msg->fds[0];
-    shared_socket->tx_efd_in_frontend = reply_msg->fds[1];
+    shared_socket->tx_efd_in_frontend = reply_msg->num_fds == 1 ? reply_msg->fds[0] : -1;
 
     u16 resolved_conf_len = resp->conf_len;
     if (resolved_conf_len == 0)
@@ -131,11 +130,6 @@ int fnp_socket_create(fsocket_type_t type, const void *conf, fnp_socket_t **out)
     free(reply.msgs);
     if (socket == NULL)
     {
-        if (shared_socket->rx_efd_in_frontend >= 0)
-        {
-            close(shared_socket->rx_efd_in_frontend);
-            shared_socket->rx_efd_in_frontend = -1;
-        }
         if (shared_socket->tx_efd_in_frontend >= 0)
         {
             close(shared_socket->tx_efd_in_frontend);
@@ -195,46 +189,6 @@ int fnp_socket_sendto(fnp_socket_t *socket, fnp_mbuf_t *m, const fsockaddr_t *pe
     return FNP_ERR_NOT_SUPPORTED;
 }
 
-static int fnp_socket_send_direct_gtpu(fnp_socket_t *socket, fnp_mbuf_t *m)
-{
-    fsocket_t *shared_socket = socket->shared;
-    fsocket_t *peer = fsocket_acquire_direct_peer(shared_socket);
-    if (unlikely(peer == NULL))
-    {
-        return FNP_ERR_NOT_FOUND;
-    }
-
-    fmbuf_info_t *info = get_fmbuf_info(m);
-    fsockaddr_copy(&info->local, &shared_socket->direct_local);
-    fsockaddr_copy(&info->remote, &shared_socket->direct_remote);
-
-    if (unlikely(fnp_ring_enqueue(peer->rx, m) == 0))
-    {
-        fsocket_ref_put(peer);
-        return FNP_ERR_FULL;
-    }
-
-    if (!fsocket_frontend_eventfd_enabled(peer) || fsocket_frontend_polling_enabled(peer))
-    {
-        fsocket_ref_put(peer);
-        return FNP_OK;
-    }
-
-    if (!fsocket_direct_notify_ready(shared_socket))
-    {
-        (void)frontend_prepare_direct_notify_fd(shared_socket);
-    }
-
-    if (fsocket_direct_notify_ready(shared_socket))
-    {
-        eventfd_write(shared_socket->direct_rx_efd_in_frontend, 1);
-    }
-
-    fsocket_ref_put(peer);
-
-    return FNP_OK;
-}
-
 int fnp_socket_send(fnp_socket_t *socket, fnp_mbuf_t *m)
 {
     if (unlikely(socket == NULL || socket->shared == NULL || m == NULL))
@@ -248,28 +202,9 @@ int fnp_socket_send(fnp_socket_t *socket, fnp_mbuf_t *m)
         return FNP_ERR_NOT_SUPPORTED;
     }
 
-    bool has_direct_path = fsocket_direct_peer_load(shared_socket) != NULL;
-    if (unlikely(!has_direct_path && shared_socket->direct_notify_peer != NULL))
-    {
-        frontend_release_direct_notify_fd(shared_socket);
-    }
-
-    if (likely(has_direct_path))
-    {
-        int ret = fnp_socket_send_direct_gtpu(socket, m);
-        if (likely(ret != FNP_ERR_NOT_FOUND))
-        {
-            return ret;
-        }
-
-        if (shared_socket->direct_notify_peer != NULL)
-        {
-            frontend_release_direct_notify_fd(shared_socket);
-        }
-    }
-
     if (unlikely(fnp_ring_enqueue(shared_socket->tx, m) == 0))
     {
+        shared_socket->tx_ring_drops++;
         return FNP_ERR_FULL;
     }
 
@@ -278,7 +213,10 @@ int fnp_socket_send(fnp_socket_t *socket, fnp_mbuf_t *m)
         return FNP_OK;
     }
 
-    fsocket_notify_backend(shared_socket);
+    if (shared_socket->tx_efd_in_frontend >= 0 && shared_socket->tx_efd_in_backend >= 0)
+    {
+        fsocket_notify_backend(shared_socket);
+    }
     return FNP_OK;
 }
 
@@ -290,14 +228,13 @@ int fnp_socket_recvfrom(fnp_socket_t *socket, uint8_t *buf, int buf_len, fsockad
     }
 
     struct rte_mbuf *m = NULL;
-    while (frontend_try_dequeue_mbuf(socket, &m) == FNP_ERR_EMPTY)
+    // 持续轮询，直到成功接收一个mbuf或者socket被关闭
+    while (unlikely(fnp_ring_dequeue(socket->shared->rx, (void **)&m) == 0))
     {
-        if (socket->shared->is_closed && (socket->shared->rx == NULL || fnp_ring_count(socket->shared->rx) == 0))
+        if (unlikely(socket->shared->is_closed && (socket->shared->rx == NULL || fnp_ring_count(socket->shared->rx) == 0)))
         {
             return FNP_ERR_EOF;
         }
-
-        rte_pause();
     }
 
     u8 *data = rte_pktmbuf_mtod(m, u8 *);
@@ -321,4 +258,33 @@ int fnp_socket_recvfrom(fnp_socket_t *socket, uint8_t *buf, int buf_len, fsockad
 int fnp_socket_recv(fnp_socket_t *socket, uint8_t *buf, int buf_len)
 {
     return fnp_socket_recvfrom(socket, buf, buf_len, NULL);
+}
+
+int fnp_socket_recv_mbuf(fnp_socket_t *socket, fnp_mbuf_t **m)
+{
+    if (unlikely(socket == NULL || socket->shared == NULL || m == NULL))
+    {
+        return FNP_ERR_BAD_FD;
+    }
+
+    // 持续轮询，直到成功接收一个mbuf或者socket被关闭
+    while (unlikely(fnp_ring_dequeue(socket->shared->rx, (void **)m) == 0))
+    {
+        if (unlikely(socket->shared->is_closed && (socket->shared->rx == NULL || fnp_ring_count(socket->shared->rx) == 0)))
+        {
+            return FNP_ERR_EOF;
+        }
+    }
+
+    return FNP_OK;
+}
+
+int fnp_socket_recv_mbuf_burst(fnp_socket_t *socket, fnp_mbuf_t **mbufs, u32 count)
+{
+    if (unlikely(socket == NULL || socket->shared == NULL || mbufs == NULL))
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    return (int)fnp_ring_dequeue_burst(socket->shared->rx, (void **)mbufs, count);
 }

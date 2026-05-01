@@ -3,7 +3,8 @@
 
 #include "fnp_common.h"
 #include "libfnp-conf.h"
-#include "fnp_network.h"
+#include "fnp_device.h"
+#include "fnp_ifaddr.h"
 #include "fnp_worker.h"
 
 
@@ -11,7 +12,8 @@ typedef struct fnp_context
 {
     fnp_config conf;
     fnp_worker_context_t worker;
-    fnp_network_t net;
+    fnp_device_context_t device;
+    fnp_ifaddr_context_t ifaddr;
 } fnp_context_t;
 
 extern fnp_context_t fnp;

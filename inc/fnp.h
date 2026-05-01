@@ -61,10 +61,8 @@ const fnp_ifaddr_info_t *fnp_get_ifaddrs(u16 *ifaddr_count);
 
 typedef struct fnp_gtpu_socket_conf
 {
-  u32 send_ip;   // 外层发送源 IP，网络序；为 0 时由后端自动选择
-  u16 send_port; // 外层发送源端口，网络序；为 0 时由后端自动选择
-  u16 reserved1;
-  fsockaddr_t remote; // 外层隧道对端地址，网络序；port 为 0 时默认使用 2152
+  fsockaddr_t local;  // 隧道本地接收地址，网络序；port 为 0 时默认使用 2152
+  fsockaddr_t remote; // 隧道对端接收地址，网络序；port 为 0 时默认使用 2152
   u32 incoming_teid;  // 收包匹配使用，主机序
   u32 outgoing_teid;  // 发包封装使用，主机序
 } fnp_gtpu_socket_conf_t;
@@ -89,6 +87,10 @@ int fnp_socket_recvfrom(fnp_socket_t *socket, uint8_t *buf, int buf_len, fsockad
 
 int fnp_socket_recv(fnp_socket_t *socket, uint8_t *buf, int buf_len);
 
+int fnp_socket_recv_mbuf(fnp_socket_t *socket, fnp_mbuf_t **m);
+
+int fnp_socket_recv_mbuf_burst(fnp_socket_t *socket, fnp_mbuf_t **mbufs, u32 count);
+
 int fnp_epoll_create(void);
 
 int fnp_epoll_add(int epfd, fnp_socket_t *socket, fnp_handler_func handler, void *arg);
@@ -98,6 +100,8 @@ int fnp_epoll_del(int epfd, fnp_socket_t *socket);
 int fnp_epoll_wait(int epfd, int timeout_ms, int budget);
 
 void fnp_epoll_destroy(int epfd);
+
+int fnp_polling(fnp_socket_t *socket, fnp_handler_func handler, void *arg);
 
 int fnp_lcore_launch(unsigned lcore_id, fnp_lcore_func_t func, void *arg);
 

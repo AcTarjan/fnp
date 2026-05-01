@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG CMakeFiles/fnp_node_perf_demo.dir/test/gtpu/fnp_node_perf_demo.c.o -o fnp_node_perf_demo  libfnp-api.a -lpthread -ldl -lm -lnuma -latomic 

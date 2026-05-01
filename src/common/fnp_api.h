@@ -8,7 +8,6 @@
 #define FAPI_CREATE_FSOCKET_ACTION_NAME "fapi_create_fsocket"
 #define FAPI_ACCEPT_FSOCKET_ACTION_NAME "fapi_accept_fsocket"
 #define FAPI_CLOSE_FSOCKET_ACTION_NAME "fapi_close_fsocket"
-#define FAPI_GTPU_LDP_ATTACH_ACTION_NAME "fapi_gtpu_ldp_attach"
 #define FAPI_SOCKET_CONF_MAX_LEN 128
 
 typedef struct fapi_common_req

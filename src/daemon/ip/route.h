@@ -1,7 +1,7 @@
 #ifndef FNP_ROUTE_H
 #define FNP_ROUTE_H
 
-#include "fnp_network.h"
+#include "fnp_ifaddr.h"
 
 typedef enum fnp_route_type
 {
@@ -24,13 +24,13 @@ typedef struct route_entry
 } route_entry_t;
 
 // 路由查找结果，表示“这个目标IP最终应如何发送”。
-typedef struct fnp_route_result
+typedef struct route_result
 {
     bool is_local;        // 目标是否就是本机地址；若为true，则应走本地递交
     fnp_ifaddr_t *ifaddr; // 出口本地地址；对本地地址查询则表示命中的本地ifaddr
     u32 next_hop_be;      // 实际二层解析用的下一跳IP（网络序）
     u32 pref_src_be;      // 建议使用的源IP（网络序）
-} fnp_route_result_t;
+} route_result_t;
 
 int init_route_layer(fnp_config *conf);
 
@@ -38,9 +38,9 @@ int init_route_layer(fnp_config *conf);
 fnp_ifaddr_t *route_lookup_local(u32 local_ip_be);
 
 // 按普通发送路径查路由，不指定首选出口地址。
-int route_lookup(u32 dst_ip_be, fnp_route_result_t *result);
+int route_lookup(u32 dst_ip_be, route_result_t *result);
 
 // 按指定 preferred_ifaddr 所属 device 查路由，常用于 connected socket 固定出口场景。
-int route_lookup_with_ifaddr(fnp_ifaddr_t *preferred_ifaddr, u32 dst_ip_be, fnp_route_result_t *result);
+int route_lookup_with_ifaddr(fnp_ifaddr_t *preferred_ifaddr, u32 dst_ip_be, route_result_t *result);
 
 #endif // FNP_ROUTE_H

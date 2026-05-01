@@ -439,9 +439,9 @@ fnp_ifaddr_t *route_lookup_local(u32 local_ip_be)
 //    - ifaddr：从哪个本地地址发
 //    - next_hop_be：下一跳IP是谁
 //    - pref_src_be：源IP应该填什么
-int route_lookup_with_ifaddr(fnp_ifaddr_t *preferred_ifaddr, u32 dst_ip_be, fnp_route_result_t *result)
+int route_lookup_with_ifaddr(fnp_ifaddr_t *preferred_ifaddr, u32 dst_ip_be, route_result_t *result)
 {
-    if (result == NULL)
+    if (unlikely(result == NULL))
     {
         return FNP_ERR_PARAM;
     }
@@ -471,8 +471,8 @@ int route_lookup_with_ifaddr(fnp_ifaddr_t *preferred_ifaddr, u32 dst_ip_be, fnp_
     return FNP_OK;
 }
 
-// 普通路由查找入口，不指定首选出口地址。
-int route_lookup(u32 dst_ip_be, fnp_route_result_t *result)
+// 普通路由查找入口，不指定首选出口地址，不考虑源地址偏好。
+int route_lookup(u32 dst_ip_be, route_result_t *result)
 {
     return route_lookup_with_ifaddr(NULL, dst_ip_be, result);
 }
