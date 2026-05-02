@@ -10,6 +10,7 @@
 #include "gtpu.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <rte_ethdev.h>
 
 #include <unistd.h>
@@ -178,6 +179,23 @@ static void write_worker_rx_info(FILE *fp)
 
 static void log_device_eth_stats_from_master(void)
 {
+    struct rte_eth_stats stats = {0};
+    const uint16_t port_id = 0;
+
+    if (rte_eth_stats_get(port_id, &stats) != 0)
+    {
+        return;
+    }
+
+    FNP_INFO("eth port=%u rx=%" PRIu64 " tx=%" PRIu64 " imissed=%" PRIu64
+             " ierrors=%" PRIu64 " oerrors=%" PRIu64 " rx_nombuf=%" PRIu64 "\n",
+             port_id,
+             stats.ipackets,
+             stats.opackets,
+             stats.imissed,
+             stats.ierrors,
+             stats.oerrors,
+             stats.rx_nombuf);
 }
 
 int fnp_master_add_fsocket(fsocket_t *socket)
@@ -308,9 +326,15 @@ void fnp_master_loop()
             {
                 uint64_t expirations;
                 read(timerfd, &expirations, sizeof(expirations)); // 清除定时器计数
+                static uint64_t stat_tick = 0;
                 check_frontend_alive();
                 write_worker_rx_info(fp);
-                log_device_eth_stats_from_master();
+                stat_tick += expirations;
+                if (stat_tick >= 2)
+                {
+                    stat_tick = 0;
+                    log_device_eth_stats_from_master();
+                }
                 // check_daemon_info(fp);
                 // show_all_fsocket();
             }
