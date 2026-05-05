@@ -15,4 +15,6 @@ void gtpu_udp_input(struct rte_mbuf *m);
 
 int gtpu_export_socket_conf(const fsocket_t *socket, fnp_gtpu_socket_conf_t *conf);
 
+void gtpu_log_socket_drops(void);
+
 #endif // FNP_GTPU_H

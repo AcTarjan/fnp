@@ -20,7 +20,12 @@
 #include <rte_udp.h>
 #include <rte_gtp.h>
 
+#include <inttypes.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define GTPU_SOCKET_TABLE_SIZE 4096
@@ -36,8 +41,8 @@
 #define GTPU_EXT_NR_RAN_CONTAINER 0x84u
 #define GTPU_EXT_PDU_SESSION_CONTAINER 0x85u
 #define GTPU_EXT_HDR_UNIT 4u
-#define GTPU_AUTO_PORT_FIRST 32768u
-#define GTPU_AUTO_PORT_LAST 60999u
+#define GTPU_AUTO_PORT_FIRST 20000u
+#define GTPU_AUTO_PORT_LAST 30000u
 #define GTPU_AUTO_PORT_COUNT (GTPU_AUTO_PORT_LAST - GTPU_AUTO_PORT_FIRST + 1u)
 #define GTPU_AUTO_PORT_BITMAP_WORDS ((GTPU_AUTO_PORT_COUNT + 63u) / 64u)
 #define GTPU_PORT_POOL_TABLE_SIZE 128
@@ -88,6 +93,67 @@ static const transport_ops_t gtpu_transport_ops = {
 static inline gtpu_context_t *gtpu_context_cast(fsocket_t *socket)
 {
     return (gtpu_context_t *)transport_from_socket(socket);
+}
+
+static u32 gtpu_random_seed_from_urandom(void)
+{
+    u32 seed = 0;
+    FILE *fp = fopen("/dev/urandom", "rb");
+    if (fp == NULL)
+    {
+        return 0;
+    }
+
+    size_t n = fread(&seed, sizeof(seed), 1, fp);
+    fclose(fp);
+    return n == 1 ? seed : 0;
+}
+
+static u32 gtpu_random_fallback_seed(void)
+{
+    struct timespec ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u32)ts.tv_nsec ^ (u32)ts.tv_sec ^ (u32)getpid() ^ (u32)(uintptr_t)&gtpu_module;
+}
+
+static void gtpu_seed_random_port(void)
+{
+    const char *env = getenv("FNP_GTPU_PORT_SEED");
+    char *end = NULL;
+    u32 seed = 0;
+    const char *source = "urandom";
+
+    if (env != NULL && env[0] != '\0')
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(env, &end, 0);
+        if (errno == 0 && end != env && *end == '\0')
+        {
+            seed = (u32)parsed;
+            source = "env";
+        }
+        else
+        {
+            FNP_INFO("gtpu_port_seed invalid env=%s, fallback to random seed\n", env);
+        }
+    }
+
+    if (seed == 0)
+    {
+        seed = gtpu_random_seed_from_urandom();
+    }
+    if (seed == 0)
+    {
+        seed = gtpu_random_fallback_seed();
+        source = "fallback";
+    }
+
+    srandom(seed);
+    FNP_INFO("gtpu_port_seed source=%s seed=%u range=%u-%u\n",
+             source,
+             seed,
+             GTPU_AUTO_PORT_FIRST,
+             GTPU_AUTO_PORT_LAST);
 }
 
 static void gtpu_disable_backend_tx_event(fsocket_t *socket)
@@ -268,6 +334,12 @@ static gtpu_context_t *gtpu_lookup_context(u32 teid, u32 local_ip, u16 local_por
         fsocket_t *socket = transport_socket(&gtpu->transport);
         socket->ingress_worker = worker->id;
         worker->ingress_socket_count++;
+        FNP_INFO("learn RX socket=%s on worker=%d queue=%d rx_sockets=%u tx_sockets=%d\n",
+                 socket->name,
+                 worker->id,
+                 worker->queue_id,
+                 worker->ingress_socket_count,
+                 worker->egress_socket_count);
     }
 
     return gtpu;
@@ -377,7 +449,7 @@ static inline bool gtpu_send_one(gtpu_context_t *gtpu, struct rte_mbuf *m)
 
     gtpu_prepend_hdr(m, gtpu->outgoing_teid, gtpu_len, flags, msg_type);
 
-    gtpu_prepend_udp_hdr(m, gtpu->transport.local.port, gtpu->transport.remote.port);
+    gtpu_prepend_udp_hdr(m, gtpu->transport.send.port, gtpu->transport.remote.port);
 
     return ipv4_send_mbuf_with_cache(&gtpu->transport.ip_tx_cache, m);
 }
@@ -489,9 +561,8 @@ u16 gtpu_socket_get_random_port()
 {
     for (int i = 0; i < 10; ++i)
     {
-        int port = random();
-        // 判断端口没有使用
-        return port;
+        u32 port = GTPU_AUTO_PORT_FIRST + ((u32)random() % GTPU_AUTO_PORT_COUNT);
+        return (u16)port;
     }
 
     return 0;
@@ -523,11 +594,15 @@ fsocket_t *gtpu_create_transport(void *conf, void *ctx)
     gtpu->incoming_teid = gtpu_conf->incoming_teid;
     gtpu->outgoing_teid = gtpu_conf->outgoing_teid;
 
-    // 构造一个发送地址，端口不一样来使对端RSS分流，用于发送数据包给对端
+    // 每个GTP-U socket使用不同的UDP源端口，让对端RSS按外层五元组分流。
     transport->send.family = FSOCKADDR_IPV4;
     transport->send.ip = transport->local.ip;
     u16 send_port = gtpu_socket_get_random_port();
     transport->send.port = fnp_swap16(send_port);
+    FNP_INFO("gtpu_sport port=%u in=0x%x out=0x%x\n",
+             send_port,
+             gtpu->incoming_teid,
+             gtpu->outgoing_teid);
 
     // 初始化发送缓存用来加速发送路径，IP层会填充待确定字段
     ipv4_init_tx_cache(&transport->ip_tx_cache, IPPROTO_UDP,
@@ -545,7 +620,7 @@ fsocket_t *gtpu_create_transport(void *conf, void *ctx)
     if (!gtpu_try_pair_ldp(gtpu))
     {
         // 没有配对成功，创建IO环路，走fnp-daemon
-        if (fsocket_create_io_rings(socket, false) != FNP_OK)
+        if (fsocket_create_io_rings(socket) != FNP_OK)
         {
             gtpu_unregister(gtpu);
             fnp_free(gtpu);
@@ -680,6 +755,8 @@ void gtpu_udp_input(struct rte_mbuf *m)
 
 int gtpu_module_init(void)
 {
+    gtpu_seed_random_port();
+
     int ret = gtpu_init_context();
     CHECK_RET(ret);
 
@@ -699,4 +776,57 @@ int gtpu_export_socket_conf(const fsocket_t *socket, fnp_gtpu_socket_conf_t *con
     conf->incoming_teid = gtpu->incoming_teid;
     conf->outgoing_teid = gtpu->outgoing_teid;
     return FNP_OK;
+}
+
+void gtpu_log_socket_drops(void)
+{
+    if (gtpu_module.global_tbl == NULL)
+    {
+        return;
+    }
+
+    bool verbose = true;
+    const char *verbose_env = getenv("FNP_LOG_SOCKET_DROP_DETAIL");
+    if (verbose_env != NULL && verbose_env[0] != '\0' && strcmp(verbose_env, "0") == 0)
+    {
+        verbose = false;
+    }
+
+    const void *key = NULL;
+    void *data = NULL;
+    uint32_t next = 0;
+    uint64_t total_rx_ring_drops = 0;
+    uint64_t total_tx_ring_drops = 0;
+    int sockets = 0;
+    while (rte_hash_iterate(gtpu_module.global_tbl, &key, &data, &next) >= 0)
+    {
+        gtpu_context_t *gtpu = data;
+        if (gtpu == NULL)
+        {
+            continue;
+        }
+
+        fsocket_t *socket = transport_socket(&gtpu->transport);
+        uint64_t rx_ring_drops = __atomic_load_n(&socket->rx_ring_drops, __ATOMIC_RELAXED);
+        uint64_t tx_ring_drops = __atomic_load_n(&socket->tx_ring_drops, __ATOMIC_RELAXED);
+        total_rx_ring_drops += rx_ring_drops;
+        total_tx_ring_drops += tx_ring_drops;
+        sockets++;
+
+        if (verbose && (rx_ring_drops != 0 || tx_ring_drops != 0))
+        {
+            FNP_INFO("gsd in=0x%x out=0x%x iw=%d ew=%d rxd=%" PRIu64 " txd=%" PRIu64 "\n",
+                     gtpu->incoming_teid,
+                     gtpu->outgoing_teid,
+                     socket->ingress_worker,
+                     socket->egress_worker,
+                     rx_ring_drops,
+                     tx_ring_drops);
+        }
+    }
+
+    FNP_INFO("gsdt n=%d rxd=%" PRIu64 " txd=%" PRIu64 "\n",
+             sockets,
+             total_rx_ring_drops,
+             total_tx_ring_drops);
 }

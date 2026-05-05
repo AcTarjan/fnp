@@ -204,7 +204,7 @@ int fnp_socket_send(fnp_socket_t *socket, fnp_mbuf_t *m)
 
     if (unlikely(fnp_ring_enqueue(shared_socket->tx, m) == 0))
     {
-        shared_socket->tx_ring_drops++;
+        __atomic_add_fetch(&shared_socket->tx_ring_drops, 1, __ATOMIC_RELAXED);
         return FNP_ERR_FULL;
     }
 

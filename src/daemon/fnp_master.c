@@ -156,7 +156,8 @@ static void check_daemon_info(FILE *fp)
 
 static void write_worker_rx_info(FILE *fp)
 {
-    fprintf(fp, "worker_rx");
+    char line[1024] = {0};
+    int off = snprintf(line, sizeof(line), "wsb");
     for (int id = 0; id < get_fnp_worker_count(); ++id)
     {
         fnp_worker_t *worker = get_fnp_worker(id);
@@ -165,16 +166,29 @@ static void write_worker_rx_info(FILE *fp)
             continue;
         }
 
-        fprintf(fp,
-                " worker%d_queue%d_ingress_sockets=%u worker%d_egress_sockets=%d",
-                worker->id,
-                worker->queue_id,
-                worker->ingress_socket_count,
-                worker->id,
-                worker->egress_socket_count);
+        int written = snprintf(line + off,
+                               sizeof(line) - (size_t)off,
+                               " w%dq%d=%u/%d/%u",
+                               worker->id,
+                               worker->queue_id,
+                               worker->ingress_socket_count,
+                               worker->egress_socket_count,
+                               worker->ingress_socket_count + (u32)worker->egress_socket_count);
+        if (written < 0)
+        {
+            break;
+        }
+        off += written;
+        if (off >= (int)sizeof(line))
+        {
+            off = (int)sizeof(line) - 1;
+            break;
+        }
     }
-    fprintf(fp, "\n");
+
+    fprintf(fp, "%s\n", line);
     fflush(fp);
+    FNP_INFO("%s\n", line);
 }
 
 static void log_device_eth_stats_from_master(void)
@@ -187,15 +201,51 @@ static void log_device_eth_stats_from_master(void)
         return;
     }
 
-    FNP_INFO("eth port=%u rx=%" PRIu64 " tx=%" PRIu64 " imissed=%" PRIu64
-             " ierrors=%" PRIu64 " oerrors=%" PRIu64 " rx_nombuf=%" PRIu64 "\n",
+    fnp_device_t *dev = lookup_device_by_port(port_id);
+    uint64_t tx_ring_drops = dev == NULL ? 0 : __atomic_load_n(&dev->tx_ring_drops, __ATOMIC_RELAXED);
+    uint64_t tx_burst_drops = dev == NULL ? 0 : __atomic_load_n(&dev->tx_burst_drops, __ATOMIC_RELAXED);
+    FNP_INFO("eth p=%u rx=%" PRIu64 " tx=%" PRIu64 " miss=%" PRIu64
+             " ierr=%" PRIu64 " oerr=%" PRIu64 " nom=%" PRIu64
+             " trd=%" PRIu64 " tbd=%" PRIu64 "\n",
              port_id,
              stats.ipackets,
              stats.opackets,
              stats.imissed,
              stats.ierrors,
              stats.oerrors,
-             stats.rx_nombuf);
+             stats.rx_nombuf,
+             tx_ring_drops,
+             tx_burst_drops);
+
+    char qline[512] = {0};
+    int off = snprintf(qline, sizeof(qline), "ethq p=%u", port_id);
+    int queues = get_fnp_worker_count();
+    if (queues > RTE_ETHDEV_QUEUE_STAT_CNTRS)
+    {
+        queues = RTE_ETHDEV_QUEUE_STAT_CNTRS;
+    }
+    for (int q = 0; q < queues; ++q)
+    {
+        int written = snprintf(qline + off,
+                               sizeof(qline) - (size_t)off,
+                               " q%d=%" PRIu64 "/%" PRIu64 "/%" PRIu64,
+                               q,
+                               stats.q_ipackets[q],
+                               stats.q_opackets[q],
+                               stats.q_errors[q]);
+        if (written < 0)
+        {
+            break;
+        }
+        off += written;
+        if (off >= (int)sizeof(qline))
+        {
+            off = (int)sizeof(qline) - 1;
+            break;
+        }
+    }
+    FNP_INFO("%s\n", qline);
+    gtpu_log_socket_drops();
 }
 
 int fnp_master_add_fsocket(fsocket_t *socket)

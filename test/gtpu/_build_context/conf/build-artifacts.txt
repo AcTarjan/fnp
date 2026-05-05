@@ -1,0 +1,6 @@
+built_at=2026-05-03T18:14:26+08:00
+image_tag=fnp-perf:20260503-181425
+fnp_build_dir=/root/cn/fnp/build-server1-dpdk2203
+fnp_dpdk_dir=/root/cn/third_party/dpdk-server1-22.03
+eb8e7663007fc75f04ba3c2f899a4be14a0cc751f082a2a779e7e8e4aa3e23e7  /root/cn/fnp/test/gtpu/_build_context/bin/fnp-daemon
+c9a64f32e24be2c2c030616bb0d06583866e3e91b617540b317b266c947828ce  /root/cn/fnp/test/gtpu/_build_context/bin/fnp_node_perf_demo

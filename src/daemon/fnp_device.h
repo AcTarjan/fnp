@@ -50,6 +50,8 @@ struct fnp_device
     u16 nb_tx_desc;
     struct rte_ether_addr mac;
     fnp_ring_t *tx_rings[FNP_MAX_WORKER_NUM];
+    u64 tx_ring_drops;
+    u64 tx_burst_drops;
     const fnp_device_ops_t *ops;
 };
 

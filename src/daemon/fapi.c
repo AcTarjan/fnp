@@ -1,5 +1,6 @@
 #include "fapi.h"
 #include "fnp_api.h"
+#include "fnp_context.h"
 #include "fnp_error.h"
 #include "fnp_frontend.h"
 #include "fnp_master.h"
@@ -8,18 +9,50 @@
 #include "fnp_ifaddr.h"
 #include "fnp_worker.h"
 
-static u32 frontend_pool_round_robin = 0;
+static u16 frontend_pool_next_worker = 0;
 
-static fnp_worker_t *pick_frontend_pool_worker(void)
+static void frontend_detach_worker_pool(fnp_frontend_t *frontend)
 {
-    int worker_count = get_fnp_worker_count();
-    if (worker_count <= 0)
+    if (frontend == NULL)
     {
-        return NULL;
+        return;
     }
 
-    u32 index = __atomic_fetch_add(&frontend_pool_round_robin, 1, __ATOMIC_RELAXED);
-    return get_fnp_worker((int)(index % (u32)worker_count));
+    frontend->pool = NULL;
+    frontend->pool_worker_id = (u16)-1;
+}
+
+static int frontend_assign_worker_pool(fnp_frontend_t *frontend)
+{
+    if (frontend == NULL)
+    {
+        return FNP_ERR_PARAM;
+    }
+
+    const int worker_count = get_fnp_worker_count();
+    if (worker_count <= 0)
+    {
+        FNP_ERR("no worker pool available for frontend %d\n", frontend->pid);
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    const u16 worker_id = frontend_pool_next_worker++ % (u16)worker_count;
+    fnp_worker_t *worker = get_fnp_worker(worker_id);
+    if (worker == NULL || worker->pool == NULL)
+    {
+        FNP_ERR("worker %u has no mbuf pool for frontend %d\n",
+                worker_id,
+                frontend->pid);
+        return FNP_ERR_NOT_FOUND;
+    }
+
+    frontend->pool = worker->pool;
+    frontend->pool_worker_id = worker_id;
+    FNP_INFO("frontend %d uses worker mbuf pool=%s worker=%u\n",
+             frontend->pid,
+             worker->pool->name,
+             worker_id);
+    return FNP_OK;
 }
 
 int register_frontend_action(const struct rte_mp_msg *msg, const void *peer)
@@ -48,19 +81,16 @@ int register_frontend_action(const struct rte_mp_msg *msg, const void *peer)
             }
             else
             {
-                fnp_worker_t *worker = pick_frontend_pool_worker();
-                frontend->pool = worker == NULL ? NULL : worker->pool;
-                frontend->pool_worker_id = worker == NULL ? (u16)-1 : (u16)worker->id;
-                if (frontend->pool == NULL)
-                {
-                    FNP_ERR("fail to bind shared frontend pool");
-                    code = FNP_ERR_CREATE_MBUFPOOL;
-                }
-                else
+                code = frontend_assign_worker_pool(frontend);
+                if (code == FNP_OK)
                 {
                     code = export_fnp_ifaddrs(frontend->ifaddrs,
                                               (u16)RTE_DIM(frontend->ifaddrs),
                                               &frontend->ifaddr_count);
+                    if (code != FNP_OK)
+                    {
+                        frontend_detach_worker_pool(frontend);
+                    }
                 }
 
                 if (code == FNP_OK)

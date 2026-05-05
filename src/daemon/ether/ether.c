@@ -135,6 +135,7 @@ bool ether_send_mbuf(struct rte_mbuf *m, fnp_device_t *dev, struct rte_ether_add
     fnp_ring_t *tx_ring = get_device_tx_ring(dev, worker->queue_id);
     if (unlikely(fnp_ring_enqueue(tx_ring, m) == 0))
     {
+        __atomic_add_fetch(&dev->tx_ring_drops, 1, __ATOMIC_RELAXED);
         free_mbuf(m);
         return false;
     }
@@ -285,6 +286,21 @@ static int ether_device_init(fnp_device_t *dev, const fnp_device_config *conf, i
         if (ret < 0)
         {
             return ret;
+        }
+    }
+
+    for (int i = 0; i < nb_queues && i < RTE_ETHDEV_QUEUE_STAT_CNTRS; ++i)
+    {
+        int rx_map_ret = rte_eth_dev_set_rx_queue_stats_mapping(port, (uint16_t)i, (uint8_t)i);
+        if (rx_map_ret != 0)
+        {
+            printf("port%d rx queue stats mapping q%d failed: %s\n", port, i, strerror(-rx_map_ret));
+        }
+
+        int tx_map_ret = rte_eth_dev_set_tx_queue_stats_mapping(port, (uint16_t)i, (uint8_t)i);
+        if (tx_map_ret != 0)
+        {
+            printf("port%d tx queue stats mapping q%d failed: %s\n", port, i, strerror(-tx_map_ret));
         }
     }
 

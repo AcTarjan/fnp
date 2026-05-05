@@ -91,18 +91,18 @@ void fsocket_enqueue_for_app(fsocket_t *socket, struct rte_mbuf *m)
 
     if (unlikely(fnp_ring_enqueue(socket->rx, m) == 0))
     {
-        socket->rx_ring_drops++;
+        __atomic_add_fetch(&socket->rx_ring_drops, 1, __ATOMIC_RELAXED);
         free_mbuf(m);
     }
 }
 
-int fsocket_create_io_rings(fsocket_t *socket, bool is_mp)
+int fsocket_create_io_rings(fsocket_t *socket)
 {
     fnp_config *conf = &get_fnp_context()->conf;
     int rx_ring_size = fsocket_ring_size_or_default(conf->socket_rx_ring_size);
     int tx_ring_size = fsocket_ring_size_or_default(conf->socket_tx_ring_size);
 
-    socket->rx = fnp_ring_create(rx_ring_size, is_mp, false);
+    socket->rx = fnp_ring_create(rx_ring_size, false, false);
     if (socket->rx == NULL)
     {
         return FNP_ERR_CREATE_RING;

@@ -1,0 +1,46 @@
+# fnp-cross-rx.yaml - FNP daemon config for cross-node tests, RX side (server 231)
+# RX container runs on 231; TX container runs on 229.
+# Physical path: 229:enp23s0f0 <--> 231:p1p2 (direct link)
+#
+# IP layout:
+#   RX (this node) : 192.168.100.3/24
+#   TX (remote 229): 192.168.100.5/24
+#
+# Lcore layout:
+#   Daemon main  : 20
+#   Daemon worker: 21
+#   RX app       : main=22, bind-core=23  (service-id=501)
+
+dpdk:
+  mbuf_pool_size: 32767
+  lcores: [ 20, 21 ]
+  app_id: "fnp"
+  log_level: 8
+  other_argv:
+    - "--main-lcore=20"
+    - "--iova-mode=pa"
+    - "--socket-mem=16384"
+
+socket_rx_ring_size: 8192
+socket_tx_ring_size: 8192
+
+network:
+  devices:
+    - name: "eth0"
+      type: "ethernet"
+      driver: "physical"
+      pci: "0000:17:00.1"
+      mac: ""
+      promiscuous: true
+      nb_rx_desc: 2048
+      nb_tx_desc: 2048
+      ifaddrs:
+        - "192.168.100.3/24"
+  routes: []
+
+worker:
+  mbuf_pool_size: 32767
+  clone_pool_size: 32767
+  rx_pool_size: 32767
+  worker_tx_ring_size: 8192
+  lcores: [ 21 ]

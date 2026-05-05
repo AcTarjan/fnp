@@ -1,0 +1,44 @@
+# fnp-ldp.yaml - FNP daemon config for LDP (same-node) tests on server 231
+# Both TX (192.168.100.2) and RX (192.168.100.3) connect to this daemon.
+# LDP routes packets internally without going through the physical NIC.
+#
+# Lcore layout:
+#   Daemon main  : 20   (--main-lcore=20)
+#   Daemon worker: 21   (routes packets between frontends)
+#   RX app       : main=22, bind=23  (service-id=501)
+#   TX app       : main=24, bind=25, rtt-rx=26  (service-id=502)
+
+dpdk:
+  mbuf_pool_size: 32767
+  lcores: [ 20, 21 ]
+  app_id: "fnp"
+  log_level: 8
+  other_argv:
+    - "--main-lcore=20"
+    - "--iova-mode=pa"
+    - "--socket-mem=16384"
+
+socket_rx_ring_size: 8192
+socket_tx_ring_size: 8192
+
+network:
+  devices:
+    - name: "eth0"
+      type: "ethernet"
+      driver: "physical"
+      pci: "0000:17:00.1"
+      mac: ""
+      promiscuous: true
+      nb_rx_desc: 2048
+      nb_tx_desc: 2048
+      ifaddrs:
+        - "192.168.100.2/24"
+        - "192.168.100.3/24"
+  routes: []
+
+worker:
+  mbuf_pool_size: 32767
+  clone_pool_size: 32767
+  rx_pool_size: 32767
+  worker_tx_ring_size: 8192
+  lcores: [ 21 ]

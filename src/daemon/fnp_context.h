@@ -7,7 +7,6 @@
 #include "fnp_ifaddr.h"
 #include "fnp_worker.h"
 
-
 typedef struct fnp_context
 {
     fnp_config conf;

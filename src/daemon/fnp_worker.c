@@ -45,7 +45,7 @@ static int fnp_worker_load(const fnp_worker_t *worker)
     return worker == NULL ? INT32_MAX : (int)(worker->ingress_socket_count + worker->egress_socket_count);
 }
 
-static fnp_worker_t *select_send_worker(void)
+static fnp_worker_t *select_min_load_worker(void)
 {
     fnp_worker_t *best = NULL;
     int best_load = INT32_MAX;
@@ -63,30 +63,27 @@ static fnp_worker_t *select_send_worker(void)
     return best;
 }
 
-static fnp_worker_t *select_command_worker(const fsocket_t *socket)
+static fnp_worker_t *select_existing_worker(const fsocket_t *socket)
 {
-    if (socket != NULL)
+    if (socket != NULL && socket->egress_worker >= 0)
     {
-        if (socket->egress_worker >= 0)
+        fnp_worker_t *worker = get_fnp_worker(socket->egress_worker);
+        if (worker != NULL)
         {
-            fnp_worker_t *worker = get_fnp_worker(socket->egress_worker);
-            if (worker != NULL)
-            {
-                return worker;
-            }
-        }
-
-        if (socket->ingress_worker >= 0)
-        {
-            fnp_worker_t *worker = get_fnp_worker(socket->ingress_worker);
-            if (worker != NULL)
-            {
-                return worker;
-            }
+            return worker;
         }
     }
 
-    return select_send_worker();
+    if (socket != NULL && socket->ingress_worker >= 0)
+    {
+        fnp_worker_t *worker = get_fnp_worker(socket->ingress_worker);
+        if (worker != NULL)
+        {
+            return worker;
+        }
+    }
+
+    return NULL;
 }
 
 static int worker_enqueue_command(fnp_worker_t *worker, fnp_worker_cmd_type_t type, fsocket_t *socket)
@@ -182,12 +179,19 @@ int fnp_worker_add_fsocket(fsocket_t *socket)
         return FNP_OK;
     }
 
-    fnp_worker_t *worker = select_command_worker(socket);
+    fnp_worker_t *worker = select_min_load_worker();
     if (worker == NULL)
     {
         fsocket_polling_clear_scheduled(socket);
         return FNP_ERR_NOT_FOUND;
     }
+
+    FNP_INFO("schedule TX socket=%s to worker=%d load_before=%d ingress=%u egress=%d\n",
+             socket->name,
+             worker->id,
+             fnp_worker_load(worker),
+             worker->ingress_socket_count,
+             worker->egress_socket_count);
 
     int ret = worker_enqueue_command(worker, fnp_worker_cmd_add_poll, socket);
     if (ret != FNP_OK)
@@ -205,7 +209,7 @@ int fnp_worker_remove_fsocket(fsocket_t *socket)
         return FNP_ERR_PARAM;
     }
 
-    fnp_worker_t *worker = select_command_worker(socket);
+    fnp_worker_t *worker = select_existing_worker(socket);
     if (worker == NULL)
     {
         socket->egress_worker = -1;
@@ -217,7 +221,7 @@ int fnp_worker_remove_fsocket(fsocket_t *socket)
 
 int fnp_worker_close_fsocket(fsocket_t *socket)
 {
-    fnp_worker_t *worker = select_command_worker(socket);
+    fnp_worker_t *worker = select_existing_worker(socket);
     if (worker == NULL)
     {
         return FNP_ERR_NOT_FOUND;
@@ -309,6 +313,7 @@ static void ether_device_flush_mbufs(fnp_worker_t *worker)
             u16 sent = rte_eth_tx_burst(dev->port_id, worker->queue_id, mbufs, tx_num);
             if (unlikely(sent < tx_num))
             {
+                __atomic_add_fetch(&dev->tx_burst_drops, tx_num - sent, __ATOMIC_RELAXED);
                 rte_pktmbuf_free_bulk(&mbufs[sent], tx_num - sent);
             }
         }

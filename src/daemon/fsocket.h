@@ -28,7 +28,7 @@ int init_fsocket_layer(void);
 
 void fsocket_init_base(fsocket_t *socket, fsocket_type_t type);
 
-int fsocket_create_io_rings(fsocket_t *socket, bool is_mp);
+int fsocket_create_io_rings(fsocket_t *socket);
 
 // 将数据入队到socket的rx队列, 供应用层读取, 如果队列满了则丢包
 void fsocket_enqueue_for_app(fsocket_t *socket, struct rte_mbuf *m);
